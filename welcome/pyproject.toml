@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bluefox-welcome"
+version = "0.1.0"
+description = "Blue Fox OS first-boot welcome agent (PyQt6)"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "Blue Fox Inc.", email = "olivier@bluefoxconsultant.com"}]
+requires-python = ">=3.11"
+dependencies = [
+    "PyQt6>=6.6",
+    "requests>=2.31",
+    "jsonschema>=4.21",
+]
+
+[project.scripts]
+bluefox-welcome = "bluefox_welcome.main:cli"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["bluefox_welcome*"]

@@ -1,0 +1,52 @@
+# Recipe commune Blue Fox OS - documente la base partagée par tous les tenants.
+# BlueBuild ne supporte pas l'héritage entre recipes ; ce fichier sert de
+# référence à dupliquer dans chaque recipes/{slug}.yml. Quand on aura plus
+# de 3 tenants, refactorer en utilisant des YAML anchors ou en générant
+# les recipes via un script.
+
+# Base utilisée : kinoite-main de uBlue (Fedora Kinoite avec ajouts sains).
+base-image: ghcr.io/ublue-os/kinoite-main
+image-version: latest
+
+# Modules communs à appliquer en plus du branding tenant-specific.
+# Les tenants doivent dupliquer cette liste avant d'ajouter leurs overrides.
+modules:
+
+  # 1. Layering RPM : ce qui n'existe pas en Flatpak ou doit être systeme.
+  - type: rpm-ostree
+    repos:
+      - https://pkgs.tailscale.com/stable/fedora/tailscale.repo
+    install:
+      - tailscale                # VPN, daemon masked par défaut
+      - google-lexend-fonts      # police système (à valider sur Fedora)
+    remove:
+      - firefox                  # remplacé par Brave Flatpak
+      - firefox-langpacks
+
+  # 2. Flatpaks installés au premier boot (Flathub uniquement).
+  - type: default-flatpaks
+    notify: true
+    system:
+      repo-url: https://flathub.org/repo/flathub.flatpakrepo
+      repo-name: flathub
+      install:
+        - com.brave.Browser
+        - org.mozilla.Thunderbird
+        - com.nextcloud.desktopclient.nextcloudclient
+        # Talk client web seulement en v1, pas de Flatpak desktop officiel mature
+
+  # 3. systemd : firstboot service du welcome agent.
+  - type: systemd
+    system:
+      enabled:
+        - rpm-ostreed-automatic.timer  # auto-rebase quotidien stage
+        - firstboot.service            # welcome agent, fourni par RPM dédié
+
+  # 4. Fichiers : assets de branding et welcome agent.
+  - type: files
+    files:
+      - source: files/usr
+        destination: /usr
+
+  # 5. Signature cosign (uniquement en CI ; ignoré en build local).
+  - type: signing

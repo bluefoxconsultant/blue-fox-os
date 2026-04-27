@@ -1,0 +1,71 @@
+name: Build Blue Fox OS images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'recipes/**'
+      - 'welcome/**'
+      - 'install/**'
+      - 'config/schema.v1.json'
+      - '.github/workflows/build.yml'
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Rebuild quotidien à 04:00 UTC pour ramasser les mises à jour upstream.
+    - cron: '0 4 * * *'
+
+env:
+  REGISTRY: ghcr.io
+  REGISTRY_USER: ${{ github.actor }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write   # nécessaire pour cosign keyless
+
+    strategy:
+      fail-fast: false
+      matrix:
+        tenant:
+          - bf
+          - factice
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Lint recipes
+        run: |
+          python3 -c "import yaml; yaml.safe_load(open('recipes/${{ matrix.tenant }}.yml'))"
+          python3 -c "import json; json.load(open('config/schema.v1.json'))"
+
+      - name: Build image (BlueBuild)
+        uses: blue-build/github-action@v1
+        with:
+          recipe: recipes/${{ matrix.tenant }}.yml
+          cosign_private_key: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          registry_token: ${{ secrets.GITHUB_TOKEN }}
+          pr_event_number: ${{ github.event.number }}
+
+      - name: Output image reference
+        run: |
+          echo "Image: ${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:latest"
+
+  release:
+    # Tag v* déclenche un release : ISO + signatures + draft GitHub release.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ISO via bootc-image-builder
+        run: echo "TODO P6.1 - call bootc-image-builder, sign GPG, attach to release"
+      - name: Verify cosign signatures
+        run: echo "TODO - cosign verify on each tagged image"

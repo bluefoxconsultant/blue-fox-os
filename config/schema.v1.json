@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://config.bluefoxconsultant.com/schema.v1.json",
+  "title": "Blue Fox OS tenant config",
+  "description": "JSON consommé par le welcome agent au premier démarrage et par le pipeline BlueBuild pour le branding par tenant.",
+  "type": "object",
+  "required": ["slug", "version", "image_ref", "services", "branding"],
+  "properties": {
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{1,30}$",
+      "description": "Identifiant tenant, ex: 'bf', 'charles-groleau'."
+    },
+    "version": {
+      "type": "string",
+      "const": "v1",
+      "description": "Version du schéma. v1 = schéma initial juillet 2026."
+    },
+    "image_ref": {
+      "type": "string",
+      "description": "Image OCI bootable, ex: ghcr.io/bluefoxconsultant/blue-fox-os-bf:latest."
+    },
+    "services": {
+      "type": "object",
+      "required": ["nextcloud", "authentik", "imap"],
+      "properties": {
+        "nextcloud": {
+          "type": "object",
+          "required": ["url"],
+          "properties": {
+            "url": {"type": "string", "format": "uri"},
+            "talk_enabled": {"type": "boolean", "default": true}
+          }
+        },
+        "odoo": {
+          "type": "object",
+          "properties": {
+            "url": {"type": "string", "format": "uri"}
+          }
+        },
+        "vaultwarden": {
+          "type": "object",
+          "properties": {
+            "url": {"type": "string", "format": "uri"}
+          }
+        },
+        "authentik": {
+          "type": "object",
+          "required": ["url", "issuer"],
+          "properties": {
+            "url": {"type": "string", "format": "uri"},
+            "issuer": {"type": "string", "format": "uri"},
+            "client_id": {"type": "string"}
+          }
+        },
+        "imap": {
+          "type": "object",
+          "required": ["host", "port"],
+          "properties": {
+            "host": {"type": "string"},
+            "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+            "use_tls": {"type": "boolean", "default": true}
+          }
+        },
+        "smtp": {
+          "type": "object",
+          "properties": {
+            "host": {"type": "string"},
+            "port": {"type": "integer"},
+            "use_tls": {"type": "boolean", "default": true}
+          }
+        },
+        "talk": {
+          "type": "object",
+          "properties": {
+            "url": {"type": "string", "format": "uri"}
+          }
+        },
+        "calcom": {
+          "type": "object",
+          "properties": {
+            "url": {"type": "string", "format": "uri"}
+          }
+        }
+      }
+    },
+    "branding": {
+      "type": "object",
+      "required": ["palette", "logo_url", "wallpaper_url"],
+      "properties": {
+        "logo_url": {"type": "string", "format": "uri", "description": "PNG transparent, idéalement 1024x1024."},
+        "wallpaper_url": {"type": "string", "format": "uri", "description": "JPG ou PNG 1920x1080 minimum."},
+        "splash_url": {"type": "string", "format": "uri", "description": "Splash Plymouth, optionnel."},
+        "palette": {
+          "type": "object",
+          "required": ["primary"],
+          "properties": {
+            "primary": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"},
+            "secondary": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"},
+            "accent": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"}
+          }
+        },
+        "system_font": {
+          "type": "string",
+          "default": "Lexend",
+          "description": "Police système. Defaut Lexend (BF). Doit être disponible dans l'image."
+        },
+        "plasma_theme": {"type": "string"},
+        "sddm_theme": {"type": "string"}
+      }
+    },
+    "bookmarks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "url"],
+        "properties": {
+          "title": {"type": "string"},
+          "url": {"type": "string", "format": "uri"},
+          "pinned": {"type": "boolean", "default": false}
+        }
+      }
+    },
+    "fetched_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Set par le welcome agent au moment de la fetch."
+    }
+  }
+}

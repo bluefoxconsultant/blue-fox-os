@@ -1,0 +1,49 @@
+# Recipe Blue Fox OS - tenant factice (validation du whitelabel).
+# Sert à prouver que le templating fonctionne avant le premier client externe.
+# v1.1 remplacera ce factice par un vrai client.
+
+name: blue-fox-os-factice
+description: Blue Fox OS - tenant factice (validation whitelabel templating, ne pas distribuer)
+
+base-image: ghcr.io/ublue-os/kinoite-main
+image-version: latest
+
+modules:
+
+  - type: rpm-ostree
+    repos:
+      - https://pkgs.tailscale.com/stable/fedora/tailscale.repo
+    install:
+      - tailscale
+      - google-lexend-fonts
+    remove:
+      - firefox
+      - firefox-langpacks
+
+  - type: default-flatpaks
+    notify: true
+    system:
+      repo-url: https://flathub.org/repo/flathub.flatpakrepo
+      repo-name: flathub
+      install:
+        - com.brave.Browser
+        - org.mozilla.Thunderbird
+        - com.nextcloud.desktopclient.nextcloudclient
+
+  - type: systemd
+    system:
+      enabled:
+        - rpm-ostreed-automatic.timer
+        - firstboot.service
+      masked:
+        - tailscaled.service
+
+  - type: files
+    files:
+      - source: files/usr
+        destination: /usr
+      # Branding factice : palette mauve, logo générique, wallpaper test.
+      # Sert uniquement à valider que le pipeline matrix produit bien des
+      # images visuellement distinctes.
+
+  - type: signing

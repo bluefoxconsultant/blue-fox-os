@@ -1,0 +1,51 @@
+# Recipe Blue Fox OS - tenant BF (interne).
+# Voir recipes/_base.yml pour le rationale des modules.
+
+name: blue-fox-os-bf
+description: Blue Fox OS - image BF (pilote interne Olivier + Pablo)
+
+base-image: ghcr.io/ublue-os/kinoite-main
+image-version: latest
+
+modules:
+
+  - type: rpm-ostree
+    repos:
+      - https://pkgs.tailscale.com/stable/fedora/tailscale.repo
+    install:
+      - tailscale
+      - google-lexend-fonts
+    remove:
+      - firefox
+      - firefox-langpacks
+
+  - type: default-flatpaks
+    notify: true
+    system:
+      repo-url: https://flathub.org/repo/flathub.flatpakrepo
+      repo-name: flathub
+      install:
+        - com.brave.Browser
+        - org.mozilla.Thunderbird
+        - com.nextcloud.desktopclient.nextcloudclient
+
+  - type: systemd
+    system:
+      enabled:
+        - rpm-ostreed-automatic.timer
+        - firstboot.service
+      masked:
+        - tailscaled.service       # user doit `systemctl enable --now tailscaled` consciemment
+
+  - type: files
+    files:
+      - source: files/usr
+        destination: /usr
+      # Branding BF : wallpapers, splash Plymouth, theme Plasma, theme SDDM
+      # Les fichiers sont matérialisés à partir de config/bf.json par le
+      # script scripts/build_branded_iso.sh avant invocation BlueBuild.
+
+  - type: signing
+
+# Variante Surface (Olivier seulement) : recipe séparé `bf-surface.yml` qui
+# layered le kernel linux-surface depuis le repo Copr.

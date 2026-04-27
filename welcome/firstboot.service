@@ -1,0 +1,20 @@
+[Unit]
+Description=Blue Fox OS first-boot welcome agent
+ConditionPathExists=!/var/lib/bluefox-welcome/done
+After=graphical-session.target NetworkManager-wait-online.service
+Wants=NetworkManager-wait-online.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Tourne en tant que l'utilisateur fraîchement créé. systemd User=
+# nécessite une session ; on délègue plutôt à un .desktop autostart
+# pour garantir le contexte graphique. Voir bluefox_welcome/main.py
+# qui lit /var/lib/bluefox-welcome/needs-rebase et qui se ré-active
+# par /etc/xdg/autostart/bluefox-welcome.desktop si pas done.
+ExecStart=/usr/bin/bluefox-welcome --service-mode
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

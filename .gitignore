@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Build artifacts
+*.iso
+*.iso.sig
+*.iso.sha256
+build/
+dist/
+*.rpm
+
+# BlueBuild local builds
+output/
+
+# Cosign keys (NEVER commit)
+cosign.key
+cosign.pub
+
+# GPG keys (NEVER commit)
+*.gpg
+*.asc
+
+# Tenant configs (live server-side, not in repo)
+config/*.json
+!config/schema.v1.json
+!config/_example.json
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store

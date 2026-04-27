@@ -1,0 +1,54 @@
+{
+  "slug": "bf",
+  "version": "v1",
+  "image_ref": "ghcr.io/bluefoxconsultant/blue-fox-os-bf:latest",
+  "services": {
+    "nextcloud": {
+      "url": "https://nextcloud.bluefoxconsultant.com",
+      "talk_enabled": true
+    },
+    "odoo": {
+      "url": "https://bluefoxconsultant.com"
+    },
+    "vaultwarden": {
+      "url": "https://vault.bluefoxconsultant.com"
+    },
+    "authentik": {
+      "url": "https://auth.bluefoxconsultant.com",
+      "issuer": "https://auth.bluefoxconsultant.com/application/o/blue-fox-os/",
+      "client_id": "blue-fox-os"
+    },
+    "imap": {
+      "host": "imap.migadu.com",
+      "port": 993,
+      "use_tls": true
+    },
+    "smtp": {
+      "host": "smtp.migadu.com",
+      "port": 465,
+      "use_tls": true
+    },
+    "calcom": {
+      "url": "https://calcom.bluefoxconsultant.com"
+    }
+  },
+  "branding": {
+    "logo_url": "https://nextcloud.bluefoxconsultant.com/s/PUBLIC_TOKEN/download/logo.png",
+    "wallpaper_url": "https://nextcloud.bluefoxconsultant.com/s/PUBLIC_TOKEN/download/wallpaper.jpg",
+    "splash_url": "https://nextcloud.bluefoxconsultant.com/s/PUBLIC_TOKEN/download/splash.png",
+    "palette": {
+      "primary": "#1A1A1A",
+      "secondary": "#F5F5F5",
+      "accent": "#E66B00"
+    },
+    "system_font": "Lexend",
+    "plasma_theme": "blue-fox-dark",
+    "sddm_theme": "blue-fox"
+  },
+  "bookmarks": [
+    {"title": "Nextcloud", "url": "https://nextcloud.bluefoxconsultant.com", "pinned": true},
+    {"title": "Odoo", "url": "https://bluefoxconsultant.com", "pinned": true},
+    {"title": "Vaultwarden", "url": "https://vault.bluefoxconsultant.com", "pinned": true},
+    {"title": "Cal.com", "url": "https://calcom.bluefoxconsultant.com", "pinned": false}
+  ]
+}
