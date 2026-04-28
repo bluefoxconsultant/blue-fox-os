@@ -36,6 +36,7 @@ modules:
     system:
       enabled:
         - rpm-ostreed-automatic.timer
+        - bluefox-rebase.service   # premier rebase apres install KS, conditionne au sentinelle
       masked:
         - tailscaled.service       # user doit `systemctl enable --now tailscaled` consciemment
       # Note : firstboot.service activera au prochain build une fois le RPM
