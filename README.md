@@ -11,7 +11,7 @@ Custom Fedora Kinoite image for Blue Fox Inc. clients. Image-based, atomique, br
 | Base | Fedora Kinoite (KDE Plasma 6, Wayland, btrfs+LUKS) |
 | Build | [BlueBuild](https://blue-build.org/) + GitHub Actions |
 | Registry | `ghcr.io/bluefoxconsultant/blue-fox-os-{slug}` |
-| Signature image | cosign |
+| Signature image | cosign keyless (Sigstore OIDC) |
 | Signature ISO | clé GPG BF dédiée |
 | Versioning | CalVer YY.MM (v26.07 = juillet 2026) |
 | Licence | MIT |
@@ -25,8 +25,11 @@ make image SLUG=bf
 # Générer une ISO d'install dérivée
 make iso SLUG=bf
 
-# Vérifier la signature cosign d'une image publiée
+# Vérifier la signature cosign d'une image publiée (keyless OIDC)
 make verify SLUG=bf TAG=v26.07
+# = cosign verify ghcr.io/bluefoxconsultant/blue-fox-os-bf:v26.07 \
+#     --certificate-identity-regexp "https://github.com/bluefoxconsultant/blue-fox-os" \
+#     --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 ```
 
 ## Rebase d'un poste vers Blue Fox OS
