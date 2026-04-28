@@ -34,9 +34,9 @@ modules:
     system:
       enabled:
         - rpm-ostreed-automatic.timer
-        - firstboot.service
       masked:
         - tailscaled.service
+      # firstboot.service : pas encore (RPM welcome P4.1)
 
   - type: files
     files:

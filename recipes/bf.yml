@@ -36,9 +36,11 @@ modules:
     system:
       enabled:
         - rpm-ostreed-automatic.timer
-        - firstboot.service
       masked:
         - tailscaled.service       # user doit `systemctl enable --now tailscaled` consciemment
+      # Note : firstboot.service activera au prochain build une fois le RPM
+      # bluefox-welcome (P4.1) packe et installe. Pour l'instant le binaire
+      # n'existe pas dans l'image, donc on ne l'enable pas.
 
   - type: files
     files:

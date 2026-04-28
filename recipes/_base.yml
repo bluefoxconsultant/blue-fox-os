@@ -36,12 +36,13 @@ modules:
         - com.nextcloud.desktopclient.nextcloudclient
         # Talk client web seulement en v1, pas de Flatpak desktop officiel mature
 
-  # 3. systemd : firstboot service du welcome agent.
+  # 3. systemd : auto-rebase + (futur) firstboot service du welcome agent.
   - type: systemd
     system:
       enabled:
         - rpm-ostreed-automatic.timer  # auto-rebase quotidien stage
-        - firstboot.service            # welcome agent, fourni par RPM dédié
+        # firstboot.service : a activer une fois le RPM bluefox-welcome (P4.1)
+        # construit et inclus via la directive `copy` du recipe.
 
   # 4. Fichiers : assets de branding et welcome agent.
   - type: files
