@@ -20,8 +20,20 @@ env:
   REGISTRY_USER: ${{ github.actor }}
 
 jobs:
+  validate-kickstart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ksvalidator
+        run: |
+          docker run --rm -v "$PWD:/work" fedora:41 sh -c '
+            dnf -y -q install pykickstart >/dev/null 2>&1
+            ksvalidator /work/install/bf-os.ks
+          '
+
   build:
     runs-on: ubuntu-latest
+    needs: validate-kickstart
     permissions:
       contents: read
       packages: write
