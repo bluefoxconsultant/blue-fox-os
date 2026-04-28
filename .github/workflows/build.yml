@@ -44,6 +44,8 @@ jobs:
           python3 -c "import json; json.load(open('config/schema.v1.json'))"
 
       # Cosign signature via keypair BlueBuild canonical.
+      # Note : l'action prefixe ./recipes/ au input recipe automatiquement,
+      # donc on passe juste le filename (pas recipes/${{ matrix.tenant }}.yml).
       # cosign.pub committe au repo, COSIGN_PRIVATE_KEY en GH Secret.
       # Verification client : cosign verify --key cosign.pub <image>
       # Note : la roadmap BFOSD7 envisageait keyless Sigstore Fulcio, mais
@@ -53,7 +55,7 @@ jobs:
       - name: Build image (BlueBuild)
         uses: blue-build/github-action@v1
         with:
-          recipe: recipes/${{ matrix.tenant }}.yml
+          recipe: ${{ matrix.tenant }}.yml
           registry_token: ${{ secrets.GITHUB_TOKEN }}
           cosign_private_key: ${{ secrets.COSIGN_PRIVATE_KEY }}
           pr_event_number: ${{ github.event.number }}
