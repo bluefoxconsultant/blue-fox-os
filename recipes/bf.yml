@@ -32,6 +32,17 @@ modules:
         - org.mozilla.Thunderbird
         - com.nextcloud.desktopclient.nextcloudclient
 
+  # Note : `files` DOIT venir avant `systemd` (gotcha BlueBuild #5) sinon
+  # systemd ne trouve pas les .service ajoutes via files.
+  - type: files
+    files:
+      # source est relatif a <repo>/files/ ; pas besoin du prefixe files/.
+      - source: usr
+        destination: /usr
+      # Branding BF : wallpapers, splash Plymouth, theme Plasma, theme SDDM
+      # Les fichiers sont matérialisés à partir de config/bf.json par le
+      # script scripts/build_branded_iso.sh avant invocation BlueBuild.
+
   - type: systemd
     system:
       enabled:
@@ -42,15 +53,6 @@ modules:
       # Note : firstboot.service activera au prochain build une fois le RPM
       # bluefox-welcome (P4.1) packe et installe. Pour l'instant le binaire
       # n'existe pas dans l'image, donc on ne l'enable pas.
-
-  - type: files
-    files:
-      # source est relatif a <repo>/files/ ; pas besoin du prefixe files/.
-      - source: usr
-        destination: /usr
-      # Branding BF : wallpapers, splash Plymouth, theme Plasma, theme SDDM
-      # Les fichiers sont matérialisés à partir de config/bf.json par le
-      # script scripts/build_branded_iso.sh avant invocation BlueBuild.
 
   - type: signing
 
