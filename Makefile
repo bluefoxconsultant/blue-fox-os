@@ -37,6 +37,7 @@ welcome-rpm:
 lint:
 	@for f in recipes/*.yml; do echo "lint $$f"; python3 -c "import yaml; yaml.safe_load(open('$$f'))" || exit 1; done
 	@python3 -c "import json; json.load(open('config/schema.v1.json'))" && echo "schema.v1.json OK"
+	@python3 -c "import json, glob, jsonschema; s = json.load(open('config/schema.v1.json')); [jsonschema.validate(json.load(open(p)), s) for p in glob.glob('config/*.json') if not p.endswith('schema.v1.json')]; print('config/*.json OK against schema')" || echo "jsonschema non installé : pip install --user jsonschema"
 	@command -v ksvalidator >/dev/null && ksvalidator install/bf-os.ks || echo "ksvalidator non installé, skip"
 
 test:
