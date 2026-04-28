@@ -102,6 +102,27 @@ jobs:
         run: |
           echo "Image: ${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:latest"
 
+  # BFOSL3 / P5.2 : smoke test du pipeline securite. Apres chaque push main,
+  # verifie que la nouvelle image OCI publiee est bien signable + verifiable
+  # avec la cle publique commitee. Coupe la chaine de confiance si jamais
+  # cosign keypair est rotated ou que l'image n'a pas ete signee.
+  verify-published:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        tenant: [bf, factice]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sigstore/cosign-installer@v3
+      - name: cosign verify (latest tag)
+        run: |
+          cosign verify \
+            --key cosign.pub \
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:latest
+
   release:
     # Tag v* déclenche un release : ISO + signatures + draft GitHub release.
     if: startsWith(github.ref, 'refs/tags/v')
