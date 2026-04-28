@@ -15,13 +15,23 @@ SLUG="${SLUG:?SLUG env var required, ex: SLUG=bf}"
 TENANT_CONFIG="${TENANT_CONFIG:-https://config.bluefoxconsultant.com/${SLUG}.json}"
 WORKDIR="$(cd "$(dirname "$0")/.." && pwd)"
 FILES_DIR="${WORKDIR}/files/usr"
+INREPO_FALLBACK="${WORKDIR}/config/${SLUG}.json"
 
 echo "[branded-iso] tenant=${SLUG} config=${TENANT_CONFIG}"
 
-# 1. Fetch config + valider contre le schema.
+# 1. Fetch config + valider contre le schema. Fallback in-repo si l'endpoint
+# n'est pas accessible (utile en CI ou hors ligne pour les tenants commits).
 TMP_CFG="$(mktemp)"
 trap 'rm -f "$TMP_CFG"' EXIT
-curl -fsSL "$TENANT_CONFIG" -o "$TMP_CFG"
+if curl -fsSL "$TENANT_CONFIG" -o "$TMP_CFG" 2>/dev/null; then
+    echo "[branded-iso] fetched from $TENANT_CONFIG"
+elif [ -f "$INREPO_FALLBACK" ]; then
+    echo "[branded-iso] endpoint unreachable, falling back to ${INREPO_FALLBACK}"
+    cp "$INREPO_FALLBACK" "$TMP_CFG"
+else
+    echo "[branded-iso] FAIL: cannot fetch ${TENANT_CONFIG} and no in-repo fallback at ${INREPO_FALLBACK}" >&2
+    exit 1
+fi
 python3 -c "
 import json, jsonschema, sys
 schema = json.load(open('${WORKDIR}/config/schema.v1.json'))
