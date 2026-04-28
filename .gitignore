@@ -17,9 +17,9 @@ dist/
 # BlueBuild local builds
 output/
 
-# Cosign keys (NEVER commit)
+# Cosign : ONLY exclude private key. cosign.pub MUST be committed
+# (BlueBuild + clients use it for `cosign verify`).
 cosign.key
-cosign.pub
 
 # GPG keys (NEVER commit)
 *.gpg

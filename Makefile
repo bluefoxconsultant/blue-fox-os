@@ -29,9 +29,7 @@ iso:
 	bootc-image-builder build --type iso $(IMAGE)
 
 verify:
-	cosign verify $(IMAGE) \
-		--certificate-identity-regexp "https://github.com/bluefoxconsultant/blue-fox-os" \
-		--certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+	cosign verify --key cosign.pub $(IMAGE)
 
 welcome-rpm:
 	cd welcome && rpmbuild -bb welcome.spec --define "_topdir $$PWD/build" --define "_sourcedir $$PWD"

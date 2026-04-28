@@ -43,19 +43,20 @@ jobs:
           python3 -c "import yaml; yaml.safe_load(open('recipes/${{ matrix.tenant }}.yml'))"
           python3 -c "import json; json.load(open('config/schema.v1.json'))"
 
-      # Cosign keyless : signature via OIDC Sigstore Fulcio + log Rekor.
-      # Pas de cle privee a gerer. id-token: write (ci-dessus) est obligatoire.
-      # Verification :
-      #   cosign verify ghcr.io/bluefoxconsultant/blue-fox-os-bf:TAG \
-      #     --certificate-identity-regexp "https://github.com/bluefoxconsultant/blue-fox-os" \
-      #     --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+      # Cosign signature via keypair BlueBuild canonical.
+      # cosign.pub committe au repo, COSIGN_PRIVATE_KEY en GH Secret.
+      # Verification client : cosign verify --key cosign.pub <image>
+      # Note : la roadmap BFOSD7 envisageait keyless Sigstore Fulcio, mais
+      # blue-build/github-action@v1 ne supporte pas l'OIDC keyless out of the
+      # box (exige cosign.key OU COSIGN_PRIVATE_KEY). Keypair est l'approche
+      # canonique BlueBuild ; cle privee scopee aux GH Actions seulement.
       - name: Build image (BlueBuild)
         uses: blue-build/github-action@v1
         with:
           recipe: recipes/${{ matrix.tenant }}.yml
           registry_token: ${{ secrets.GITHUB_TOKEN }}
+          cosign_private_key: ${{ secrets.COSIGN_PRIVATE_KEY }}
           pr_event_number: ${{ github.event.number }}
-          # cosign_private_key intentionnellement omis : keyless OIDC active
 
       - name: Output image reference
         run: |
