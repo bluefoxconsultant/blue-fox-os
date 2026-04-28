@@ -43,11 +43,20 @@ sudo systemctl reboot
 | Dossier | Rôle |
 |---|---|
 | `recipes/` | `_base.yml` commun + `{slug}.yml` par tenant (BlueBuild) |
-| `config/` | `schema.v1.json` + exemples `{slug}.json` consommés par le welcome agent |
-| `install/` | `bf-os.ks` Kickstart Anaconda (autoinstall) |
-| `welcome/` | Agent de premier démarrage PyQt6, packagé en RPM |
+| `config/` | `schema.v1.json` + `bf.json` (manifeste tenant lead) ; clients = server-side |
+| `branding/` | Assets `logo.png` / `wallpaper.jpg` / `splash.png` (BFOSD8 — TBD) |
+| `install/` | `bf-os.ks` Kickstart Anaconda + sentinel `/var/lib/bluefox-welcome/needs-rebase` |
+| `files/` | Overlay vers `/usr` dans l'image OCI : Lexend TTFs, `bluefox-rebase.service`, helper script |
+| `welcome/` | Agent de premier démarrage PyQt6 (5-page wizard), packagé en RPM |
 | `scripts/` | Helpers de build, audit, release |
-| `.github/workflows/` | CI : build matrix par tenant, sign cosign, publie ghcr.io |
+| `.github/workflows/` | CI : validate-kickstart + validate-config + build matrix + verify-published cosign |
+
+## Chaîne d'install
+
+1. Boot ISO Kinoite avec `inst.ks=path/to/bf-os.ks`
+2. Anaconda interactif : LUKS passphrase + user, install btrfs
+3. Reboot → `bluefox-rebase.service` lit le sentinel et fait `rpm-ostree rebase` vers `blue-fox-os-bf:latest`
+4. Reboot → image BF, welcome wizard se lance au premier login graphique
 
 ## Documentation projet
 
