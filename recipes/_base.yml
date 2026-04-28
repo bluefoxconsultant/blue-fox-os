@@ -18,7 +18,7 @@ modules:
       - https://pkgs.tailscale.com/stable/fedora/tailscale.repo
     install:
       - tailscale                # VPN, daemon masked par défaut
-      - google-lexend-fonts      # police système (à valider sur Fedora)
+    # Lexend : pas de paquet en repos Fedora, ship via files/usr/share/fonts/lexend/
     remove:
       - firefox                  # remplacé par Brave Flatpak
       - firefox-langpacks

@@ -15,10 +15,10 @@ modules:
       - https://pkgs.tailscale.com/stable/fedora/tailscale.repo
     install:
       - tailscale
-      - google-lexend-fonts
     remove:
       - firefox
       - firefox-langpacks
+    # Lexend : ship via files module (pas de paquet Fedora).
 
   - type: default-flatpaks
     notify: true
