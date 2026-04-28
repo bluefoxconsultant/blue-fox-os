@@ -33,14 +33,12 @@ jobs:
 
   validate-config:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
       - name: Validate config/*.json against schema.v1.json
         run: |
-          pip install --quiet jsonschema
+          python3 -m pip install --quiet --user jsonschema
           python3 - <<'PY'
           import glob, json, sys
           import jsonschema
