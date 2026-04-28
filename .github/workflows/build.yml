@@ -111,6 +111,7 @@ jobs:
     needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
+      contents: read
       packages: read
     strategy:
       fail-fast: false
