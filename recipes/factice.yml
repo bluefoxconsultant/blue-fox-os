@@ -20,7 +20,7 @@ modules:
       - firefox-langpacks
     # Lexend : ship via files module (pas de paquet Fedora).
 
-  - type: default-flatpaks
+  - type: default-flatpaks@v1
     notify: true
     system:
       repo-url: https://flathub.org/repo/flathub.flatpakrepo

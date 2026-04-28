@@ -24,7 +24,8 @@ modules:
       - firefox-langpacks
 
   # 2. Flatpaks installés au premier boot (Flathub uniquement).
-  - type: default-flatpaks
+  # Pin @v1 (v2 breaking schema, voir https://blue-build.org/reference/modules/default-flatpaks/).
+  - type: default-flatpaks@v1
     notify: true
     system:
       repo-url: https://flathub.org/repo/flathub.flatpakrepo

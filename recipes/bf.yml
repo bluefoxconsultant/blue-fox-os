@@ -20,7 +20,9 @@ modules:
     # Lexend : pas de paquet dans les repos Fedora, les TTFs sont
     # shippes via le module `files` ci-dessous (files/usr/share/fonts/lexend/).
 
-  - type: default-flatpaks
+  # Pin to @v1 — v2 has breaking schema changes documented at
+  # https://blue-build.org/reference/modules/default-flatpaks/
+  - type: default-flatpaks@v1
     notify: true
     system:
       repo-url: https://flathub.org/repo/flathub.flatpakrepo
