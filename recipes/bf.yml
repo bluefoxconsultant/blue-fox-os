@@ -14,6 +14,8 @@ modules:
       - https://pkgs.tailscale.com/stable/fedora/tailscale.repo
     install:
       - tailscale
+      - rclone           # P4.1 : rclone mount NC via systemd --user (BFOSP3)
+      - fuse3            # rclone mount needs fusermount3
     remove:
       - firefox
       - firefox-langpacks
@@ -31,6 +33,7 @@ modules:
         - com.brave.Browser
         - org.mozilla.Thunderbird
         - com.nextcloud.desktopclient.nextcloudclient
+        - com.bitwarden.desktop   # P4.1 : pre-seed Vaultwarden URL via apply_bitwarden_prefs
 
   # Note : `files` DOIT venir avant `systemd` (gotcha BlueBuild #5) sinon
   # systemd ne trouve pas les .service ajoutes via files.

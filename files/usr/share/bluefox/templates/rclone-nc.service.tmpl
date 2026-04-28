@@ -1,0 +1,15 @@
+[Unit]
+Description=Blue Fox OS - Nextcloud rclone mount
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStartPre=/usr/bin/mkdir -p {mount_point}
+ExecStart=/usr/bin/rclone mount bf-nc: {mount_point} --vfs-cache-mode writes --vfs-cache-max-age 24h --dir-cache-time 5m --poll-interval 30s
+ExecStop=/bin/fusermount3 -u {mount_point}
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
