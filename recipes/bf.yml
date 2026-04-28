@@ -44,7 +44,8 @@ modules:
 
   - type: files
     files:
-      - source: files/usr
+      # source est relatif a <repo>/files/ ; pas besoin du prefixe files/.
+      - source: usr
         destination: /usr
       # Branding BF : wallpapers, splash Plymouth, theme Plasma, theme SDDM
       # Les fichiers sont matérialisés à partir de config/bf.json par le

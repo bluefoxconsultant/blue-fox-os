@@ -47,7 +47,8 @@ modules:
   # 4. Fichiers : assets de branding et welcome agent.
   - type: files
     files:
-      - source: files/usr
+      # source est relatif a <repo>/files/ (conventionnel BlueBuild).
+      - source: usr
         destination: /usr
 
   # 5. Signature cosign (uniquement en CI ; ignoré en build local).
