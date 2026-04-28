@@ -110,6 +110,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      packages: read
     strategy:
       fail-fast: false
       matrix:
@@ -117,6 +119,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: sigstore/cosign-installer@v3
+      - name: Login to GHCR (private repo, image pull requires auth)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       - name: cosign verify (latest tag)
         run: |
           cosign verify \
