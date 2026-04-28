@@ -1,0 +1,46 @@
+#!/bin/bash
+# /usr/libexec/bluefox-rebase — premier rebase apres install Kickstart.
+#
+# Lit /var/lib/bluefox-welcome/needs-rebase (sentinelle posee par P3.2),
+# rebase rpm-ostree vers l'image OCI BF (ou tenant si tenant.json present),
+# retire le sentinelle et reboot. Si le rebase echoue, le sentinelle reste
+# en place — l'unite re-tente au prochain boot.
+#
+# Note v1 : utilise ostree-unverified-image: en attendant la config
+# /etc/containers/policy.json pour cosign verify (BFOSL3, audit securite).
+set -euo pipefail
+
+FLAG=/var/lib/bluefox-welcome/needs-rebase
+TENANT=/usr/share/bluefox/tenant.json
+DEFAULT_IMAGE_REF=ghcr.io/bluefoxconsultant/blue-fox-os-bf:latest
+
+if [ ! -f "$FLAG" ]; then
+    echo "[bluefox-rebase] no sentinelle ; nothing to do"
+    exit 0
+fi
+
+IMAGE_REF=""
+if [ -f "$TENANT" ]; then
+    IMAGE_REF=$(python3 -c "
+import json, sys
+try:
+    print(json.load(open('$TENANT')).get('image_ref', ''))
+except Exception:
+    pass
+" 2>/dev/null || true)
+fi
+IMAGE_REF="${IMAGE_REF:-$DEFAULT_IMAGE_REF}"
+
+echo "[bluefox-rebase] rebasing to $IMAGE_REF"
+
+# ostree-unverified-image en v1 ; switcher vers ostree-image-signed apres
+# config cosign policy (BFOSL3).
+if rpm-ostree rebase "ostree-unverified-image:docker://${IMAGE_REF}" ; then
+    rm -f "$FLAG"
+    echo "[bluefox-rebase] rebase staged ; rebooting in 10s"
+    sleep 10
+    systemctl reboot
+else
+    echo "[bluefox-rebase] rebase failed ; sentinelle preservee pour retry au prochain boot"
+    exit 1
+fi

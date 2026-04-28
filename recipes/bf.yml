@@ -32,16 +32,8 @@ modules:
         - org.mozilla.Thunderbird
         - com.nextcloud.desktopclient.nextcloudclient
 
-  - type: systemd
-    system:
-      enabled:
-        - rpm-ostreed-automatic.timer
-      masked:
-        - tailscaled.service       # user doit `systemctl enable --now tailscaled` consciemment
-      # Note : firstboot.service activera au prochain build une fois le RPM
-      # bluefox-welcome (P4.1) packe et installe. Pour l'instant le binaire
-      # n'existe pas dans l'image, donc on ne l'enable pas.
-
+  # Note : `files` DOIT venir avant `systemd` (gotcha BlueBuild #5) sinon
+  # systemd ne trouve pas les .service ajoutes via files.
   - type: files
     files:
       # source est relatif a <repo>/files/ ; pas besoin du prefixe files/.
@@ -50,6 +42,17 @@ modules:
       # Branding BF : wallpapers, splash Plymouth, theme Plasma, theme SDDM
       # Les fichiers sont matérialisés à partir de config/bf.json par le
       # script scripts/build_branded_iso.sh avant invocation BlueBuild.
+
+  - type: systemd
+    system:
+      enabled:
+        - rpm-ostreed-automatic.timer
+        - bluefox-rebase.service   # premier rebase apres install KS, conditionne au sentinelle
+      masked:
+        - tailscaled.service       # user doit `systemctl enable --now tailscaled` consciemment
+      # Note : firstboot.service activera au prochain build une fois le RPM
+      # bluefox-welcome (P4.1) packe et installe. Pour l'instant le binaire
+      # n'existe pas dans l'image, donc on ne l'enable pas.
 
   - type: signing
 

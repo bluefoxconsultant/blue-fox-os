@@ -1,0 +1,18 @@
+[Unit]
+Description=Blue Fox OS first-boot rebase to tenant image
+Documentation=https://github.com/bluefoxconsultant/blue-fox-os
+ConditionPathExists=/var/lib/bluefox-welcome/needs-rebase
+After=network-online.target NetworkManager-wait-online.service
+Wants=network-online.target NetworkManager-wait-online.service
+Before=graphical.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/bluefox-rebase
+StandardOutput=journal
+StandardError=journal
+RemainAfterExit=no
+TimeoutStartSec=20min
+
+[Install]
+WantedBy=multi-user.target

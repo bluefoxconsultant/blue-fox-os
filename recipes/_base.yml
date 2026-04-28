@@ -36,20 +36,22 @@ modules:
         - com.nextcloud.desktopclient.nextcloudclient
         # Talk client web seulement en v1, pas de Flatpak desktop officiel mature
 
-  # 3. systemd : auto-rebase + (futur) firstboot service du welcome agent.
-  - type: systemd
-    system:
-      enabled:
-        - rpm-ostreed-automatic.timer  # auto-rebase quotidien stage
-        # firstboot.service : a activer une fois le RPM bluefox-welcome (P4.1)
-        # construit et inclus via la directive `copy` du recipe.
-
-  # 4. Fichiers : assets de branding et welcome agent.
+  # 3. Fichiers : assets de branding, welcome agent, units systemd.
+  # DOIT venir avant le module systemd (gotcha BlueBuild #5).
   - type: files
     files:
       # source est relatif a <repo>/files/ (conventionnel BlueBuild).
       - source: usr
         destination: /usr
+
+  # 4. systemd : auto-rebase + premier rebase post-install + (futur) firstboot wizard.
+  - type: systemd
+    system:
+      enabled:
+        - rpm-ostreed-automatic.timer  # auto-rebase quotidien stage
+        - bluefox-rebase.service       # premier rebase post-Kickstart vers tenant image
+        # firstboot.service : a activer une fois le RPM bluefox-welcome (P4.1)
+        # construit et inclus via la directive `copy` du recipe.
 
   # 5. Signature cosign (uniquement en CI ; ignoré en build local).
   - type: signing
