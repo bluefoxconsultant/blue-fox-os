@@ -31,9 +31,35 @@ jobs:
             ksvalidator /work/install/bf-os.ks
           '
 
+  validate-config:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate config/*.json against schema.v1.json
+        run: |
+          python3 -m pip install --quiet --user jsonschema
+          python3 - <<'PY'
+          import glob, json, sys
+          import jsonschema
+          schema = json.load(open('config/schema.v1.json'))
+          rc = 0
+          for path in sorted(glob.glob('config/*.json')):
+              if path.endswith('schema.v1.json'):
+                  continue
+              data = json.load(open(path))
+              try:
+                  jsonschema.validate(data, schema)
+                  print(f'OK    {path}  slug={data.get("slug","?")}')
+              except jsonschema.ValidationError as e:
+                  print(f'FAIL  {path}  {e.message}')
+                  rc = 1
+          sys.exit(rc)
+          PY
+
   build:
     runs-on: ubuntu-latest
-    needs: validate-kickstart
+    needs: [validate-kickstart, validate-config]
     permissions:
       contents: read
       packages: write

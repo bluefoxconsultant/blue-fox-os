@@ -1,0 +1,58 @@
+{
+  "slug": "bf",
+  "version": "v1",
+  "image_ref": "ghcr.io/bluefoxconsultant/blue-fox-os-bf:latest",
+  "services": {
+    "nextcloud": {
+      "url": "https://nextcloud.bluefoxconsultant.com",
+      "talk_enabled": true
+    },
+    "odoo": {
+      "url": "https://bluefoxconsultant.com"
+    },
+    "vaultwarden": {
+      "url": "https://vault.bluefoxconsultant.com"
+    },
+    "authentik": {
+      "url": "https://auth.bluefoxconsultant.com",
+      "issuer": "https://auth.bluefoxconsultant.com/application/o/blue-fox-os/",
+      "client_id": "blue-fox-os"
+    },
+    "imap": {
+      "host": "imap.migadu.com",
+      "port": 993,
+      "use_tls": true
+    },
+    "smtp": {
+      "host": "smtp.migadu.com",
+      "port": 465,
+      "use_tls": true
+    },
+    "talk": {
+      "url": "https://nextcloud.bluefoxconsultant.com/index.php/apps/spreed"
+    },
+    "calcom": {
+      "url": "https://calcom.bluefoxconsultant.com"
+    }
+  },
+  "branding": {
+    "logo_url": "https://raw.githubusercontent.com/bluefoxconsultant/blue-fox-os/main/branding/logo.png",
+    "wallpaper_url": "https://raw.githubusercontent.com/bluefoxconsultant/blue-fox-os/main/branding/wallpaper.jpg",
+    "splash_url": "https://raw.githubusercontent.com/bluefoxconsultant/blue-fox-os/main/branding/splash.png",
+    "palette": {
+      "primary": "#29ABE1",
+      "secondary": "#2D3031",
+      "accent": "#29ABE1"
+    },
+    "system_font": "Lexend",
+    "plasma_theme": "blue-fox-dark",
+    "sddm_theme": "blue-fox"
+  },
+  "bookmarks": [
+    {"title": "Nextcloud", "url": "https://nextcloud.bluefoxconsultant.com", "pinned": true},
+    {"title": "Odoo", "url": "https://bluefoxconsultant.com", "pinned": true},
+    {"title": "Vaultwarden", "url": "https://vault.bluefoxconsultant.com", "pinned": true},
+    {"title": "Cal.com", "url": "https://calcom.bluefoxconsultant.com", "pinned": false},
+    {"title": "Authentik", "url": "https://auth.bluefoxconsultant.com", "pinned": false}
+  ]
+}

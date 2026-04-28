@@ -25,10 +25,13 @@ cosign.key
 *.gpg
 *.asc
 
-# Tenant configs (live server-side, not in repo)
+# Tenant configs : vivent cote serveur, pas dans le repo.
+# Exceptions : schema, exemple, et bf.json (BF est le tenant lead du projet
+# OSS et son manifeste ne contient que des URLs publiques).
 config/*.json
 !config/schema.v1.json
 !config/_example.json
+!config/bf.json
 
 # Editor
 .vscode/
