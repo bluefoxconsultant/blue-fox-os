@@ -1,5 +1,5 @@
 Name:           bluefox-welcome
-Version:        0.1.0
+Version:        0.2.0
 Release:        1%{?dist}
 Summary:        Blue Fox OS first-boot welcome agent
 
@@ -16,6 +16,8 @@ Requires:       python3
 Requires:       python3-qt6
 Requires:       systemd
 Requires:       kaccounts-providers
+Requires:       rclone
+Requires:       fuse3
 
 %description
 Agent de premier démarrage pour Blue Fox OS. Wizard 4-5 écrans
@@ -59,5 +61,9 @@ mkdir -p %{buildroot}%{_localstatedir}/lib/bluefox-welcome
 %systemd_postun_with_restart firstboot.service
 
 %changelog
+* Tue Apr 28 2026 Olivier Morneau <olivier@bluefoxconsultant.com> - 0.2.0-1
+- Wire P4.1 integrations: rclone mount, kcmshell6 KAccounts launcher,
+  Bitwarden Flatpak prefs, Brave managed policy. Add tests + apply/ submodule.
+
 * Mon Apr 27 2026 Olivier Morneau <olivier@bluefoxconsultant.com> - 0.1.0-1
 - Squelette initial.

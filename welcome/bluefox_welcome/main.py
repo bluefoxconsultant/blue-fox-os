@@ -1,41 +1,39 @@
 """Blue Fox OS welcome agent — wizard premier démarrage.
 
-Architecture cible (BFOSP1, BFOSP3, BFOSP4, BFOSI8, BFOSI9, BFOSD8) :
+Architecture (BFOSP1, BFOSP3, BFOSP4, BFOSI8, BFOSI9, BFOSD8) :
 
-- KAccounts pour mail / calendar / contacts NC (Akonadi DAV)
+- KAccounts pour mail / calendar / contacts NC (Akonadi DAV) — kcmshell6 v1
 - rclone WebDAV systemd --user mount pour fichiers NC (KIO trop lent)
 - Bitwarden Flatpak prefs pour Vaultwarden (URL pre-config)
 - Thunderbird : ouvert au firstboot, autoconfig Migadu via CNAME
 - Brave Sync : seed phrase stockee dans Vaultwarden, copy-paste manuelle
 - Login machine : statu quo BFOSI2 (compte local, sssd v1.1)
 
-Le wizard ne fait PAS tout en silence : il oriente l'utilisateur vers les
-ouvertures necessaires (Authentik MFA, Vaultwarden, Brave Sync) et configure
-en arriere-plan ce qui peut l'etre (rclone mount, prefs files).
+Le wizard collecte les inputs (email + mot de passe NC + choix mount),
+puis _finalize() orchestre les apply_* en best-effort : un échec d'une
+intégration ne bloque pas les autres, et tout résultat est affiché dans
+la page de récap.
 """
 import argparse
-import json
 import logging
 import subprocess
 import sys
 from pathlib import Path
 
+from .apply import (
+    apply_bitwarden_prefs,
+    apply_brave_policy,
+    apply_kaccounts,
+    apply_rclone_mount,
+)
+from .tenant import get_service_url, get_slug, load_tenant
+
 LOG = logging.getLogger("bluefox-welcome")
 STATE_DIR = Path("/var/lib/bluefox-welcome")
 DONE_FLAG = STATE_DIR / "done"
 NEEDS_REBASE_FLAG = STATE_DIR / "needs-rebase"
-TENANT_FILE = Path("/usr/share/bluefox/tenant.json")
 USER_CONFIG_DIR = Path.home() / ".config" / "bluefox-welcome"
 USER_LOG = Path.home() / ".local/share/bluefox-welcome/firstboot.log"
-
-
-def load_tenant() -> dict:
-    if TENANT_FILE.exists():
-        try:
-            return json.loads(TENANT_FILE.read_text())
-        except Exception as e:
-            LOG.warning("failed to load %s: %s", TENANT_FILE, e)
-    return {}
 
 
 def cli() -> int:
@@ -85,14 +83,20 @@ def run_wizard(tenant: dict) -> int:
     wizard.addPage(_authentik_page(tenant, QWizardPage, QVBoxLayout, QLabel,
                                    QLineEdit, QPushButton))
     wizard.addPage(_files_page(tenant, QWizardPage, QVBoxLayout, QLabel,
-                               QCheckBox))
+                               QCheckBox, QLineEdit))
     wizard.addPage(_vault_page(tenant, QWizardPage, QVBoxLayout, QLabel,
                                QPushButton))
-    wizard.addPage(_done_page(tenant, QWizardPage, QVBoxLayout, QTextEdit))
+    done_page = _done_page(tenant, wizard, QWizardPage, QVBoxLayout, QTextEdit)
+    wizard.addPage(done_page)
 
     rc = wizard.exec()
     if rc == QWizard.DialogCode.Accepted:
-        _finalize(wizard.field("user_email") or "")
+        _finalize_and_apply(
+            tenant=tenant,
+            user_email=wizard.field("user_email") or "",
+            do_mount=bool(wizard.field("do_mount")),
+            nc_password=wizard.field("nc_password") or "",
+        )
         return 0
     return 1
 
@@ -100,14 +104,14 @@ def run_wizard(tenant: dict) -> int:
 def _welcome_page(tenant, QWizardPage, QVBoxLayout, QLabel):
     page = QWizardPage()
     page.setTitle("Bienvenue sur Blue Fox OS")
-    slug = tenant.get("slug", "?")
+    slug = get_slug(tenant)
     layout = QVBoxLayout()
     layout.addWidget(QLabel(
         f"Cet assistant configure votre poste pour le tenant <b>{slug}</b>."))
     layout.addWidget(QLabel(
-        "Etapes : compte Authentik, fichiers Nextcloud, vault Bitwarden, sync Brave."))
+        "Étapes : compte Authentik, fichiers Nextcloud, vault Bitwarden, sync Brave."))
     layout.addWidget(QLabel(
-        "Vous pourrez ignorer une etape avec Suivant et la reprendre plus tard."))
+        "Vous pouvez ignorer une étape avec Suivant et la reprendre plus tard."))
     page.setLayout(layout)
     return page
 
@@ -115,16 +119,16 @@ def _welcome_page(tenant, QWizardPage, QVBoxLayout, QLabel):
 def _authentik_page(tenant, QWizardPage, QVBoxLayout, QLabel, QLineEdit,
                     QPushButton):
     page = QWizardPage()
-    page.setTitle("Identite — Authentik")
-    auth_url = tenant.get("services", {}).get("authentik", {}).get(
-        "url", "https://auth.bluefoxconsultant.com")
+    page.setTitle("Identité — Authentik")
+    auth_url = get_service_url(tenant, "authentik",
+                               "https://auth.bluefoxconsultant.com")
     layout = QVBoxLayout()
     layout.addWidget(QLabel(
-        "Votre compte unique Blue Fox donne acces a Nextcloud + Odoo + Vaultwarden "
-        "via le meme mot de passe (BFOSI2)."))
+        "Votre compte unique Blue Fox donne accès à Nextcloud + Odoo + Vaultwarden "
+        "via le même mot de passe (BFOSI2)."))
     layout.addWidget(QLabel(
-        "Connectez-vous a Authentik dans le navigateur pour configurer le MFA TOTP "
-        "la premiere fois."))
+        "Connectez-vous à Authentik dans le navigateur pour configurer le MFA TOTP "
+        "la première fois."))
     btn = QPushButton(f"Ouvrir {auth_url}")
     btn.clicked.connect(lambda: subprocess.Popen(["xdg-open", auth_url]))
     layout.addWidget(btn)
@@ -137,11 +141,11 @@ def _authentik_page(tenant, QWizardPage, QVBoxLayout, QLabel, QLineEdit,
     return page
 
 
-def _files_page(tenant, QWizardPage, QVBoxLayout, QLabel, QCheckBox):
+def _files_page(tenant, QWizardPage, QVBoxLayout, QLabel, QCheckBox, QLineEdit):
     page = QWizardPage()
     page.setTitle("Fichiers Nextcloud")
-    nc_url = tenant.get("services", {}).get("nextcloud", {}).get(
-        "url", "https://nextcloud.bluefoxconsultant.com")
+    nc_url = get_service_url(tenant, "nextcloud",
+                             "https://nextcloud.bluefoxconsultant.com")
     layout = QVBoxLayout()
     layout.addWidget(QLabel("Configuration rclone WebDAV mount (BFOSP3)."))
     layout.addWidget(QLabel(f"Serveur : <code>{nc_url}</code>"))
@@ -151,8 +155,16 @@ def _files_page(tenant, QWizardPage, QVBoxLayout, QLabel, QCheckBox):
     do_mount.setChecked(True)
     layout.addWidget(do_mount)
     page.registerField("do_mount", do_mount)
-    layout.addWidget(QLabel("Mail / calendrier / contacts seront ajoutes "
-                            "a KAccounts (System Settings -> Online Accounts)."))
+
+    layout.addWidget(QLabel("Mot de passe Nextcloud (laisser vide si do_mount décoché) :"))
+    nc_password = QLineEdit()
+    nc_password.setEchoMode(QLineEdit.EchoMode.Password)
+    nc_password.setPlaceholderText("••••••••")
+    layout.addWidget(nc_password)
+    page.registerField("nc_password", nc_password)
+
+    layout.addWidget(QLabel("Mail / calendrier / contacts seront ajoutés "
+                            "à KAccounts (System Settings → Online Accounts)."))
     page.setLayout(layout)
     return page
 
@@ -160,32 +172,33 @@ def _files_page(tenant, QWizardPage, QVBoxLayout, QLabel, QCheckBox):
 def _vault_page(tenant, QWizardPage, QVBoxLayout, QLabel, QPushButton):
     page = QWizardPage()
     page.setTitle("Vault Bitwarden et Brave Sync")
-    vault_url = tenant.get("services", {}).get("vaultwarden", {}).get(
-        "url", "https://vault.bluefoxconsultant.com")
+    vault_url = get_service_url(tenant, "vaultwarden",
+                                "https://vault.bluefoxconsultant.com")
     layout = QVBoxLayout()
     layout.addWidget(QLabel(
-        f"1. Bitwarden Desktop pre-configure pour : <code>{vault_url}</code>"))
+        f"<b>1.</b> Bitwarden Desktop sera pré-configuré pour : <code>{vault_url}</code>"))
+    layout.addWidget(QLabel(
+        "Lance Bitwarden depuis le menu après l'assistant et connecte-toi "
+        "— l'URL self-hosted sera déjà remplie."))
     btn_v = QPushButton(f"Ouvrir {vault_url}")
     btn_v.clicked.connect(lambda: subprocess.Popen(["xdg-open", vault_url]))
     layout.addWidget(btn_v)
+    layout.addWidget(QLabel("<br><b>2.</b> Brave Sync (BFOSP4) — seed phrase via Vaultwarden :"))
     layout.addWidget(QLabel(
-        "<br>2. Brave Sync (BFOSP4) : retrouvez l'entree "
-        "'Brave Sync - {prenom}' dans Vaultwarden et copiez la seed dans "
-        "Brave Settings -> Sync."))
-    layout.addWidget(QLabel(
-        "Si c'est votre premiere machine BF OS, creez la chaine maintenant "
-        "dans Brave puis sauvegardez la seed dans Vaultwarden."))
-    btn_b = QPushButton("Ouvrir Brave Settings -> Sync")
-    btn_b.clicked.connect(lambda: subprocess.Popen(
-        ["xdg-open", "brave://settings/braveSync"]))
-    layout.addWidget(btn_b)
+        "<ol>"
+        "<li>Première machine BF OS : ouvre Brave, Settings → Sync → "
+        "« Start a new sync chain », sauvegarde la seed dans Vaultwarden "
+        "(entrée « Brave Sync — prénom »).</li>"
+        "<li>Machines suivantes : récupère la seed dans Vaultwarden et colle-la "
+        "dans Brave Settings → Sync → « I have a sync code ».</li>"
+        "</ol>"))
     page.setLayout(layout)
     return page
 
 
-def _done_page(tenant, QWizardPage, QVBoxLayout, QTextEdit):
+def _done_page(tenant, wizard, QWizardPage, QVBoxLayout, QTextEdit):
     page = QWizardPage()
-    page.setTitle("Recapitulatif")
+    page.setTitle("Récapitulatif")
     layout = QVBoxLayout()
     summary = QTextEdit()
     summary.setReadOnly(True)
@@ -193,37 +206,74 @@ def _done_page(tenant, QWizardPage, QVBoxLayout, QTextEdit):
     page.setLayout(layout)
 
     def init():
-        slug = tenant.get("slug", "?")
-        email = page.field("user_email") or "?"
-        do_mount = bool(page.field("do_mount"))
+        slug = get_slug(tenant)
+        email = wizard.field("user_email") or "?"
+        do_mount = bool(wizard.field("do_mount"))
         text = (
-            f"<h3>Configuration terminee</h3>"
+            f"<h3>Configuration prête</h3>"
             f"<ul>"
             f"<li>Tenant : <b>{slug}</b></li>"
             f"<li>Compte BF : {email}</li>"
             f"<li>NC Files (rclone mount) : "
-            f"{'configure au prochain login' if do_mount else 'reporte'}</li>"
-            f"<li>Mail/Calendar/Contacts : a finaliser dans System Settings -> Online Accounts</li>"
-            f"<li>Brave Sync seed : conservee dans Vaultwarden</li>"
+            f"{'configuré au clic suivant' if do_mount else 'reporté'}</li>"
+            f"<li>Bitwarden Desktop : URL Vaultwarden injectée au clic suivant</li>"
+            f"<li>Brave : policy + extension Floccus poussées au clic suivant</li>"
+            f"<li>Mail/Calendar/Contacts : System Settings ouvert au clic suivant</li>"
             f"</ul>"
-            f"<p>Cliquez <b>Terminer</b> pour finaliser le firstboot.</p>")
+            f"<p>Cliquez <b>Terminer</b> pour exécuter les configurations.</p>")
         summary.setHtml(text)
 
     page.initializePage = init
     return page
 
 
-def _finalize(user_email: str) -> None:
-    """Ecrit le done flag et un journal de session."""
+def _finalize_and_apply(
+    tenant: dict,
+    user_email: str,
+    do_mount: bool,
+    nc_password: str,
+) -> None:
+    """Run the apply_* integrations, then write the done flag.
+
+    Best-effort: one failed apply does not abort the others. All results
+    are logged and surfaced in ~/.local/share/bluefox-welcome/firstboot.log.
+    """
+    results: list[tuple[str, bool, str]] = []
+
+    if do_mount and nc_password:
+        ok, msg = apply_rclone_mount(tenant, user=user_email, password=nc_password)
+        results.append(("rclone_mount", ok, msg))
+    else:
+        results.append(("rclone_mount", False, "ignoré (do_mount décoché ou mdp vide)"))
+
+    ok, msg = apply_bitwarden_prefs(tenant)
+    results.append(("bitwarden_prefs", ok, msg))
+
+    ok, msg = apply_brave_policy(tenant)
+    results.append(("brave_policy", ok, msg))
+
+    ok, msg = apply_kaccounts(tenant)
+    results.append(("kaccounts", ok, msg))
+
+    try:
+        USER_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with USER_LOG.open("a") as fh:
+            for name, ok, msg in results:
+                fh.write(f"{'OK' if ok else 'FAIL'} {name}: {msg}\n")
+    except Exception as e:
+        LOG.warning("could not write %s: %s", USER_LOG, e)
+
+    for name, ok, msg in results:
+        LOG.info("apply %s: ok=%s msg=%s", name, ok, msg)
+
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
+        DONE_FLAG.touch()
     except PermissionError:
         LOG.warning("cannot write %s as user ; firstboot.service should mkdir at /var/lib", STATE_DIR)
-        return
-    DONE_FLAG.touch()
     USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     (USER_CONFIG_DIR / "user_email").write_text(user_email + "\n")
-    LOG.info("wizard finished ; flagged done at %s ; email recorded", DONE_FLAG)
+    LOG.info("wizard finished ; flagged done at %s", DONE_FLAG)
 
 
 if __name__ == "__main__":
