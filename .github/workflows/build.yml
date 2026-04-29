@@ -246,6 +246,7 @@ jobs:
             quay.io/centos-bootc/bootc-image-builder:latest \
             --type anaconda-iso \
             --use-librepo=true \
+            --rootfs btrfs \
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:latest
 
       - name: Stage artifacts (rename + checksum)
