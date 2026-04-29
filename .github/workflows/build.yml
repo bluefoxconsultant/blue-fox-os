@@ -108,6 +108,7 @@ jobs:
       matrix:
         tenant:
           - bf
+          - bf-surface
           - factice
 
     steps:
@@ -183,7 +184,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        tenant: [bf, factice]
+        tenant: [bf, bf-surface, factice]
     steps:
       - uses: actions/checkout@v4
       - uses: sigstore/cosign-installer@v3
