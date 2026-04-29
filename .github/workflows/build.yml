@@ -122,11 +122,18 @@ jobs:
       # present dans l'image au moment ou le module script (recipe) lance
       # rpm-ostree install. Le RPM disparait du commit final via le cleanup
       # script (voir recipes/_base notes).
+      # Stage le RPM dans files/extras/ (HORS de files/usr/) : le module
+      # files de la recipe ne copie que files/usr/, donc le RPM ne sera PAS
+      # copie dans l'image finale. Mais BlueBuild bind-mount le repertoire
+      # files/ entier sur /tmp/files dans le container de build, donc le
+      # module script peut lire le RPM depuis /tmp/files/extras/. Pourquoi
+      # pas /usr/local : c'est un symlink vers /var/usrlocal qui est exclu
+      # de l'image immutable Kinoite (FHS adjustment).
       - name: Download bluefox-welcome RPM
         uses: actions/download-artifact@v4
         with:
           name: bluefox-welcome-rpm
-          path: files/usr/local/lib/bluefox/rpms/
+          path: files/extras/
 
       # Le snippet du module BlueBuild script ne fait pas d'expansion glob
       # (script.nu invoque commands sans subshell bash), donc on aplatit le
@@ -134,9 +141,9 @@ jobs:
       # litteralement a rpm-ostree install dans la recipe.
       - name: Normalize RPM filename
         run: |
-          mv files/usr/local/lib/bluefox/rpms/bluefox-welcome-*.noarch.rpm \
-             files/usr/local/lib/bluefox/rpms/bluefox-welcome.noarch.rpm
-          ls -la files/usr/local/lib/bluefox/rpms/
+          mv files/extras/bluefox-welcome-*.noarch.rpm \
+             files/extras/bluefox-welcome.noarch.rpm
+          ls -la files/extras/
 
       # Cosign signature via keypair BlueBuild canonical.
       # Note : l'action prefixe ./recipes/ au input recipe automatiquement,

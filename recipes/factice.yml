@@ -44,7 +44,7 @@ modules:
   # Installe le RPM bluefox-welcome stage par la CI (cf. recipes/bf.yml).
   - type: script
     snippets:
-      - rpm-ostree install /usr/local/lib/bluefox/rpms/bluefox-welcome.noarch.rpm && rm -rf /usr/local/lib/bluefox/rpms
+      - rpm-ostree install /tmp/files/extras/bluefox-welcome.noarch.rpm
 
   - type: systemd
     system:

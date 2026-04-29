@@ -46,12 +46,14 @@ modules:
       # Les fichiers sont matérialisés à partir de config/bf.json par le
       # script scripts/build_branded_iso.sh avant invocation BlueBuild.
 
-  # Installe le RPM bluefox-welcome qui a ete stage par la CI dans
-  # files/usr/local/lib/bluefox/rpms/. Apres install, on nettoie le RPM
-  # source pour ne pas trainer du build dans l'image finale.
+  # Installe le RPM bluefox-welcome stage par la CI dans files/extras/.
+  # /tmp/files est le bind mount du repertoire files/ du repo pendant le
+  # build BlueBuild ; le RPM est lu depuis la et n'apparait pas dans
+  # l'image finale (parce que le module files ci-dessus copie seulement
+  # files/usr/, pas files/extras/).
   - type: script
     snippets:
-      - rpm-ostree install /usr/local/lib/bluefox/rpms/bluefox-welcome.noarch.rpm && rm -rf /usr/local/lib/bluefox/rpms
+      - rpm-ostree install /tmp/files/extras/bluefox-welcome.noarch.rpm
 
   - type: systemd
     system:
