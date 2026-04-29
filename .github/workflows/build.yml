@@ -3,12 +3,10 @@ name: Build Blue Fox OS images
 on:
   push:
     branches: [main]
-    paths:
-      - 'recipes/**'
-      - 'welcome/**'
-      - 'install/**'
-      - 'config/schema.v1.json'
-      - '.github/workflows/build.yml'
+    tags: ['v*']     # tag v* declenche le job release (P6.1 ISO build)
+    # paths filter retire : on accepte de re-run sur tous les push main
+    # pour que les tag pushes (qui n'ont pas de notion de paths modifies
+    # dans le sens habituel) declenchent toujours.
   pull_request:
   workflow_dispatch:
   schedule:
