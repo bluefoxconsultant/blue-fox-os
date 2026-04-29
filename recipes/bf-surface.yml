@@ -1,0 +1,82 @@
+# Recipe Blue Fox OS - variante Surface (Olivier Surface Studio 2 + Pro 7+).
+# Identique a bf.yml mais layered avec le kernel linux-surface depuis le
+# repo officiel pour activer le tactile, le pen, les capteurs et le bouton
+# Surface.
+#
+# Source : https://github.com/linux-surface/linux-surface
+# Repo Fedora : https://pkg.surfacelinux.com/fedora/linux-surface.repo
+#   (auto-detect $releasever, donc suit la base Kinoite-main sans bumper)
+#
+# Le kernel-surface est build avec Provides/Obsoletes qui remplacent le
+# kernel stock de Kinoite quand `rpm-ostree install` resout les deps.
+
+name: blue-fox-os-bf-surface
+description: Blue Fox OS - image BF + kernel linux-surface (Surface Studio/Pro)
+
+base-image: ghcr.io/ublue-os/kinoite-main
+image-version: latest
+
+modules:
+
+  - type: rpm-ostree
+    repos:
+      - https://pkgs.tailscale.com/stable/fedora/tailscale.repo
+      # Repo officiel linux-surface (utilise $releasever, pas besoin de pin
+      # de version Fedora). GPG key signee par l'equipe linux-surface,
+      # check active dans la .repo.
+      - https://pkg.surfacelinux.com/fedora/linux-surface.repo
+    install:
+      - tailscale
+      - rclone
+      - fuse3
+      # Kernel + modules Surface (touch, pen, type cover, sensors, Surface
+      # button). kernel-surface Provides: kernel et Obsoletes le stock pour
+      # forcer la substitution propre lors du depsolve.
+      - kernel-surface
+      # iptsd : daemon userspace pour stylet et tactile precis (IPTS Touch).
+      - iptsd
+      # surface-secureboot : modules signed avec la cle Microsoft Surface
+      # pour passer Secure Boot sans desactiver MOK manuellement.
+      - surface-secureboot
+      # Note : on n'installe PAS libwacom-surface car il conflicte avec
+      # libwacom du stock Fedora qui est plus recent. La calibration pen
+      # marche correctement avec libwacom stock + le kernel-surface ; on
+      # ajoutera libwacom-surface plus tard via override-replace si pen
+      # behavior est off sur le Surface Studio.
+    remove:
+      - firefox
+      - firefox-langpacks
+
+  - type: default-flatpaks@v1
+    notify: true
+    system:
+      repo-url: https://flathub.org/repo/flathub.flatpakrepo
+      repo-name: flathub
+      install:
+        - com.brave.Browser
+        - org.mozilla.Thunderbird
+        - com.nextcloud.desktopclient.nextcloudclient
+        - com.bitwarden.desktop
+
+  - type: files
+    files:
+      - source: usr
+        destination: /usr
+
+  - type: script
+    snippets:
+      - rpm-ostree install /usr/share/bluefox/rpm-staging/bluefox-welcome.noarch.rpm && rm -rf /usr/share/bluefox/rpm-staging
+
+  - type: systemd
+    system:
+      enabled:
+        - rpm-ostreed-automatic.timer
+        - bluefox-rebase.service
+        - firstboot.service
+        # iptsd ship une unite templated `iptsd@.service` lancee par udev
+        # quand le device IPTS apparait au boot. Pas besoin de l'enable
+        # explicitement.
+      masked:
+        - tailscaled.service
+
+  - type: signing

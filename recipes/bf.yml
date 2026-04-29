@@ -64,5 +64,5 @@ modules:
 
   - type: signing
 
-# Variante Surface (Olivier seulement) : recipe séparé `bf-surface.yml` qui
-# layered le kernel linux-surface depuis le repo Copr.
+# Variante Surface (Olivier Surface Studio + Pro 7+) : recipe `bf-surface.yml`
+# qui layered le kernel linux-surface depuis le repo Copr.
