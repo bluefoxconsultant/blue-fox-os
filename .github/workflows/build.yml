@@ -46,12 +46,13 @@ jobs:
           pytest -q
 
   build-rpm:
-    # Build le RPM bluefox-welcome dans Fedora 41 et l'expose en artefact.
+    # Build le RPM bluefox-welcome dans Fedora 43 (matches la version Python
+    # 3.14 du base Kinoite-main, sinon depsolve echoue sur python3.Xdist()).
     # Le job build le re-stage dans files/ pour que la recipe BlueBuild puisse
     # rpm-ostree install le binaire pendant la construction de l'image.
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    container: fedora:41
+    container: fedora:43
     steps:
       - uses: actions/checkout@v4
       - name: Install build deps
