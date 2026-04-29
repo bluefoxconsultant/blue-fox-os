@@ -128,8 +128,15 @@ jobs:
           name: bluefox-welcome-rpm
           path: files/usr/local/lib/bluefox/rpms/
 
-      - name: List staged RPM
-        run: ls -la files/usr/local/lib/bluefox/rpms/
+      # Le snippet du module BlueBuild script ne fait pas d'expansion glob
+      # (script.nu invoque commands sans subshell bash), donc on aplatit le
+      # nom versionne en bluefox-welcome.noarch.rpm pour pouvoir le passer
+      # litteralement a rpm-ostree install dans la recipe.
+      - name: Normalize RPM filename
+        run: |
+          mv files/usr/local/lib/bluefox/rpms/bluefox-welcome-*.noarch.rpm \
+             files/usr/local/lib/bluefox/rpms/bluefox-welcome.noarch.rpm
+          ls -la files/usr/local/lib/bluefox/rpms/
 
       # Cosign signature via keypair BlueBuild canonical.
       # Note : l'action prefixe ./recipes/ au input recipe automatiquement,

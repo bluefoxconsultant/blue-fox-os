@@ -51,7 +51,7 @@ modules:
   # source pour ne pas trainer du build dans l'image finale.
   - type: script
     snippets:
-      - rpm-ostree install /usr/local/lib/bluefox/rpms/bluefox-welcome-*.noarch.rpm && rm -rf /usr/local/lib/bluefox/rpms
+      - rpm-ostree install /usr/local/lib/bluefox/rpms/bluefox-welcome.noarch.rpm && rm -rf /usr/local/lib/bluefox/rpms
 
   - type: systemd
     system:
