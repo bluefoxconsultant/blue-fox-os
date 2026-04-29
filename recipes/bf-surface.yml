@@ -73,8 +73,9 @@ modules:
         - rpm-ostreed-automatic.timer
         - bluefox-rebase.service
         - firstboot.service
-        # iptsd doit tourner pour avoir le stylet/touch actifs des le boot.
-        - iptsd.service
+        # iptsd ship une unite templated `iptsd@.service` lancee par udev
+        # quand le device IPTS apparait au boot. Pas besoin de l'enable
+        # explicitement.
       masked:
         - tailscaled.service
 
