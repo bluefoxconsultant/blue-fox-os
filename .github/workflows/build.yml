@@ -263,28 +263,84 @@ jobs:
             --rootfs btrfs \
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:latest
 
-      # GitHub Releases plafonne a 2 GiB par asset. Une ISO Anaconda
-      # Kinoite + tenant fait ~3 GiB, on compresse en xz pour passer sous
-      # le seuil. Users decompressent avec `unxz` avant de flasher l'USB.
-      - name: Stage + compress ISO
+      # GitHub Releases plafonne a 2 GiB par asset. Une ISO Anaconda + le
+      # squashfs du rootfs Kinoite + BF fait ~5 GiB. xz n'aide pas (data
+      # deja compressee). On signe + sha l'ISO complet, puis on splite en
+      # parts de 1900 MiB pour upload. Users recombinent avec `cat`.
+      - name: Stage + sign + split ISO
         run: |
           ISO_NAME="blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}.iso"
           sudo mv output/bootiso/install.iso "output/$ISO_NAME"
           sudo chown -R "$USER:$USER" output
-          ls -lh "output/$ISO_NAME"
-          # xz multi-threade niveau 6 : ~5 min, ~35% reduction.
-          xz -T0 -6 -v "output/$ISO_NAME"
-          ls -lh "output/$ISO_NAME.xz"
-          cd output && sha256sum "$ISO_NAME.xz" > "$ISO_NAME.xz.sha256"
-
-      - name: Sign ISO with cosign keyless
-        run: |
-          ISO_NAME="blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}.iso.xz"
           cd output
+          ls -lh "$ISO_NAME"
+
+          # 1. SHA256 + cosign keyless sur le fichier complet (avant split).
+          sha256sum "$ISO_NAME" > "$ISO_NAME.sha256"
           cosign sign-blob --yes \
             --output-certificate "$ISO_NAME.cert" \
             --output-signature "$ISO_NAME.sig" \
             "$ISO_NAME"
+
+          # 2. Split en parts de 1900 MiB (sous le seuil 2 GiB GH).
+          # Suffix numerique 2-digit, padded zero : .part-00 .part-01 .part-02
+          split -b 1900M -d -a 2 "$ISO_NAME" "$ISO_NAME.part-"
+          ls -lh "$ISO_NAME"*
+
+          # 3. Free disk : on garde sig/cert/sha256/parts, on supprime l'ISO
+          # original (les parts permettent de le reconstruire).
+          rm "$ISO_NAME"
+          ls -lh
+
+      # Genere un README de reassemblage pour les users.
+      - name: Write reassembly README
+        run: |
+          BASE="blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}"
+          cat > "output/$BASE.iso.README.md" <<EOF
+          # Blue Fox OS ISO — Reassembly & Verification
+
+          GitHub Releases plafonnent a 2 GiB par fichier ; l'ISO de ${{ matrix.tenant }}
+          (~5 GiB) est splitee en parts. Les commandes suivantes telechargent,
+          recombinent et verifient l'ISO complete.
+
+          ## 1. Telecharger les parts + signatures
+
+          \`\`\`bash
+          gh release download ${{ github.ref_name }} -p '$BASE.iso.part-*' -p '$BASE.iso.sha256' -p '$BASE.iso.sig' -p '$BASE.iso.cert'
+          \`\`\`
+
+          ## 2. Recombiner
+
+          \`\`\`bash
+          cat $BASE.iso.part-* > $BASE.iso
+          rm $BASE.iso.part-*
+          \`\`\`
+
+          ## 3. Verifier l'integrite (SHA256)
+
+          \`\`\`bash
+          sha256sum -c $BASE.iso.sha256
+          \`\`\`
+
+          ## 4. Verifier la signature cosign keyless (Sigstore)
+
+          \`\`\`bash
+          cosign verify-blob \\
+            --certificate $BASE.iso.cert \\
+            --signature $BASE.iso.sig \\
+            --certificate-identity-regexp '^https://github.com/bluefoxconsultant/.*' \\
+            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \\
+            $BASE.iso
+          \`\`\`
+
+          ## 5. Flasher sur USB
+
+          \`\`\`bash
+          sudo dd if=$BASE.iso of=/dev/sdX bs=4M status=progress oflag=sync
+          \`\`\`
+
+          (\`/dev/sdX\` = ton cle USB, verifier avec \`lsblk\` avant.)
+          EOF
 
       - name: Attach to GitHub release (draft)
         uses: softprops/action-gh-release@v2
@@ -292,7 +348,8 @@ jobs:
           draft: true
           generate_release_notes: true
           files: |
-            output/blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}.iso.xz
-            output/blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}.iso.xz.sha256
-            output/blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}.iso.xz.sig
-            output/blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}.iso.xz.cert
+            output/blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}.iso.part-*
+            output/blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}.iso.sha256
+            output/blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}.iso.sig
+            output/blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}.iso.cert
+            output/blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}.iso.README.md
