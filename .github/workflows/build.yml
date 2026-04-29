@@ -196,17 +196,79 @@ jobs:
             --key cosign.pub \
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:latest
 
+  # P6.1 : tag v* declenche un release. Pour chaque tenant publie, pull
+  # l'image OCI taggee, l'ISO-ifie via bootc-image-builder, signe avec
+  # cosign keyless (Sigstore Fulcio + Rekor), attache a un draft GitHub
+  # release. Verification client : cosign verify-blob --certificate-* iso.sig.
   release:
-    # Tag v* déclenche un release : ISO + signatures + draft GitHub release.
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: write
-      packages: write
+      packages: read
+      id-token: write   # cosign keyless OIDC
+    strategy:
+      fail-fast: false
+      matrix:
+        tenant:
+          - bf
+          - bf-surface
+          # factice exclu : whitelabel test, jamais distribue
     steps:
       - uses: actions/checkout@v4
-      - name: Build ISO via bootc-image-builder
-        run: echo "TODO P6.1 - call bootc-image-builder, sign GPG, attach to release"
-      - name: Verify cosign signatures
-        run: echo "TODO - cosign verify on each tagged image"
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Install podman
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -q podman
+
+      - name: Login to GHCR (private repo)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | sudo podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Pull tenant OCI image
+        run: sudo podman pull ${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:${{ github.ref_name }}
+
+      - name: Build Anaconda ISO via bootc-image-builder
+        run: |
+          mkdir -p output
+          sudo podman run \
+            --rm \
+            --privileged \
+            --security-opt label=type:unconfined_t \
+            -v "$(pwd)/output:/output" \
+            -v /var/lib/containers/storage:/var/lib/containers/storage \
+            quay.io/centos-bootc/bootc-image-builder:latest \
+            --type anaconda-iso \
+            --use-librepo=true \
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:${{ github.ref_name }}
+
+      - name: Stage artifacts (rename + checksum)
+        run: |
+          ISO_NAME="blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}.iso"
+          sudo mv output/bootiso/install.iso "output/$ISO_NAME"
+          sudo chown -R "$USER:$USER" output
+          cd output && sha256sum "$ISO_NAME" > "$ISO_NAME.sha256"
+          ls -lh "$ISO_NAME"*
+
+      - name: Sign ISO with cosign keyless
+        run: |
+          ISO_NAME="blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}.iso"
+          cd output
+          cosign sign-blob --yes \
+            --output-certificate "$ISO_NAME.cert" \
+            --output-signature "$ISO_NAME.sig" \
+            "$ISO_NAME"
+
+      - name: Attach to GitHub release (draft)
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            output/blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}.iso
+            output/blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}.iso.sha256
+            output/blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}.iso.sig
+            output/blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}.iso.cert
