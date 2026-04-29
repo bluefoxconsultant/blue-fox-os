@@ -160,6 +160,9 @@ jobs:
           registry_token: ${{ secrets.GITHUB_TOKEN }}
           cosign_private_key: ${{ secrets.COSIGN_PRIVATE_KEY }}
           pr_event_number: ${{ github.event.number }}
+          # Sans ca, l'action fait un re-checkout + git clean -ffdx qui
+          # supprime notre RPM stage en untracked dans files/usr/share/.
+          skip_checkout: "true"
 
       - name: Output image reference
         run: |
