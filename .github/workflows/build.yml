@@ -226,8 +226,13 @@ jobs:
       - name: Login to GHCR (private repo)
         run: echo "${{ secrets.GITHUB_TOKEN }}" | sudo podman login ghcr.io -u "${{ github.actor }}" --password-stdin
 
+      # BlueBuild ne publie pas le tag {ref_name} brut sur tag push : il
+      # taggue avec un prefixe (`br-{ref_name}-{fedora_version}`) qui est
+      # fragile a referencer. Le tag push pointe sur main HEAD donc :latest
+      # (publie au merge precedent vers main) contient le meme commit. On
+      # tire :latest qui est stable.
       - name: Pull tenant OCI image
-        run: sudo podman pull ${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:${{ github.ref_name }}
+        run: sudo podman pull ${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:latest
 
       - name: Build Anaconda ISO via bootc-image-builder
         run: |
@@ -241,7 +246,7 @@ jobs:
             quay.io/centos-bootc/bootc-image-builder:latest \
             --type anaconda-iso \
             --use-librepo=true \
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:${{ github.ref_name }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:latest
 
       - name: Stage artifacts (rename + checksum)
         run: |
