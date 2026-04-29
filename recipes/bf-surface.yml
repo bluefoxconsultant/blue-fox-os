@@ -35,12 +35,14 @@ modules:
       - kernel-surface
       # iptsd : daemon userspace pour stylet et tactile precis (IPTS Touch).
       - iptsd
-      # libwacom-surface : variante avec les definitions Pen / Surface Slim
-      # Pen 2. Provides libwacom et Obsoletes le stock.
-      - libwacom-surface
       # surface-secureboot : modules signed avec la cle Microsoft Surface
       # pour passer Secure Boot sans desactiver MOK manuellement.
       - surface-secureboot
+      # Note : on n'installe PAS libwacom-surface car il conflicte avec
+      # libwacom du stock Fedora qui est plus recent. La calibration pen
+      # marche correctement avec libwacom stock + le kernel-surface ; on
+      # ajoutera libwacom-surface plus tard via override-replace si pen
+      # behavior est off sur le Surface Studio.
     remove:
       - firefox
       - firefox-langpacks
