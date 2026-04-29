@@ -32,7 +32,7 @@ verify:
 	cosign verify --key cosign.pub $(IMAGE)
 
 welcome-rpm:
-	cd welcome && rpmbuild -bb welcome.spec --define "_topdir $$PWD/build" --define "_sourcedir $$PWD"
+	./scripts/build-welcome-rpm.sh
 
 lint:
 	@for f in recipes/*.yml; do echo "lint $$f"; python3 -c "import yaml; yaml.safe_load(open('$$f'))" || exit 1; done

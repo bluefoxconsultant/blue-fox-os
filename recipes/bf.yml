@@ -35,8 +35,8 @@ modules:
         - com.nextcloud.desktopclient.nextcloudclient
         - com.bitwarden.desktop   # P4.1 : pre-seed Vaultwarden URL via apply_bitwarden_prefs
 
-  # Note : `files` DOIT venir avant `systemd` (gotcha BlueBuild #5) sinon
-  # systemd ne trouve pas les .service ajoutes via files.
+  # Note : `files` DOIT venir avant `script` puis `systemd` (gotcha BlueBuild
+  # #5) sinon le RPM n'est pas en place et systemd ne trouve pas le .service.
   - type: files
     files:
       # source est relatif a <repo>/files/ ; pas besoin du prefixe files/.
@@ -46,16 +46,21 @@ modules:
       # Les fichiers sont matérialisés à partir de config/bf.json par le
       # script scripts/build_branded_iso.sh avant invocation BlueBuild.
 
+  # Installe le RPM bluefox-welcome stage par la CI dans
+  # files/usr/share/bluefox/rpm-staging/. Apres install, on retire le RPM
+  # source pour ne pas trainer 100 KB inutiles dans l'image finale.
+  - type: script
+    snippets:
+      - rpm-ostree install /usr/share/bluefox/rpm-staging/bluefox-welcome.noarch.rpm && rm -rf /usr/share/bluefox/rpm-staging
+
   - type: systemd
     system:
       enabled:
         - rpm-ostreed-automatic.timer
         - bluefox-rebase.service   # premier rebase apres install KS, conditionne au sentinelle
+        - firstboot.service        # P4.1 : welcome wizard au premier boot, conditionne au sentinelle /var/lib/bluefox-welcome/done
       masked:
         - tailscaled.service       # user doit `systemctl enable --now tailscaled` consciemment
-      # Note : firstboot.service activera au prochain build une fois le RPM
-      # bluefox-welcome (P4.1) packe et installe. Pour l'instant le binaire
-      # n'existe pas dans l'image, donc on ne l'enable pas.
 
   - type: signing
 

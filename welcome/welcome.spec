@@ -9,11 +9,11 @@ Source0:        %{name}-%{version}.tar.gz
 
 BuildArch:      noarch
 BuildRequires:  python3-devel
-BuildRequires:  python3-setuptools
+BuildRequires:  pyproject-rpm-macros
 BuildRequires:  systemd-rpm-macros
 
 Requires:       python3
-Requires:       python3-qt6
+Requires:       python3-pyqt6
 Requires:       systemd
 Requires:       kaccounts-providers
 Requires:       rclone
@@ -29,11 +29,18 @@ CalDAV, CardDAV, et l'imprimante réseau.
 %prep
 %autosetup -n %{name}-%{version}
 
+%generate_buildrequires
+# -R : on exclut les Requires-Dist runtime du pyproject (PyQt6, requests,
+# jsonschema). PyPI names != Fedora package names ; les Requires: explicites
+# du spec (python3-qt6 etc.) sont la source de verite runtime.
+%pyproject_buildrequires -R
+
 %build
-%py3_build
+%pyproject_wheel
 
 %install
-%py3_install
+%pyproject_install
+%pyproject_save_files bluefox_welcome
 
 # Service systemd
 mkdir -p %{buildroot}%{_unitdir}
@@ -42,12 +49,10 @@ install -m 0644 firstboot.service %{buildroot}%{_unitdir}/firstboot.service
 # Marqueur d'état
 mkdir -p %{buildroot}%{_localstatedir}/lib/bluefox-welcome
 
-%files
+%files -f %{pyproject_files}
 %license LICENSE
 %doc README.md
 %{_bindir}/bluefox-welcome
-%{python3_sitelib}/bluefox_welcome/
-%{python3_sitelib}/bluefox_welcome-%{version}-py%{python3_version}.egg-info/
 %{_unitdir}/firstboot.service
 %dir %{_localstatedir}/lib/bluefox-welcome
 

@@ -33,14 +33,6 @@ modules:
         - com.nextcloud.desktopclient.nextcloudclient
         - com.bitwarden.desktop   # P4.1 : pre-seed Vaultwarden URL
 
-  - type: systemd
-    system:
-      enabled:
-        - rpm-ostreed-automatic.timer
-      masked:
-        - tailscaled.service
-      # firstboot.service : pas encore (RPM welcome P4.1)
-
   - type: files
     files:
       - source: usr
@@ -48,5 +40,18 @@ modules:
       # Branding factice : palette mauve, logo générique, wallpaper test.
       # Sert uniquement à valider que le pipeline matrix produit bien des
       # images visuellement distinctes.
+
+  # Installe le RPM bluefox-welcome stage par la CI (cf. recipes/bf.yml).
+  - type: script
+    snippets:
+      - rpm-ostree install /usr/share/bluefox/rpm-staging/bluefox-welcome.noarch.rpm && rm -rf /usr/share/bluefox/rpm-staging
+
+  - type: systemd
+    system:
+      enabled:
+        - rpm-ostreed-automatic.timer
+        - firstboot.service        # P4.1 : welcome wizard au premier boot
+      masked:
+        - tailscaled.service
 
   - type: signing
