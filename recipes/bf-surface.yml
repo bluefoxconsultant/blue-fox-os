@@ -1,13 +1,14 @@
 # Recipe Blue Fox OS - variante Surface (Olivier Surface Studio 2 + Pro 7+).
-# Identique a bf.yml mais layered avec le kernel linux-surface depuis Copr
-# pour activer le tactile, le pen, les capteurs et le bouton Surface.
+# Identique a bf.yml mais layered avec le kernel linux-surface depuis le
+# repo officiel pour activer le tactile, le pen, les capteurs et le bouton
+# Surface.
 #
-# Source linux-surface : https://github.com/linux-surface/linux-surface
-# COPR : https://copr.fedorainfracloud.org/coprs/linux-surface/linux-surface/
+# Source : https://github.com/linux-surface/linux-surface
+# Repo Fedora : https://pkg.surfacelinux.com/fedora/linux-surface.repo
+#   (auto-detect $releasever, donc suit la base Kinoite-main sans bumper)
 #
-# Le kernel-surface du COPR est build avec Provides/Obsoletes qui remplacent
-# le kernel stock de Kinoite quand `rpm-ostree install` resout les deps.
-# Pas besoin de override-replace explicite pour les versions Fedora 43+.
+# Le kernel-surface est build avec Provides/Obsoletes qui remplacent le
+# kernel stock de Kinoite quand `rpm-ostree install` resout les deps.
 
 name: blue-fox-os-bf-surface
 description: Blue Fox OS - image BF + kernel linux-surface (Surface Studio/Pro)
@@ -20,9 +21,10 @@ modules:
   - type: rpm-ostree
     repos:
       - https://pkgs.tailscale.com/stable/fedora/tailscale.repo
-      # COPR linux-surface : .repo file pin sur Fedora 43 (matches base
-      # Kinoite-main actuel). A bumper en lockstep si la base passe a F44+.
-      - https://copr.fedorainfracloud.org/coprs/linux-surface/linux-surface/repo/fedora-43/linux-surface-linux-surface-fedora-43.repo
+      # Repo officiel linux-surface (utilise $releasever, pas besoin de pin
+      # de version Fedora). GPG key signee par l'equipe linux-surface,
+      # check active dans la .repo.
+      - https://pkg.surfacelinux.com/fedora/linux-surface.repo
     install:
       - tailscale
       - rclone
