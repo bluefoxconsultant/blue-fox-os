@@ -14,7 +14,11 @@ name: blue-fox-os-bf-surface
 description: Blue Fox OS - image BF + kernel linux-surface (Surface Studio/Pro)
 
 base-image: ghcr.io/ublue-os/kinoite-main
-image-version: latest
+# Pinned to f43 (kinoite tag "43") tant que pkg.surfacelinux.com n'a pas
+# publie son tree f44 (404 sur https://pkg.surfacelinux.com/fedora/f44/).
+# A revisiter une fois linux-surface F44 disponible (BFOSL2, gate 2026-05-05).
+# bf.yml reste sur :latest -- seul ce tenant est touche.
+image-version: "43"
 
 modules:
 
