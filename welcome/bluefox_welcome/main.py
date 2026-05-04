@@ -24,6 +24,7 @@ from .apply import (
     apply_bitwarden_prefs,
     apply_brave_policy,
     apply_kaccounts,
+    apply_kde_theme,
     apply_rclone_mount,
 )
 from .tenant import get_service_url, get_slug, load_tenant
@@ -254,6 +255,9 @@ def _finalize_and_apply(
 
     ok, msg = apply_kaccounts(tenant)
     results.append(("kaccounts", ok, msg))
+
+    ok, msg = apply_kde_theme(tenant)
+    results.append(("kde_theme", ok, msg))
 
     try:
         USER_LOG.parent.mkdir(parents=True, exist_ok=True)

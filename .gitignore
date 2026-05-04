@@ -33,6 +33,22 @@ config/*.json
 !config/_example.json
 !config/bf.json
 
+# KDE theme assets generes par scripts/generate_kde_theme.py a partir de
+# tenant.json. Materialises a chaque build, pas commits.
+files/etc/xdg/kdeglobals
+files/etc/skel/
+files/etc/sddm.conf.d/
+files/usr/share/color-schemes/
+files/usr/share/wallpapers/
+files/usr/share/plasma/
+files/usr/share/sddm/themes/
+files/usr/share/plymouth/themes/
+files/usr/share/icons/bluefox-*/
+files/etc/plymouth/
+# Branding assets fetches par build_branded_iso.sh (logo/wallpaper/splash).
+files/usr/share/bluefox/branding/
+files/usr/share/bluefox/tenant.json
+
 # Editor
 .vscode/
 .idea/

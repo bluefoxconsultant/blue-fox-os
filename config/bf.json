@@ -39,11 +39,13 @@
     "logo_url": "https://raw.githubusercontent.com/bluefoxconsultant/blue-fox-os/main/branding/logo.png",
     "wallpaper_url": "https://raw.githubusercontent.com/bluefoxconsultant/blue-fox-os/main/branding/wallpaper.jpg",
     "splash_url": "https://raw.githubusercontent.com/bluefoxconsultant/blue-fox-os/main/branding/splash.png",
+    "app_icon_url": "https://raw.githubusercontent.com/bluefoxconsultant/blue-fox-os/main/branding/app-icon.svg",
     "palette": {
       "primary": "#29ABE1",
       "secondary": "#2D3031",
       "accent": "#29ABE1"
     },
+    "boot_bg_color": "#001533",
     "system_font": "Lexend",
     "plasma_theme": "blue-fox-dark",
     "sddm_theme": "blue-fox"

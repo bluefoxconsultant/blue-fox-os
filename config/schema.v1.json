@@ -86,17 +86,18 @@
     },
     "branding": {
       "type": "object",
-      "required": ["palette", "logo_url", "wallpaper_url"],
+      "required": ["logo_url", "wallpaper_url"],
+      "description": "Champs optionnels (palette, system_font, plasma_theme, sddm_theme) tombent sur les defaults BF canoniques (#29ABE1 / #2D3031 / Lexend) si absents — voir scripts/generate_kde_theme.py.",
       "properties": {
         "logo_url": {"type": "string", "format": "uri", "description": "PNG transparent, idéalement 1024x1024."},
         "wallpaper_url": {"type": "string", "format": "uri", "description": "JPG ou PNG 1920x1080 minimum."},
         "splash_url": {"type": "string", "format": "uri", "description": "Splash Plymouth, optionnel."},
         "palette": {
           "type": "object",
-          "required": ["primary"],
+          "description": "Hex couleurs. Defaults BF si non fourni : primary #29ABE1, secondary #2D3031, accent = primary.",
           "properties": {
-            "primary": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"},
-            "secondary": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"},
+            "primary": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$", "default": "#29ABE1"},
+            "secondary": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$", "default": "#2D3031"},
             "accent": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"}
           }
         },
@@ -105,8 +106,24 @@
           "default": "Lexend",
           "description": "Police système. Defaut Lexend (BF). Doit être disponible dans l'image."
         },
-        "plasma_theme": {"type": "string"},
-        "sddm_theme": {"type": "string"}
+        "boot_bg_color": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$",
+          "description": "Couleur du fond plein écran Plymouth (boot splash). Defaut: palette.secondary. BF utilise #001533 (navy)."
+        },
+        "app_icon_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Icône application menu / neofetch. Idealement SVG pour scaling. Defaut: logo_url."
+        },
+        "plasma_theme": {
+          "type": "string",
+          "description": "Nom du look-and-feel package KDE. Defaut: dérivé du slug (ex: 'bf')."
+        },
+        "sddm_theme": {
+          "type": "string",
+          "description": "Nom du theme SDDM. Defaut: dérivé du slug (ex: 'bf')."
+        }
       }
     },
     "bookmarks": {

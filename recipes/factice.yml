@@ -37,6 +37,10 @@ modules:
     files:
       - source: usr
         destination: /usr
+      # /etc/xdg/kdeglobals + /etc/sddm.conf.d + /etc/skel matérialisés par
+      # scripts/generate_kde_theme.py à partir de config/factice.json.
+      - source: etc
+        destination: /etc
       # Branding factice : palette mauve, logo générique, wallpaper test.
       # Sert uniquement à valider que le pipeline matrix produit bien des
       # images visuellement distinctes.
