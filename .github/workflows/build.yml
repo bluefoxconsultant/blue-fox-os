@@ -22,11 +22,32 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: ksvalidator
+      - name: Render bib-config.toml from kickstart (drift check)
+        # render_bib_config.py rewrites install/bib-config.toml from
+        # install/bf-os.ks. If the committed bib-config.toml differs from the
+        # freshly-rendered one, someone hand-edited the generated file or
+        # forgot to re-run the script — fail fast.
         run: |
-          docker run --rm -v "$PWD:/work" fedora:41 sh -c '
+          python3 scripts/render_bib_config.py
+          git diff --exit-code install/bib-config.toml || {
+            echo "::error::install/bib-config.toml is stale. Re-run scripts/render_bib_config.py and commit." >&2
+            exit 1
+          }
+      - name: ksvalidator (bf-os.ks + extracted bib-config contents)
+        run: |
+          # Extract the kickstart body out of bib-config.toml so ksvalidator
+          # can lint the actual content BIB will inject into the ISO.
+          python3 - <<'PY'
+          import re, pathlib
+          toml = pathlib.Path('install/bib-config.toml').read_text()
+          m = re.search(r'contents = """(.*?)"""', toml, re.DOTALL)
+          assert m, "could not extract kickstart from bib-config.toml"
+          pathlib.Path('/tmp/bib-rendered.ks').write_text(m.group(1).strip() + '\n')
+          PY
+          docker run --rm -v "$PWD:/work" -v /tmp:/tmp fedora:41 sh -c '
             dnf -y -q install pykickstart >/dev/null 2>&1
             ksvalidator /work/install/bf-os.ks
+            ksvalidator /tmp/bib-rendered.ks
           '
 
   test-wizard:
@@ -258,6 +279,13 @@ jobs:
       - name: Pull tenant OCI image
         run: sudo podman pull ${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:latest
 
+      # Render install/bib-config.toml from install/bf-os.ks. BIB embeds this
+      # as the kickstart so Anaconda prompts for LUKS passphrase + user
+      # creation per BF spec (otherwise BIB falls back to a bare OSTree-only
+      # kickstart with no auth prompt).
+      - name: Render BIB config from kickstart
+        run: python3 scripts/render_bib_config.py
+
       - name: Build Anaconda ISO via bootc-image-builder
         run: |
           mkdir -p output
@@ -265,13 +293,22 @@ jobs:
             --rm \
             --privileged \
             --security-opt label=type:unconfined_t \
+            -v "$(pwd)/install/bib-config.toml:/config.toml:ro" \
             -v "$(pwd)/output:/output" \
             -v /var/lib/containers/storage:/var/lib/containers/storage \
             quay.io/centos-bootc/bootc-image-builder:latest \
             --type anaconda-iso \
             --use-librepo=true \
             --rootfs btrfs \
+            --config /config.toml \
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:latest
+
+      # Brand the ISO chrome (boot menu, GRUB theme, splash). Must happen
+      # BEFORE sha256/cosign so the signature covers the branded artifact.
+      - name: Brand ISO chrome
+        run: |
+          sudo apt-get install -y -q xorriso
+          sudo ./scripts/brand-iso.sh output/bootiso/install.iso
 
       # GitHub Releases plafonne a 2 GiB par asset. Une ISO Anaconda + le
       # squashfs du rootfs Kinoite + BF fait ~5 GiB. xz n'aide pas (data

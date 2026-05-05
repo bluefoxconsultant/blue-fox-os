@@ -1,0 +1,60 @@
+# Blue Fox OS — GRUB boot menu theme.
+# Loaded by /EFI/BOOT/grub.cfg via `set theme=/EFI/BOOT/themes/blue-fox/theme.txt`.
+# Branding tokens come from reference_bf_brand_canonical.md:
+#   Bleu        #29ABE1
+#   Anthracite  #2D3031
+#   Background  #001533 (deep navy, matches Plymouth)
+#
+# GRUB theme syntax: https://www.gnu.org/software/grub/manual/grub/html_node/Theme-file-format.html
+
+# Global background: deep navy. If background.png exists in this dir, GRUB
+# will tile it; we ship splash.png remapped here at brand time.
+desktop-color: "#001533"
+desktop-image: "background.png"
+
+# Title at top of the boot menu.
+title-text: "Blue Fox OS — Installer"
+title-color: "#FFFFFF"
+title-font: "DejaVu Sans Bold 18"
+
+# Footer hint.
+message-color: "#9AA3A8"
+message-bg-color: "#001533"
+terminal-font: "DejaVu Sans Mono 12"
+
++ boot_menu {
+    left   = 15%
+    top    = 25%
+    width  = 70%
+    height = 60%
+
+    item_font            = "DejaVu Sans 16"
+    item_color           = "#FFFFFF"
+    item_height          = 36
+    item_padding         = 8
+    item_spacing         = 4
+    item_icon_space      = 8
+
+    # Selected item: BF blue background, white text.
+    selected_item_color    = "#FFFFFF"
+    selected_item_pixmap_style = "select_*.png"
+    selected_item_font     = "DejaVu Sans Bold 16"
+
+    scrollbar              = false
+    menu_pixmap_style      = "menu_*.png"
+}
+
++ progress_bar {
+    id       = "__timeout__"
+    left     = 15%
+    top      = 88%
+    width    = 70%
+    height   = 16
+    show_text = true
+    text     = "@TIMEOUT_NOTIFICATION_LONG@"
+    text_color = "#9AA3A8"
+    fg_color = "#29ABE1"
+    bg_color = "#2D3031"
+    border_color = "#2D3031"
+    font     = "DejaVu Sans 12"
+}

@@ -7,12 +7,14 @@ TAG ?= dev
 REGISTRY ?= ghcr.io/bluefoxconsultant
 IMAGE = $(REGISTRY)/blue-fox-os-$(SLUG):$(TAG)
 
-.PHONY: help image iso verify clean lint test welcome-rpm
+.PHONY: help image iso verify clean lint test welcome-rpm bib-config brand-iso
 
 help:
 	@echo "Cibles disponibles :"
 	@echo "  make image SLUG=bf            Build local de l'image OCI"
 	@echo "  make iso SLUG=bf              Génère l'ISO d'install via bootc-image-builder"
+	@echo "  make bib-config               Régénère install/bib-config.toml depuis bf-os.ks"
+	@echo "  make brand-iso ISO=path/to.iso Brande l'ISO (boot menu, GRUB theme, splash)"
 	@echo "  make verify SLUG=bf TAG=v26.07 Vérifie la signature cosign de l'image distante"
 	@echo "  make welcome-rpm              Build le RPM du welcome agent"
 	@echo "  make lint                     Lint des recipes YAML + Kickstart"
@@ -34,11 +36,19 @@ verify:
 welcome-rpm:
 	./scripts/build-welcome-rpm.sh
 
+bib-config:
+	python3 scripts/render_bib_config.py
+
+brand-iso:
+	@test -n "$(ISO)" || { echo "usage: make brand-iso ISO=path/to/install.iso"; exit 1; }
+	./scripts/brand-iso.sh $(ISO)
+
 lint:
 	@for f in recipes/*.yml; do echo "lint $$f"; python3 -c "import yaml; yaml.safe_load(open('$$f'))" || exit 1; done
 	@python3 -c "import json; json.load(open('config/schema.v1.json'))" && echo "schema.v1.json OK"
 	@python3 -c "import json, glob, jsonschema; s = json.load(open('config/schema.v1.json')); [jsonschema.validate(json.load(open(p)), s) for p in glob.glob('config/*.json') if not p.endswith('schema.v1.json')]; print('config/*.json OK against schema')" || echo "jsonschema non installé : pip install --user jsonschema"
 	@command -v ksvalidator >/dev/null && ksvalidator install/bf-os.ks || echo "ksvalidator non installé, skip"
+	@python3 scripts/render_bib_config.py >/dev/null && git diff --quiet install/bib-config.toml && echo "bib-config.toml OK" || { echo "bib-config.toml stale ; run make bib-config"; exit 1; }
 
 test:
 	cd welcome && python3 -m pytest -q || true
