@@ -116,6 +116,17 @@ echo "[build-iso] expect 15–25 min (pull + squashfs + ISO assembly)"
 # `mkdir -p` keeps Ubuntu hosts happy where the dir doesn't pre-exist.
 mkdir -p /var/lib/containers/storage
 
+# Recent BIB versions no longer auto-pull. Pre-pull the BF image into
+# rootful storage (BIB reads from there). Rootless auth at /run/user/UID/
+# isn't visible to root by default, so pass --authfile explicitly.
+if [ "$ENGINE" = "podman" ]; then
+    echo "[build-iso] pulling ${IMAGE} into rootful storage"
+    podman pull --authfile "${AUTH_FILE}" "${IMAGE}"
+else
+    echo "[build-iso] pulling ${IMAGE}"
+    DOCKER_CONFIG="$(dirname "${AUTH_FILE}")" docker pull "${IMAGE}"
+fi
+
 # --pull=newer refreshes the BIB image itself.
 # --type anaconda-iso matches CI release job.
 # --rootfs btrfs matches Kinoite default.
