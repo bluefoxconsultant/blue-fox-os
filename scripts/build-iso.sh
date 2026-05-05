@@ -61,14 +61,22 @@ EOF
 fi
 echo "[build-iso] engine=${ENGINE}"
 
-# Locate auth file. podman reads ~/.config/containers/auth.json natively
-# but also honors ~/.docker/config.json. Map whichever exists into the
-# BIB container at /root/.docker/config.json (BIB's internal podman reads
-# that path).
+# Locate auth file. podman rootless writes to $XDG_RUNTIME_DIR (transient,
+# typically /run/user/UID/containers/auth.json) — that's where `podman login`
+# lands by default. Persistent paths (~/.config/containers/, ~/.docker/) are
+# also checked. Map whichever is found into BIB at /root/.docker/config.json
+# (BIB's internal podman reads that path).
+INVOKING_UID=""
+if [ "${SUDO_USER:-}" != "" ]; then
+    INVOKING_UID="$(id -u "${SUDO_USER}" 2>/dev/null || echo "")"
+fi
 AUTH_CANDIDATES=(
     "${INVOKING_HOME}/.config/containers/auth.json"
     "${INVOKING_HOME}/.docker/config.json"
 )
+if [ -n "${INVOKING_UID}" ]; then
+    AUTH_CANDIDATES+=("/run/user/${INVOKING_UID}/containers/auth.json")
+fi
 AUTH_FILE=""
 for cand in "${AUTH_CANDIDATES[@]}"; do
     if [ -f "$cand" ]; then
@@ -87,6 +95,10 @@ if [ -z "$AUTH_FILE" ]; then
 
     Or with a PAT (read:packages scope) from https://github.com/settings/tokens/new :
         echo '<TOKEN>' | ${ENGINE} login ghcr.io -u <username> --password-stdin
+
+    Note: podman stores auth in \$XDG_RUNTIME_DIR (transient, lost on reboot).
+    To persist, copy it after login:
+        cp /run/user/\$(id -u)/containers/auth.json ~/.config/containers/auth.json
 EOF
     exit 1
 fi
