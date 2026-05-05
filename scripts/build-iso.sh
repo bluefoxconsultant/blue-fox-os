@@ -106,9 +106,23 @@ echo "[build-iso] auth=${AUTH_FILE}"
 
 mkdir -p "${OUTPUT}"
 
+# Render install/bib-config.toml from install/bf-os.ks. BIB embeds this as the
+# kickstart so Anaconda prompts for LUKS passphrase + user creation per BF spec.
+# Without it (BIB called with no --config), Anaconda falls back to a bare
+# OSTree-only kickstart and the install completes with no rootpw lock + an
+# unattended user account whose password is unknown.
+echo "[build-iso] rendering install/bib-config.toml"
+python3 "${WORKDIR}/scripts/render_bib_config.py"
+BIB_CONFIG="${WORKDIR}/install/bib-config.toml"
+if [ ! -f "${BIB_CONFIG}" ]; then
+    echo "[build-iso] FAIL: ${BIB_CONFIG} not produced" >&2
+    exit 1
+fi
+
 echo "[build-iso] tenant=${SLUG} tag=${TAG}"
 echo "[build-iso] image=${IMAGE}"
 echo "[build-iso] bib=${BIB_IMAGE}"
+echo "[build-iso] config=${BIB_CONFIG}"
 echo "[build-iso] output=${OUTPUT}"
 echo "[build-iso] expect 15–25 min (pull + squashfs + ISO assembly)"
 
@@ -138,21 +152,29 @@ fi
     --pull=newer \
     --security-opt label=type:unconfined_t \
     -v "${AUTH_FILE}:/root/.docker/config.json:ro" \
+    -v "${BIB_CONFIG}:/config.toml:ro" \
     -v "${OUTPUT}:/output" \
     -v /var/lib/containers/storage:/var/lib/containers/storage \
     "${BIB_IMAGE}" \
     --type anaconda-iso \
     --rootfs btrfs \
     --use-librepo=true \
+    --config /config.toml \
     "${IMAGE}"
 
 ISO="${OUTPUT}/bootiso/install.iso"
-if [ -f "${ISO}" ]; then
-    SIZE=$(du -h "${ISO}" | cut -f1)
-    echo "[build-iso] OK ${ISO} (${SIZE})"
-    echo "[build-iso] burn:  sudo dd if=${ISO} of=/dev/sdX bs=4M status=progress  # replace sdX"
-    echo "[build-iso] vm:    qemu-system-x86_64 -enable-kvm -m 8G -boot d -cdrom ${ISO}"
-else
+if [ ! -f "${ISO}" ]; then
     echo "[build-iso] FAIL: ${ISO} not produced ; check output above" >&2
     exit 1
 fi
+
+# Brand the ISO chrome (boot menu, GRUB theme, splash). BIB only brands the
+# *installed* system; the ISO boot menu and Anaconda chrome are stock Fedora
+# without this post-process step.
+echo "[build-iso] branding ISO chrome"
+"${WORKDIR}/scripts/brand-iso.sh" "${ISO}"
+
+SIZE=$(du -h "${ISO}" | cut -f1)
+echo "[build-iso] OK ${ISO} (${SIZE})"
+echo "[build-iso] burn:  sudo dd if=${ISO} of=/dev/sdX bs=4M status=progress  # replace sdX"
+echo "[build-iso] vm:    qemu-system-x86_64 -enable-kvm -m 8G -boot d -cdrom ${ISO}"
