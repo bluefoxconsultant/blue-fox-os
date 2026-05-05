@@ -78,6 +78,13 @@ cp "$TMP_CFG" "${FILES_DIR}/share/bluefox/tenant.json"
 echo "[branded-iso] generating KDE theme assets"
 python3 "${WORKDIR}/scripts/generate_kde_theme.py" "$TMP_CFG" "$FILES_ROOT"
 
-# 5. Lancer BlueBuild.
+# 5. Lancer BlueBuild — sauf en mode prep (BUILD=0), utilise par CI ou
+# par les workflows qui veulent pre-stager files/ et confier le build a
+# blue-build/github-action@v1.
+if [ "${BUILD:-1}" = "0" ]; then
+    echo "[branded-iso] BUILD=0 ; staging only, skipping bluebuild"
+    exit 0
+fi
+
 cd "$WORKDIR"
 exec bluebuild build "recipes/${SLUG}.yml"

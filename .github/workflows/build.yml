@@ -144,6 +144,16 @@ jobs:
              files/usr/share/bluefox/rpm-staging/bluefox-welcome.noarch.rpm
           ls -la files/usr/share/bluefox/rpm-staging/
 
+      # Materialise tenant.json + branding/ → files/ AND run
+      # generate_kde_theme.py to emit color scheme, look-and-feel package,
+      # SDDM theme, Plymouth theme + bar PNGs, kdeglobals, icon theme,
+      # neofetch config. BUILD=0 short-circuits before bluebuild — let
+      # blue-build/github-action handle the actual OCI build below.
+      - name: Stage branding + generate KDE theme
+        run: |
+          python3 -m pip install --quiet jsonschema Pillow
+          SLUG="${{ matrix.tenant }}" BUILD=0 ./scripts/build_branded_iso.sh
+
       # Cosign signature via keypair BlueBuild canonical.
       # Note : l'action prefixe ./recipes/ au input recipe automatiquement,
       # donc on passe juste le filename (pas recipes/${{ matrix.tenant }}.yml).

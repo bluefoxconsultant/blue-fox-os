@@ -32,6 +32,8 @@ config/*.json
 !config/schema.v1.json
 !config/_example.json
 !config/bf.json
+!config/factice.json
+!config/bf-surface.json
 
 # KDE theme assets generes par scripts/generate_kde_theme.py a partir de
 # tenant.json. Materialises a chaque build, pas commits.

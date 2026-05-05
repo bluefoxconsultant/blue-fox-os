@@ -1,0 +1,33 @@
+{
+  "slug": "factice",
+  "version": "v1",
+  "image_ref": "ghcr.io/bluefoxconsultant/blue-fox-os-factice:latest",
+  "services": {
+    "nextcloud": {
+      "url": "https://nextcloud.bluefoxconsultant.com",
+      "talk_enabled": true
+    },
+    "authentik": {
+      "url": "https://auth.bluefoxconsultant.com",
+      "issuer": "https://auth.bluefoxconsultant.com/application/o/blue-fox-os/",
+      "client_id": "blue-fox-os-factice"
+    },
+    "imap": {
+      "host": "imap.migadu.com",
+      "port": 993,
+      "use_tls": true
+    }
+  },
+  "branding": {
+    "logo_url": "https://raw.githubusercontent.com/bluefoxconsultant/blue-fox-os/main/branding/logo.png",
+    "wallpaper_url": "https://raw.githubusercontent.com/bluefoxconsultant/blue-fox-os/main/branding/wallpaper.jpg",
+    "palette": {
+      "primary": "#7B2CBF",
+      "secondary": "#1A0E2E",
+      "accent": "#C77DFF"
+    }
+  },
+  "bookmarks": [
+    {"title": "Nextcloud", "url": "https://nextcloud.bluefoxconsultant.com", "pinned": true}
+  ]
+}
