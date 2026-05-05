@@ -112,16 +112,23 @@ echo "[build-iso] bib=${BIB_IMAGE}"
 echo "[build-iso] output=${OUTPUT}"
 echo "[build-iso] expect 15–25 min (pull + squashfs + ISO assembly)"
 
+# BIB persists pulled images into the host's container storage.
+# `mkdir -p` keeps Ubuntu hosts happy where the dir doesn't pre-exist.
+mkdir -p /var/lib/containers/storage
+
 # --pull=newer refreshes the BIB image itself.
 # --type anaconda-iso matches CI release job.
 # --rootfs btrfs matches Kinoite default.
 # --use-librepo=true matches CI for repo metadata fetching.
+# --security-opt label=type:unconfined_t matches CI on SELinux hosts.
 "${ENGINE}" run \
     --rm \
     --privileged \
     --pull=newer \
+    --security-opt label=type:unconfined_t \
     -v "${AUTH_FILE}:/root/.docker/config.json:ro" \
     -v "${OUTPUT}:/output" \
+    -v /var/lib/containers/storage:/var/lib/containers/storage \
     "${BIB_IMAGE}" \
     --type anaconda-iso \
     --rootfs btrfs \
