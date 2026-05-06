@@ -48,14 +48,13 @@ modules:
       - source: etc
         destination: /etc
 
-  # 4. systemd : auto-rebase + premier rebase post-install + (futur) firstboot wizard.
+  # 4. systemd : auto-rebase + premier rebase post-install + firstboot wizard.
   - type: systemd
     system:
       enabled:
         - rpm-ostreed-automatic.timer  # auto-rebase quotidien stage
         - bluefox-rebase.service       # premier rebase post-Kickstart vers tenant image
-        # firstboot.service : a activer une fois le RPM bluefox-welcome (P4.1)
-        # construit et inclus via la directive `copy` du recipe.
+        - firstboot.service            # P4.1 : welcome wizard, conditionne au sentinelle /var/lib/bluefox-welcome/done
 
   # 5. Signature cosign (uniquement en CI ; ignoré en build local).
   - type: signing
