@@ -33,7 +33,17 @@ jobs:
             echo "::error::install/bib-config.toml is stale. Re-run scripts/render_bib_config.py and commit." >&2
             exit 1
           }
-      - name: ksvalidator (bf-os.ks + extracted bib-config contents)
+      - name: Render zero-touch kickstart for ksvalidator
+        # render_zerotouch_ks.py renders install/blue-fox-install.ks.template
+        # for slug=bf with a stable {{GENERATED_AT}}. The output goes through
+        # ksvalidator alongside bf-os.ks and bib-config.toml in the next step.
+        run: |
+          python3 scripts/render_zerotouch_ks.py --slug bf --generated-at "2026-01-01T00:00:00Z" \
+            > /tmp/zerotouch-rendered.ks
+          python3 scripts/render_zerotouch_ks.py --slug bf-surface --generated-at "2026-01-01T00:00:00Z" \
+            > /tmp/zerotouch-surface-rendered.ks
+
+      - name: ksvalidator (bf-os.ks + bib-config + zerotouch-rendered)
         run: |
           # Extract the kickstart body out of bib-config.toml so ksvalidator
           # can lint the actual content BIB will inject into the ISO.
@@ -48,6 +58,8 @@ jobs:
             dnf -y -q install pykickstart >/dev/null 2>&1
             ksvalidator /work/install/bf-os.ks
             ksvalidator /tmp/bib-rendered.ks
+            ksvalidator /tmp/zerotouch-rendered.ks
+            ksvalidator /tmp/zerotouch-surface-rendered.ks
           '
 
   test-wizard:

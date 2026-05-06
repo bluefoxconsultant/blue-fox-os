@@ -7,13 +7,15 @@ TAG ?= dev
 REGISTRY ?= ghcr.io/bluefoxconsultant
 IMAGE = $(REGISTRY)/blue-fox-os-$(SLUG):$(TAG)
 
-.PHONY: help image iso verify clean lint test welcome-rpm bib-config brand-iso
+.PHONY: help image iso verify clean lint test welcome-rpm bib-config brand-iso zerotouch-render zerotouch-sync
 
 help:
 	@echo "Cibles disponibles :"
 	@echo "  make image SLUG=bf            Build local de l'image OCI"
 	@echo "  make iso SLUG=bf              Génère l'ISO d'install via bootc-image-builder"
 	@echo "  make bib-config               Régénère install/bib-config.toml depuis bf-os.ks"
+	@echo "  make zerotouch-render SLUG=bf Rend le KS zero-touch pour validation"
+	@echo "  make zerotouch-sync           Sync install/blue-fox-install.ks.template -> bf_zerotouch_install addon"
 	@echo "  make brand-iso ISO=path/to.iso Brande l'ISO (boot menu, GRUB theme, splash)"
 	@echo "  make verify SLUG=bf TAG=v26.07 Vérifie la signature cosign de l'image distante"
 	@echo "  make welcome-rpm              Build le RPM du welcome agent"
@@ -38,6 +40,12 @@ welcome-rpm:
 
 bib-config:
 	python3 scripts/render_bib_config.py
+
+zerotouch-render:
+	python3 scripts/render_zerotouch_ks.py --slug $(or $(SLUG),bf)
+
+zerotouch-sync:
+	./scripts/sync-zerotouch-mirror.sh
 
 brand-iso:
 	@test -n "$(ISO)" || { echo "usage: make brand-iso ISO=path/to/install.iso"; exit 1; }
