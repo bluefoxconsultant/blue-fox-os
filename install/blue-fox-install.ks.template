@@ -1,0 +1,66 @@
+# Blue Fox OS zero-touch kickstart template.
+# Canonical source. Renderers : scripts/render_zerotouch_ks.py (offline) +
+# bf_zerotouch_install Odoo controller (production). See those for the list
+# of supported placeholders and tenant config.
+
+# Tenant: {{TENANT_NAME}}
+# Slug: {{TENANT_SLUG}}
+# Generated: {{GENERATED_AT}}
+
+# Pull the per-tenant OCI image directly. Anaconda's bootc support reads
+# ostreecontainer and pulls + commits in one shot, no post-install rebase
+# needed. Kickstart syntax has no line continuation — keep on one line.
+ostreecontainer --url={{OCI_IMAGE_REF}} --transport=registry --no-signature-verification
+
+# Locale + keyboard from tenant config.
+lang {{LANG}} --addsupport={{ADDSUPPORT}}
+keyboard --vckeymap={{KEYBOARD_VC}} --xlayouts={{KEYBOARD_X}} --switch=grp:alt_shift_toggle
+
+# Timezone.
+timezone {{TIMEZONE}} --utc
+
+# Network : DHCP. Anaconda's dracut already brought the link up to fetch this
+# kickstart, so DHCP is known good.
+network --bootproto=dhcp --activate
+
+# Comptes : root verrouille, user cree interactivement par Anaconda
+# (jamais de credentials hardcoded dans un KS public).
+rootpw --lock
+
+# Disque : btrfs sur LUKS, passphrase saisie au wizard Anaconda.
+zerombr
+clearpart --all --initlabel
+autopart --type=btrfs --encrypted --nohome
+
+# Bootloader : EFI vs BIOS auto-detect.
+bootloader --timeout=3
+
+# Securite.
+selinux --enforcing
+firewall --enabled
+
+# Reboot apres install.
+reboot --eject
+
+%post --erroronfail --log=/var/log/bf-zerotouch-post.log
+# Activer les MAJ rpm-ostree automatiques.
+systemctl enable rpm-ostreed-automatic.timer
+
+# tenant.json consomme par le welcome agent (firstboot) pour configurer
+# Brave managed policy, Bitwarden URL, KAccounts NC, etc.
+mkdir -p /var/lib/bluefox-welcome
+cat > /var/lib/bluefox-welcome/tenant.json <<'JSON'
+{
+  "slug": "{{TENANT_SLUG}}",
+  "tenant_name": "{{TENANT_NAME}}",
+  "tenant_domain": "{{TENANT_DOMAIN}}",
+  "image_ref": "{{OCI_IMAGE_REF}}",
+  "provisioned_via": "zerotouch-v1",
+  "provisioned_at": "{{GENERATED_AT}}"
+}
+JSON
+
+# Sentinel : le welcome agent verifie qu'il est sur l'image attendue. Si oui,
+# bluefox-rebase.service est un no-op ; sinon il rebase.
+touch /var/lib/bluefox-welcome/needs-rebase
+%end
