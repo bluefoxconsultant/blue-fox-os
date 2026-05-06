@@ -64,18 +64,18 @@ def cli() -> int:
     return run_wizard(tenant)
 
 
-def run_wizard(tenant: dict) -> int:
-    try:
-        from PyQt6.QtWidgets import (
-            QApplication, QWizard, QWizardPage, QLabel, QLineEdit,
-            QVBoxLayout, QPushButton, QCheckBox, QTextEdit,
-        )
-    except ImportError:
-        LOG.error("PyQt6 not available ; falling back to terminal stub")
-        print("[stub] Blue Fox OS welcome wizard ; PyQt6 manquant.")
-        return 0
+def build_wizard(tenant: dict):
+    """Build a 5-page QWizard for the given tenant. No exec().
 
-    app = QApplication(sys.argv)
+    Returned tuple keeps the QApplication alive for the caller (run_wizard
+    or a test); ownership of both objects belongs to the caller.
+    """
+    from PyQt6.QtWidgets import (
+        QApplication, QWizard, QWizardPage, QLabel, QLineEdit,
+        QVBoxLayout, QPushButton, QCheckBox, QTextEdit,
+    )
+
+    app = QApplication.instance() or QApplication(sys.argv)
     wizard = QWizard()
     wizard.setWindowTitle("Blue Fox OS — Premier démarrage")
     wizard.setOption(QWizard.WizardOption.NoBackButtonOnStartPage, True)
@@ -87,9 +87,20 @@ def run_wizard(tenant: dict) -> int:
                                QCheckBox, QLineEdit))
     wizard.addPage(_vault_page(tenant, QWizardPage, QVBoxLayout, QLabel,
                                QPushButton))
-    done_page = _done_page(tenant, wizard, QWizardPage, QVBoxLayout, QTextEdit)
-    wizard.addPage(done_page)
+    wizard.addPage(_done_page(tenant, wizard, QWizardPage, QVBoxLayout,
+                              QTextEdit))
+    return app, wizard
 
+
+def run_wizard(tenant: dict) -> int:
+    try:
+        app, wizard = build_wizard(tenant)
+    except ImportError:
+        LOG.error("PyQt6 not available ; falling back to terminal stub")
+        print("[stub] Blue Fox OS welcome wizard ; PyQt6 manquant.")
+        return 0
+
+    from PyQt6.QtWidgets import QWizard
     rc = wizard.exec()
     if rc == QWizard.DialogCode.Accepted:
         _finalize_and_apply(
