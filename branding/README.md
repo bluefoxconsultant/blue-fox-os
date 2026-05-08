@@ -23,6 +23,8 @@ Ce dossier contient les fichiers d'images shippes dans l'image OCI BF (et refere
 2. Commit + push : la CI build une nouvelle image dans les minutes qui suivent.
 3. Les machines deployees recuperent la mise a jour au prochain `rpm-ostree update` (timer quotidien).
 
-## Statut au 2026-04-28
+## Statut au 2026-05-06
 
-Aucun fichier d'asset present. Les URLs dans `config/bf.json` (raw.githubusercontent.com/...) retournent 404. A produire avant le 2026-05-15 (matrice BFOSD8).
+Tous les fichiers requis sont presents : `logo.png` (53 KB), `wallpaper.jpg` (81 KB), `splash.png` (1 MB), `app-icon.svg`, `bluefox-startmenu.svg`, ainsi que le master `blue_fox_os_lossless.svg` et le sous-dossier `grub-theme/`. BFOSD8 est materiellement livre avant la gate du 2026-05-15.
+
+Les URLs `raw.githubusercontent.com/...` dans `config/bf.json` retournent 404 (repo prive), c'est attendu : `scripts/build_branded_iso.sh` fait `fetch_or_local` et tombe sur les fichiers locaux quand les URLs ne resolvent pas. Pas besoin d'heberger publiquement les assets pour que la CI les baked dans l'image.
