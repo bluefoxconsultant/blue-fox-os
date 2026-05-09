@@ -211,6 +211,54 @@ jobs:
         run: |
           echo "Image: ${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:latest"
 
+  # P5.2 F7 : attache un SBOM SPDX-JSON signé en attestation cosign à chaque
+  # image OCI publiée. Comble le gap identifié au pré-audit P5.2 (cosign tree
+  # ne montrait que la signature). Verification client : cosign verify-attestation
+  # --key cosign.pub --type spdx <image>.
+  attest-sbom:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        tenant: [bf, bf-surface, factice]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sigstore/cosign-installer@v3
+      - name: Install syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+            | sh -s -- -b /usr/local/bin
+          syft version
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Generate SBOM (SPDX JSON)
+        run: |
+          syft ${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:latest \
+            -o spdx-json=sbom.spdx.json
+          ls -lh sbom.spdx.json
+      - name: Attest SBOM via cosign
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+        run: |
+          cosign attest --yes \
+            --predicate sbom.spdx.json \
+            --type spdx \
+            --key env://COSIGN_PRIVATE_KEY \
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:latest
+      - name: Verify attestation roundtrip
+        run: |
+          cosign verify-attestation \
+            --key cosign.pub \
+            --type spdx \
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:latest \
+            > /dev/null
+          echo "Attestation verified for blue-fox-os-${{ matrix.tenant }}"
+
   # BFOSL3 / P5.2 : smoke test du pipeline securite. Apres chaque push main,
   # verifie que la nouvelle image OCI publiee est bien signable + verifiable
   # avec la cle publique commitee. Coupe la chaine de confiance si jamais
