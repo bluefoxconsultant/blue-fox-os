@@ -223,3 +223,93 @@ def test_emit_neofetch_ships_config_and_ascii(tmp_path: Path):
     ascii_path = tmp_path / "usr/share/bluefox/branding/neofetch.ascii"
     assert ascii_path.exists()
     assert "Blue Fox OS" in ascii_path.read_text()
+
+
+def _wcag_luminance(hex_color: str) -> float:
+    """sRGB relative luminance per WCAG 2.x."""
+    r, g, b = (c / 255 for c in gkt._hex_to_rgb(hex_color))
+
+    def lin(c: float) -> float:
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+
+
+def _wcag_contrast(fg_hex: str, bg_hex: str) -> float:
+    l1, l2 = _wcag_luminance(fg_hex), _wcag_luminance(bg_hex)
+    if l1 < l2:
+        l1, l2 = l2, l1
+    return (l1 + 0.05) / (l2 + 0.05)
+
+
+def _rgb_tuple_from_section(text: str, section: str, key: str) -> tuple[int, int, int]:
+    """Parse `[section]\\n...key=R,G,B...` from a generated .colors file."""
+    lines = text.splitlines()
+    in_section = False
+    for line in lines:
+        if line.startswith("[") and line.endswith("]"):
+            in_section = line == f"[{section}]"
+            continue
+        if in_section and line.startswith(f"{key}="):
+            r, g, b = (int(x) for x in line.split("=", 1)[1].split(","))
+            return r, g, b
+    raise AssertionError(f"{section}.{key} not found")
+
+
+def _rgb_to_hex(rgb: tuple[int, int, int]) -> str:
+    return "#{:02X}{:02X}{:02X}".format(*rgb)
+
+
+def test_color_scheme_foreground_text_passes_wcag_on_dark_bg(tmp_path: Path):
+    """BF brand canon interdit explicitement texte bleu-accent sur fond
+    anthracite. ForegroundActive/Link/Visited doivent utiliser un accent
+    claircie qui passe WCAG AAA (≥7:1) sur les sections text-heavy
+    (Window/View/Header/Tooltip — Dolphin labels, content panes, tooltips,
+    headers de listes), et au minimum WCAG AA (≥4.5:1) sur Button (BG
+    naturellement plus clair, labels bouton sont grands et rarement en état
+    Active/Link).
+    """
+    tenant = {"slug": "bf", "branding": {"palette": {"primary": "#29ABE1", "secondary": "#2D3031", "accent": "#29ABE1"}}}
+    artifacts = gkt.emit_all(tenant, tmp_path)
+    text = artifacts["color_scheme"].read_text()
+
+    aaa_sections = ("Colors:Window", "Colors:View", "Colors:Header", "Colors:Tooltip")
+    aa_sections = ("Colors:Button",)
+    for section in aaa_sections + aa_sections:
+        bg = _rgb_to_hex(_rgb_tuple_from_section(text, section, "BackgroundNormal"))
+        threshold = 7.0 if section in aaa_sections else 4.5
+        level = "AAA" if section in aaa_sections else "AA"
+        for key in ("ForegroundActive", "ForegroundLink", "ForegroundVisited"):
+            fg = _rgb_to_hex(_rgb_tuple_from_section(text, section, key))
+            ratio = _wcag_contrast(fg, bg)
+            assert ratio >= threshold, (
+                f"{section}.{key}={fg} on {bg} contrast={ratio:.2f}:1, "
+                f"fails WCAG {level} (≥{threshold}:1)"
+            )
+
+
+def test_color_scheme_foreground_normal_passes_aaa_everywhere(tmp_path: Path):
+    """ForegroundNormal (texte principal blanc-cassé) DOIT passer AAA partout —
+    c'est le texte le plus dense visuellement (corps des fenêtres, contenus de
+    fichiers, étiquettes par défaut)."""
+    tenant = {"slug": "bf", "branding": {"palette": {"primary": "#29ABE1", "secondary": "#2D3031", "accent": "#29ABE1"}}}
+    artifacts = gkt.emit_all(tenant, tmp_path)
+    text = artifacts["color_scheme"].read_text()
+    for section in ("Colors:Window", "Colors:View", "Colors:Button", "Colors:Header", "Colors:Tooltip"):
+        bg = _rgb_to_hex(_rgb_tuple_from_section(text, section, "BackgroundNormal"))
+        fg = _rgb_to_hex(_rgb_tuple_from_section(text, section, "ForegroundNormal"))
+        ratio = _wcag_contrast(fg, bg)
+        assert ratio >= 7.0, f"{section}.ForegroundNormal={fg} on {bg} = {ratio:.2f}:1, fails AAA"
+
+
+def test_color_scheme_decoration_keeps_brand_accent(tmp_path: Path):
+    """L'accent BF brut reste utilisé pour DecorationFocus/Hover (borders),
+    pas pour du texte. Permet de garder l'identité visuelle BF (#29ABE1)
+    sur les focus rings et hover states.
+    """
+    tenant = {"slug": "bf", "branding": {"palette": {"accent": "#29ABE1"}}}
+    artifacts = gkt.emit_all(tenant, tmp_path)
+    text = artifacts["color_scheme"].read_text()
+    for section in ("Colors:Window", "Colors:View", "Colors:Button", "Colors:Header", "Colors:Tooltip"):
+        focus = _rgb_to_hex(_rgb_tuple_from_section(text, section, "DecorationFocus"))
+        assert focus == "#29ABE1", f"{section}.DecorationFocus must keep raw BF accent (got {focus})"

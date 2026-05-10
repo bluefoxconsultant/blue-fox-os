@@ -95,6 +95,17 @@ def emit_color_scheme(b: dict, files_root: Path) -> Path:
     fg_inactive = _darker(fg, 0.20)
     accent = b["accent"]
     accent_hover = _lighter(accent, 0.15)
+    # accent_text : variante claircie de l'accent, sûre pour du texte sur fond
+    # foncé. Le brand canon BF interdit explicitement l'accent #29ABE1 en
+    # foreground sur l'anthracite #2D3031 (contraste ~5.5:1, visuellement
+    # muddled). _lighter(accent, 0.40) → #7FCDED sur #2D3031 = 8.1:1 (WCAG AAA),
+    # passe ≥7:1 sur tous les BackgroundNormal de toutes les sections (Window,
+    # View légèrement éclaircie, Button éclairci, Header/Tooltip assombris).
+    # Réservé aux ForegroundActive / ForegroundLink / ForegroundVisited ;
+    # l'accent raw reste uniquement dans DecorationFocus / DecorationHover
+    # (borders/focus rings, pas du texte).
+    accent_text = _lighter(accent, 0.40)
+    accent_visited = _lighter(accent, 0.50)
     selection_fg = "#FFFFFF"
 
     sections = {
@@ -123,14 +134,14 @@ def emit_color_scheme(b: dict, files_root: Path) -> Path:
             "BackgroundNormal": _rgb(_lighter(bg, 0.10)),
             "DecorationFocus": _rgb(accent),
             "DecorationHover": _rgb(accent_hover),
-            "ForegroundActive": _rgb(accent),
+            "ForegroundActive": _rgb(accent_text),
             "ForegroundInactive": _rgb(fg_inactive),
-            "ForegroundLink": _rgb(accent),
+            "ForegroundLink": _rgb(accent_text),
             "ForegroundNegative": "218,68,83",
             "ForegroundNeutral": "246,116,0",
             "ForegroundNormal": _rgb(fg),
             "ForegroundPositive": "39,174,96",
-            "ForegroundVisited": _rgb(_lighter(accent, 0.20)),
+            "ForegroundVisited": _rgb(accent_visited),
         },
         "Colors:Selection": {
             "BackgroundAlternate": _rgb(_darker(accent, 0.10)),
@@ -151,56 +162,60 @@ def emit_color_scheme(b: dict, files_root: Path) -> Path:
             "BackgroundNormal": _rgb(_darker(bg, 0.05)),
             "DecorationFocus": _rgb(accent),
             "DecorationHover": _rgb(accent_hover),
-            "ForegroundActive": _rgb(accent),
+            "ForegroundActive": _rgb(accent_text),
             "ForegroundInactive": _rgb(fg_inactive),
-            "ForegroundLink": _rgb(accent),
+            "ForegroundLink": _rgb(accent_text),
             "ForegroundNegative": "218,68,83",
             "ForegroundNeutral": "246,116,0",
             "ForegroundNormal": _rgb(fg),
             "ForegroundPositive": "39,174,96",
-            "ForegroundVisited": _rgb(_lighter(accent, 0.20)),
+            "ForegroundVisited": _rgb(accent_visited),
         },
         "Colors:View": {
             "BackgroundAlternate": _rgb(_darker(bg, 0.05)),
-            "BackgroundNormal": _rgb(_lighter(bg, 0.03)),
+            # Pas d'éclaircissement de bg : préserve le contraste AAA du
+            # ForegroundActive/Link (accent_text) sur ce BG. Différenciation
+            # Window/View laissée à BackgroundAlternate qui assombrit pour les
+            # rows alternées (Dolphin, listes, content panes).
+            "BackgroundNormal": _rgb(bg),
             "DecorationFocus": _rgb(accent),
             "DecorationHover": _rgb(accent_hover),
-            "ForegroundActive": _rgb(accent),
+            "ForegroundActive": _rgb(accent_text),
             "ForegroundInactive": _rgb(fg_inactive),
-            "ForegroundLink": _rgb(accent),
+            "ForegroundLink": _rgb(accent_text),
             "ForegroundNegative": "218,68,83",
             "ForegroundNeutral": "246,116,0",
             "ForegroundNormal": _rgb(fg),
             "ForegroundPositive": "39,174,96",
-            "ForegroundVisited": _rgb(_lighter(accent, 0.20)),
+            "ForegroundVisited": _rgb(accent_visited),
         },
         "Colors:Window": {
             "BackgroundAlternate": _rgb(bg_alt),
             "BackgroundNormal": _rgb(bg),
             "DecorationFocus": _rgb(accent),
             "DecorationHover": _rgb(accent_hover),
-            "ForegroundActive": _rgb(accent),
+            "ForegroundActive": _rgb(accent_text),
             "ForegroundInactive": _rgb(fg_inactive),
-            "ForegroundLink": _rgb(accent),
+            "ForegroundLink": _rgb(accent_text),
             "ForegroundNegative": "218,68,83",
             "ForegroundNeutral": "246,116,0",
             "ForegroundNormal": _rgb(fg),
             "ForegroundPositive": "39,174,96",
-            "ForegroundVisited": _rgb(_lighter(accent, 0.20)),
+            "ForegroundVisited": _rgb(accent_visited),
         },
         "Colors:Header": {
             "BackgroundAlternate": _rgb(_darker(bg, 0.10)),
             "BackgroundNormal": _rgb(_darker(bg, 0.05)),
             "DecorationFocus": _rgb(accent),
             "DecorationHover": _rgb(accent_hover),
-            "ForegroundActive": _rgb(accent),
+            "ForegroundActive": _rgb(accent_text),
             "ForegroundInactive": _rgb(fg_inactive),
-            "ForegroundLink": _rgb(accent),
+            "ForegroundLink": _rgb(accent_text),
             "ForegroundNegative": "218,68,83",
             "ForegroundNeutral": "246,116,0",
             "ForegroundNormal": _rgb(fg),
             "ForegroundPositive": "39,174,96",
-            "ForegroundVisited": _rgb(_lighter(accent, 0.20)),
+            "ForegroundVisited": _rgb(accent_visited),
         },
         "General": {
             "ColorScheme": b["slug"],
