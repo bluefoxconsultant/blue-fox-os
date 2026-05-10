@@ -12,9 +12,17 @@
 #   - ISO volume label: "Blue Fox OS Installer"
 #   - Boot splash background (when GRUB theme renders it)
 #
-# What this does NOT brand (out of scope, see plan Phase 3.5):
-#   - Anaconda installer GUI chrome (sidebar logo, title bar) — needs an
-#     anaconda-product RPM in the install-time root, deferred to v0.1.
+# Anaconda product branding (v0.1.1, BF #22417/#22418/#22419):
+#   - Runtime keyboard + locale: handled here via `inst.keymap=ca` and
+#     `inst.lang=fr_CA.UTF-8` boot params injected in the menuentries below
+#     (closes the keyboard half of #22419).
+#   - Anaconda installer GUI chrome (sidebar/logo pixmaps + profile.d config
+#     + .buildstamp title): overlaid into the stage2 squashfs via
+#     scripts/inject-anaconda-product.sh, called at the end of this script.
+#     Selected at boot via `inst.profile=blue-fox-os`. The full asset spec
+#     is documented in branding/anaconda/README.md — the text-only files
+#     (profile config, CSS, .buildstamp) ship here; sidebar PNGs are pending
+#     design and the overlay script skips them gracefully until they land.
 #
 # Usage: ./scripts/brand-iso.sh path/to/install.iso
 #        Output: same path, atomically replaced with the branded ISO.
@@ -116,17 +124,17 @@ menuentry 'Install Blue Fox OS (zero-touch)' --class fedora --class gnu-linux {
     echo " Fetching install config from https://\${bf_domain}/blue-fox-install.ks"
     echo " Anaconda will prompt for LUKS passphrase + user creation."
     echo ""
-    linuxefi ${VMLINUZ} inst.stage2=hd:LABEL=${VOLID} inst.ks=https://\${bf_domain}/blue-fox-install.ks ip=dhcp quiet
+    linuxefi ${VMLINUZ} inst.stage2=hd:LABEL=${VOLID} inst.ks=https://\${bf_domain}/blue-fox-install.ks inst.profile=blue-fox-os inst.keymap=ca inst.lang=fr_CA.UTF-8 ip=dhcp quiet
     initrdefi ${INITRD}
 }
 
 menuentry 'Install Blue Fox OS (built-in defaults)' --class fedora --class gnu-linux {
-    linuxefi ${VMLINUZ} inst.stage2=hd:LABEL=${VOLID} quiet
+    linuxefi ${VMLINUZ} inst.stage2=hd:LABEL=${VOLID} inst.profile=blue-fox-os inst.keymap=ca inst.lang=fr_CA.UTF-8 quiet
     initrdefi ${INITRD}
 }
 
 menuentry 'Test this media & install Blue Fox OS' --class fedora --class gnu-linux {
-    linuxefi ${VMLINUZ} inst.stage2=hd:LABEL=${VOLID} rd.live.check quiet
+    linuxefi ${VMLINUZ} inst.stage2=hd:LABEL=${VOLID} inst.profile=blue-fox-os inst.keymap=ca inst.lang=fr_CA.UTF-8 rd.live.check quiet
     initrdefi ${INITRD}
 }
 
@@ -176,12 +184,12 @@ label builtin
     menu label ^Install Blue Fox OS (built-in defaults)
     menu default
     kernel ${VMLINUZ}
-    append initrd=${INITRD} inst.stage2=hd:LABEL=${VOLID} quiet
+    append initrd=${INITRD} inst.stage2=hd:LABEL=${VOLID} inst.profile=blue-fox-os inst.keymap=ca inst.lang=fr_CA.UTF-8 quiet
 
 label test
     menu label ^Test this media & install
     kernel ${VMLINUZ}
-    append initrd=${INITRD} inst.stage2=hd:LABEL=${VOLID} rd.live.check quiet
+    append initrd=${INITRD} inst.stage2=hd:LABEL=${VOLID} inst.profile=blue-fox-os inst.keymap=ca inst.lang=fr_CA.UTF-8 rd.live.check quiet
 EOF
     if [ -n "${OLD_VOLID:-}" ] && [ "${OLD_VOLID}" != "${VOLID}" ]; then
         sed -i "s|LABEL=${OLD_VOLID}|LABEL=${VOLID}|g" "${TMPDIR}/isolinux.cfg"
@@ -218,3 +226,10 @@ xorriso "${XORRISO_ARGS[@]}"
 mv "${ISO_OUT}" "${ISO}"
 SIZE=$(du -h "${ISO}" | cut -f1)
 echo "[brand-iso] OK ${ISO} (${SIZE})"
+
+# 5. Anaconda installer GUI chrome (BF #22417/#22418 + title half of #22419).
+# Overlays branding/anaconda/* into the stage2 squashfs of the ISO. Skips
+# silently when no assets are present, so this is a no-op on a fresh
+# checkout until the sidebar pixmaps land alongside the text-only configs
+# that ship with this script.
+"${WORKDIR}/scripts/inject-anaconda-product.sh" "${ISO}"
