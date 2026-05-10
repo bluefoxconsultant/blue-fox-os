@@ -1,0 +1,16 @@
+[Desktop Entry]
+# Blue Fox OS — masque le Plasma Welcome autostart system-wide.
+#
+# Override l'autostart upstream du package plasma-welcome (qui pose un
+# fichier au même path avec Hidden=false). Hidden=true empêche la session
+# Plasma de lancer l'app au login. Notre wizard PyQt6 BF
+# (firstboot.service → bluefox-welcome) prend en charge le firstboot.
+#
+# Approche choisie : override par fichier à path identique plutôt que rpm-erase
+# du package plasma-welcome — préserve l'app si user veut le relancer
+# manuellement (kcmshell6 plasma-welcome) et facilite le revert (juste retirer
+# notre fichier).
+Type=Application
+Name=Plasma Welcome (disabled by Blue Fox OS)
+Hidden=true
+NoDisplay=true
