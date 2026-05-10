@@ -1,0 +1,58 @@
+/* Anaconda installer chrome — Blue Fox OS. */
+/*                                                                         */
+/* Overlaid into stage2 at /usr/share/anaconda/pixmaps/blue-fox-os.css and */
+/* picked up by /usr/share/anaconda/profile.d/blue-fox-os.conf via the     */
+/* [User Interface] custom_stylesheet key. GTK4 / libadwaita CSS dialect.  */
+/*                                                                         */
+/* Brand reference: tentaclaude memory reference_bf_brand_canonical.md     */
+/*   - Accent blue   #29ABE1  (decoration / accent only)                   */
+/*   - Anthracite    #2D3031  (foreground surfaces on dark)                */
+/*   - Light blue    #7FCDED  (foreground text on dark — never #29ABE1)    */
+
+@define-color bf_accent   #29ABE1;
+@define-color bf_anthrct  #2D3031;
+@define-color bf_lightblu #7FCDED;
+@define-color bf_offwhite #F8FAFC;
+
+/* Sidebar background — replaces the Fedora triangle pattern (#22418). */
+.anaconda-sidebar,
+AnacondaSpokeWindow > .anaconda-sidebar,
+.anaconda-spoke-window-sidebar {
+    background-color: @bf_anthrct;
+    background-image: url("/usr/share/anaconda/pixmaps/sidebar-bg.png");
+    background-repeat: no-repeat;
+    background-position: center top;
+    color: @bf_offwhite;
+}
+
+/* Sidebar logo overlay (#22417). */
+.anaconda-sidebar-logo {
+    background-image: url("/usr/share/anaconda/pixmaps/sidebar-logo.png");
+    background-repeat: no-repeat;
+    background-position: 16px 16px;
+    min-height: 120px;
+}
+
+/* Top bar — keep readable on dark + tint subheadings with the lighter accent
+ * (never #29ABE1 foreground on dark, per brand guide). */
+.anaconda-toplevel headerbar,
+.anaconda-toplevel .titlebar {
+    background-color: @bf_anthrct;
+    color: @bf_offwhite;
+}
+
+.anaconda-toplevel headerbar label.subtitle {
+    color: @bf_lightblu;
+}
+
+/* Selected list rows + buttons use the accent as decoration only. */
+button.suggested-action,
+button:active.suggested-action {
+    background-color: @bf_accent;
+    color: @bf_offwhite;
+}
+
+row:selected {
+    background-color: alpha(@bf_accent, 0.18);
+    color: @bf_offwhite;
+}

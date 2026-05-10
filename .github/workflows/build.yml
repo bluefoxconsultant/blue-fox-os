@@ -398,7 +398,10 @@ jobs:
       # BEFORE sha256/cosign so the signature covers the branded artifact.
       - name: Brand ISO chrome
         run: |
-          sudo apt-get install -y -q xorriso
+          # squashfs-tools is required by scripts/inject-anaconda-product.sh
+          # (called from brand-iso.sh) to overlay the Anaconda chrome into
+          # the stage2 squashfs of the ISO.
+          sudo apt-get install -y -q xorriso squashfs-tools
           sudo ./scripts/brand-iso.sh output/bootiso/install.iso
 
       # GitHub Releases plafonne a 2 GiB par asset. Une ISO Anaconda + le
