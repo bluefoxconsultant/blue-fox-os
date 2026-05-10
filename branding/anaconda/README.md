@@ -4,7 +4,8 @@ Drop final Anaconda branding assets in this directory so
 `scripts/inject-anaconda-product.sh` can overlay them into the install-time
 squashfs (`/images/install.img`). The overlay step is skipped when an asset
 is missing, so a partial drop is safe — only files that are present land in
-the ISO.
+the ISO. Olivier produces the PNGs himself; this README is the spec the
+PNGs need to satisfy.
 
 Tracks Odoo tasks **BF #22417** (logo top-left), **BF #22418** (sidebar
 pattern), and the GUI-title half of **BF #22419** (« BLUE FOX OS
@@ -15,7 +16,7 @@ by boot params in `scripts/brand-iso.sh` and don't need anything here.
 
 All four files are optional individually. The placeholders in this directory
 exercise the overlay path end-to-end against the existing `branding/logo.png`
-so CI smoke builds don't bit-rot — replace them with André's final designs.
+so CI smoke builds don't bit-rot — replace them with the final designs.
 
 | File                        | Target path in install.img                                  | Spec                                                                                                                          |
 | --------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |

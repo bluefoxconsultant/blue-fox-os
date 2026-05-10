@@ -22,8 +22,7 @@
 #     Selected at boot via `inst.profile=blue-fox-os`. The full asset spec
 #     is documented in branding/anaconda/README.md — the text-only files
 #     (profile config, CSS, .buildstamp) ship here; sidebar PNGs are pending
-#     André's design and the overlay script skips them gracefully until they
-#     land.
+#     design and the overlay script skips them gracefully until they land.
 #
 # Usage: ./scripts/brand-iso.sh path/to/install.iso
 #        Output: same path, atomically replaced with the branded ISO.
@@ -231,6 +230,6 @@ echo "[brand-iso] OK ${ISO} (${SIZE})"
 # 5. Anaconda installer GUI chrome (BF #22417/#22418 + title half of #22419).
 # Overlays branding/anaconda/* into the stage2 squashfs of the ISO. Skips
 # silently when no assets are present, so this is a no-op on a fresh
-# checkout until André's pixmaps land alongside the text-only configs that
-# ship with this script.
+# checkout until the sidebar pixmaps land alongside the text-only configs
+# that ship with this script.
 "${WORKDIR}/scripts/inject-anaconda-product.sh" "${ISO}"

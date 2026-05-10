@@ -25,7 +25,7 @@
 #
 # Called by scripts/brand-iso.sh after the bootloader chrome step and
 # before the final xorriso repack. Can also be invoked standalone for
-# regression testing once André's final assets land.
+# regression testing once the final sidebar pixmaps land.
 
 set -euo pipefail
 
