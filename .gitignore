@@ -42,7 +42,10 @@ files/etc/skel/
 files/etc/sddm.conf.d/
 files/usr/share/color-schemes/
 files/usr/share/wallpapers/
-files/usr/share/plasma/
+# files/usr/share/plasma/look-and-feel/ et /icons/* sont générés par
+# scripts/generate_kde_theme.py ; files/usr/share/plasma/plasma-welcome/
+# est hand-written (intégration Plasma Welcome BFOS, #22423).
+files/usr/share/plasma/look-and-feel/
 files/usr/share/sddm/themes/
 files/usr/share/plymouth/themes/
 files/usr/share/icons/bluefox-*/
