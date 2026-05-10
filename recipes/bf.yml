@@ -56,10 +56,16 @@ modules:
   # Refresh fontconfig cache pour les Lexend TTFs hand-baked (les RPM fonts
   # ont fc-cache dans leur scriptlet, pas les fichiers via module `files`).
   # Sans ça, `fc-match sans-serif` peut retourner Cantarell au premier boot.
+  # Plymouth : bake notre theme (généré par generate_kde_theme.py et déjà
+  # en place dans /usr/share/plymouth/themes/<slug>/) dans l'initramfs via
+  # plymouth-set-default-theme -R, sinon le splash BF est invisible
+  # pendant LUKS prompt + early boot (rapporté par Olivier sur #22420 :
+  # « No splash screen, should have branded splash + Blue Fox OS logo »).
   - type: script
     snippets:
       - rpm-ostree install /usr/share/bluefox/rpm-staging/bluefox-welcome.noarch.rpm && rm -rf /usr/share/bluefox/rpm-staging
       - fc-cache -f /usr/share/fonts/lexend/
+      - PLYMOUTH_THEME=$(awk -F= '/^Theme=/{print $2}' /etc/plymouth/plymouthd.conf) && [ -n "$PLYMOUTH_THEME" ] && plymouth-set-default-theme -R "$PLYMOUTH_THEME"
 
   - type: systemd
     system:
