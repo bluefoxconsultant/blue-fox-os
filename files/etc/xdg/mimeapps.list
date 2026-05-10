@@ -1,0 +1,24 @@
+# Blue Fox OS — défauts mime system-wide.
+#
+# Brave (Flatpak com.brave.Browser) devient le handler par défaut pour les
+# liens http/https et le HTML. Sans ce fichier, xdg-open consulte la chaîne
+# fallback (KDE association DB → Plasma default browser KCM → premier
+# desktop file qui claim le mime) et tombe parfois sur Kate (text editor)
+# ou un autre app pour text/html, brisant les boutons « Ouvrir https://... »
+# du wizard PyQt6 et l'auto-account provisioning Authentik (rapporté par
+# Olivier sur tâche BF #22155, bf.note 101, smoke RC.1 du 2026-05-10).
+#
+# Override possible par l'utilisateur via ~/.config/mimeapps.list.
+
+[Default Applications]
+x-scheme-handler/http=com.brave.Browser.desktop
+x-scheme-handler/https=com.brave.Browser.desktop
+x-scheme-handler/ftp=com.brave.Browser.desktop
+x-scheme-handler/chrome=com.brave.Browser.desktop
+text/html=com.brave.Browser.desktop
+application/xhtml+xml=com.brave.Browser.desktop
+application/x-extension-html=com.brave.Browser.desktop
+application/x-extension-htm=com.brave.Browser.desktop
+application/x-extension-shtml=com.brave.Browser.desktop
+application/x-extension-xhtml=com.brave.Browser.desktop
+application/x-extension-xht=com.brave.Browser.desktop
