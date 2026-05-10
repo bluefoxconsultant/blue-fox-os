@@ -1,0 +1,22 @@
+[Desktop Entry]
+# Blue Fox OS — entrée du menu d'applications pour relancer le wizard
+# bluefox-welcome (PyQt6) à la demande. PAS un autostart : Plasma Welcome
+# (qui contient notre extra-page 01-BlueFoxConfig.qml) est désormais le
+# point d'entrée firstboot ; cette entrée permet à l'utilisateur de
+# relancer manuellement la config depuis le menu KDE quand voulu.
+#
+# Le `--service-mode` skip le wizard si /var/lib/bluefox-welcome/done
+# existe (idempotent ; relance = re-config si ce flag a été supprimé).
+Type=Application
+Name=Configuration Blue Fox
+Name[en_CA]=Blue Fox Setup
+Name[en_US]=Blue Fox Setup
+GenericName=Configuration tenant Blue Fox
+Comment=Configure Nextcloud, Vaultwarden, Brave Sync et KAccounts pour votre identité Blue Fox
+Comment[en_CA]=Configure Nextcloud, Vaultwarden, Brave Sync, and KAccounts for your Blue Fox identity
+Exec=/usr/bin/bluefox-welcome
+Icon=preferences-desktop-personal
+Categories=Settings;System;
+OnlyShowIn=KDE;
+TryExec=/usr/bin/bluefox-welcome
+Keywords=blue;fox;welcome;setup;onboarding;tenant;configuration;
