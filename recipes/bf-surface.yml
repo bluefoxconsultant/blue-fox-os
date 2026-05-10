@@ -80,6 +80,8 @@ modules:
   - type: script
     snippets:
       - rpm-ostree install /usr/share/bluefox/rpm-staging/bluefox-welcome.noarch.rpm && rm -rf /usr/share/bluefox/rpm-staging
+      # Refresh fontconfig cache pour Lexend hand-baked (cf bf.yml).
+      - fc-cache -f /usr/share/fonts/lexend/
 
   - type: systemd
     system:
