@@ -18,6 +18,9 @@ modules:
       - https://pkgs.tailscale.com/stable/fedora/tailscale.repo
     install:
       - tailscale                # VPN, daemon masked par défaut
+      - plymouth-plugin-scripts  # script.so requis par notre Plymouth theme
+                                 # (loading bar animée via Plymouth scripting,
+                                 # cf. scripts/generate_kde_theme.py emit_plymouth_theme)
     # Lexend : pas de paquet en repos Fedora, ship via files/usr/share/fonts/lexend/
     remove:
       - firefox                  # remplacé par Brave Flatpak
