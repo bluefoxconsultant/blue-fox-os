@@ -53,9 +53,13 @@ modules:
   # Installe le RPM bluefox-welcome stage par la CI dans
   # files/usr/share/bluefox/rpm-staging/. Apres install, on retire le RPM
   # source pour ne pas trainer 100 KB inutiles dans l'image finale.
+  # Refresh fontconfig cache pour les Lexend TTFs hand-baked (les RPM fonts
+  # ont fc-cache dans leur scriptlet, pas les fichiers via module `files`).
+  # Sans ça, `fc-match sans-serif` peut retourner Cantarell au premier boot.
   - type: script
     snippets:
       - rpm-ostree install /usr/share/bluefox/rpm-staging/bluefox-welcome.noarch.rpm && rm -rf /usr/share/bluefox/rpm-staging
+      - fc-cache -f /usr/share/fonts/lexend/
 
   - type: systemd
     system:
