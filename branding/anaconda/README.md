@@ -20,7 +20,7 @@ so CI smoke builds don't bit-rot — replace them with the final designs.
 
 | File                        | Target path in install.img                                  | Spec                                                                                                                          |
 | --------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `blue-fox-os.conf`          | `/usr/share/anaconda/profile.d/blue-fox-os.conf`            | Profile config selected by `inst.profile=blue-fox-os`. Derives from `fedora-kinoite`. Plain text — already provided here.    |
+| `blue-fox-os.conf`          | `/etc/anaconda/profile.d/blue-fox-os.conf`                  | Profile config selected by `inst.profile=blue-fox-os`. Derives from `fedora-kinoite`. Plain text — already provided here.    |
 | `blue-fox-os.css`           | `/usr/share/anaconda/pixmaps/blue-fox-os.css`               | GTK4 stylesheet for sidebar + headerbar + suggested-action accents. Already provided here.                                    |
 | `sidebar-bg.png`            | `/usr/share/anaconda/pixmaps/sidebar-bg.png`                | Sidebar background (replaces Fedora triangle pattern). 256×800 PNG. BF accent `#29ABE1` on `#2D3031` anthracite. Lexend logotype acceptable but optional. |
 | `sidebar-logo.png`          | `/usr/share/anaconda/pixmaps/sidebar-logo.png`              | Logo overlaid on sidebar. 230×120 PNG, transparent. BF wordmark + fox glyph.                                                  |
