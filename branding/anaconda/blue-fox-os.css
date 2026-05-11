@@ -14,7 +14,10 @@
 @define-color bf_lightblu #7FCDED;
 @define-color bf_offwhite #F8FAFC;
 
-/* Sidebar background — replaces the Fedora triangle pattern (#22418). */
+/* Sidebar background — replaces the Fedora triangle pattern (#22418).
+ * background-size: cover lets the source PNG be larger than 256×800
+ * (Olivier ships 1540×6400 « Barracuda Side Graphic »); GTK4 scales it
+ * down keeping aspect ratio, crops bottom with background-position center top. */
 .anaconda-sidebar,
 AnacondaSpokeWindow > .anaconda-sidebar,
 .anaconda-spoke-window-sidebar {
@@ -22,6 +25,7 @@ AnacondaSpokeWindow > .anaconda-sidebar,
     background-image: url("/usr/share/anaconda/pixmaps/sidebar-bg.png");
     background-repeat: no-repeat;
     background-position: center top;
+    background-size: cover;
     color: @bf_offwhite;
 }
 
