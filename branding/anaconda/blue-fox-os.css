@@ -1,13 +1,18 @@
-/* Anaconda installer chrome — Blue Fox OS. */
+/* Anaconda installer chrome — Blue Fox OS.                                */
 /*                                                                         */
 /* Overlaid into stage2 at /usr/share/anaconda/pixmaps/blue-fox-os.css and */
-/* picked up by /usr/share/anaconda/profile.d/blue-fox-os.conf via the     */
-/* [User Interface] custom_stylesheet key. GTK4 / libadwaita CSS dialect.  */
+/* picked up by /etc/anaconda/profile.d/blue-fox-os.conf via the           */
+/* [User Interface] custom_stylesheet key.                                 */
+/*                                                                         */
+/* GTK3 CSS dialect — Anaconda 43 still uses GTK3 widget classes for       */
+/* sidebar/logo/nav-box (cf. /usr/share/anaconda/pixmaps/atomic/           */
+/* fedora-atomic.css as canonical reference).                              */
 /*                                                                         */
 /* Brand reference: tentaclaude memory reference_bf_brand_canonical.md     */
 /*   - Accent blue   #29ABE1  (decoration / accent only)                   */
 /*   - Anthracite    #2D3031  (foreground surfaces on dark)                */
 /*   - Light blue    #7FCDED  (foreground text on dark — never #29ABE1)    */
+/*   - Off-white     #F8FAFC                                               */
 
 @define-color bf_accent   #29ABE1;
 @define-color bf_anthrct  #2D3031;
@@ -15,48 +20,67 @@
 @define-color bf_offwhite #F8FAFC;
 
 /* Sidebar background — replaces the Fedora triangle pattern (#22418).
- * background-size: cover lets the source PNG be larger than 256×800
- * (Olivier ships 1540×6400 « Barracuda Side Graphic »); GTK4 scales it
- * down keeping aspect ratio, crops bottom with background-position center top. */
-.anaconda-sidebar,
-AnacondaSpokeWindow > .anaconda-sidebar,
-.anaconda-spoke-window-sidebar {
+ *
+ * background-size: cover lets the source PNG be larger than the sidebar
+ * pixel slot (Olivier ships 1540×6400 « Barracuda Side Graphic »); GTK
+ * scales it down keeping aspect ratio, crops bottom with
+ * background-position center top. */
+.logo-sidebar {
     background-color: @bf_anthrct;
     background-image: url("/usr/share/anaconda/pixmaps/sidebar-bg.png");
     background-repeat: no-repeat;
     background-position: center top;
     background-size: cover;
-    color: @bf_offwhite;
 }
 
-/* Sidebar logo overlay (#22417). */
-.anaconda-sidebar-logo {
+/* Fedora logo glyph at top of sidebar — neutralized (we don't want
+ * Fedora's mark on a BF-branded installer). */
+.logo {
+    background-image: none;
+    background-color: transparent;
+}
+
+/* Product-specific logo slot — overlay BF wordmark + fox glyph here.
+ * Fedora's profiles use this as the "filled by product.img" hook.
+ * #22417 sidebar-logo.png ships once Olivier finalizes 230×120 PNG. */
+.product-logo {
     background-image: url("/usr/share/anaconda/pixmaps/sidebar-logo.png");
     background-repeat: no-repeat;
-    background-position: 16px 16px;
-    min-height: 120px;
+    background-position: center bottom;
+    background-color: transparent;
 }
 
-/* Top bar — keep readable on dark + tint subheadings with the lighter accent
- * (never #29ABE1 foreground on dark, per brand guide). */
-.anaconda-toplevel headerbar,
-.anaconda-toplevel .titlebar {
+/* Top nav bar (the band with Quit / Done buttons at the top of each
+ * spoke). Anthracite background + light text. Same pattern as
+ * fedora-atomic.css's `AnacondaSpokeWindow #nav-box`. */
+AnacondaSpokeWindow #nav-box {
     background-color: @bf_anthrct;
     color: @bf_offwhite;
 }
 
-.anaconda-toplevel headerbar label.subtitle {
-    color: @bf_lightblu;
+AnacondaSpokeWindow #nav-box GtkButton {
+    box-shadow: none;
+    color: @bf_offwhite;
 }
 
-/* Selected list rows + buttons use the accent as decoration only. */
-button.suggested-action,
-button:active.suggested-action {
+/* Accent the "selected" rows in spoke lists (keyboard layouts, source
+ * mirrors, etc.) using the brand blue at low opacity for contrast. */
+row:selected {
+    background-color: shade(@bf_accent, 0.85);
+    color: @bf_offwhite;
+}
+
+/* Suggested-action buttons (the green "Begin Installation" CTA) re-skin
+ * to BF accent. */
+GtkButton.suggested-action,
+GtkButton.suggested-action:focus,
+GtkButton.suggested-action:hover {
+    background-image: none;
     background-color: @bf_accent;
     color: @bf_offwhite;
 }
 
-row:selected {
-    background-color: alpha(@bf_accent, 0.18);
+GtkButton.suggested-action:active {
+    background-color: shade(@bf_accent, 0.85);
     color: @bf_offwhite;
 }
