@@ -16,7 +16,7 @@ modules:
       - tailscale
       - rclone           # P4.1 : rclone mount NC via systemd --user (BFOSP3)
       - fuse3            # rclone mount needs fusermount3
-      - plymouth-plugin-scripts  # script.so requis par Plymouth theme [#22420]
+      - plymouth-plugin-script   # script.so requis par Plymouth theme [#22420]
     remove:
       - firefox
       - firefox-langpacks

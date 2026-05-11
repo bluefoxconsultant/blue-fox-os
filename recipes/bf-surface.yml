@@ -48,8 +48,8 @@ modules:
       # surface-secureboot : modules signed avec la cle Microsoft Surface
       # pour passer Secure Boot sans desactiver MOK manuellement.
       - surface-secureboot
-      # plymouth-plugin-scripts : script.so requis par Plymouth theme [#22420]
-      - plymouth-plugin-scripts
+      # plymouth-plugin-script : script.so requis par Plymouth theme [#22420]
+      - plymouth-plugin-script
       # Note : on n'installe PAS libwacom-surface car il conflicte avec
       # libwacom du stock Fedora qui est plus recent. La calibration pen
       # marche correctement avec libwacom stock + le kernel-surface ; on
