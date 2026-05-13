@@ -70,6 +70,20 @@ fetch_or_local "$WALLPAPER_URL" "${FILES_DIR}/share/bluefox/branding/wallpaper.j
 [ -n "$SPLASH_URL" ] && fetch_or_local "$SPLASH_URL" "${FILES_DIR}/share/bluefox/branding/splash.png" || true
 [ -n "$APP_ICON_URL" ] && fetch_or_local "$APP_ICON_URL" "${FILES_DIR}/share/bluefox/branding/app-icon.svg" || true
 
+# 2b. Pack wallpapers (#22433) — copier branding/wallpapers/*.png vers l'image.
+# Le welcome agent pick une wallpaper random parmi celles-ci au firstboot
+# (apply_kde_theme), tout en gardant wallpaper.jpg comme default stable pour
+# SDDM/login. Pack absent = degrade gracieux, welcome agent fallback sur wallpaper.jpg.
+WALLPAPERS_SRC="${WORKDIR}/branding/wallpapers"
+WALLPAPERS_DST="${FILES_DIR}/share/bluefox/branding/wallpapers"
+if [ -d "$WALLPAPERS_SRC" ] && compgen -G "${WALLPAPERS_SRC}/*.png" >/dev/null; then
+    mkdir -p "$WALLPAPERS_DST"
+    cp "$WALLPAPERS_SRC"/*.png "$WALLPAPERS_DST/"
+    echo "[branded-iso] wallpapers pack: $(ls -1 "$WALLPAPERS_DST" | wc -l) files"
+else
+    echo "[branded-iso] no wallpapers pack (${WALLPAPERS_SRC}/*.png) — welcome agent fallbacks to wallpaper.jpg"
+fi
+
 # 3. Copier la config dans /usr/share/bluefox/tenant.json (lue par welcome agent).
 cp "$TMP_CFG" "${FILES_DIR}/share/bluefox/tenant.json"
 
