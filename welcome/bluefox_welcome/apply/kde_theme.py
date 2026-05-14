@@ -18,6 +18,7 @@ as soft failures, not exceptions.
 from __future__ import annotations
 
 import logging
+import random
 import shutil
 import subprocess
 from pathlib import Path
@@ -27,7 +28,23 @@ from ..tenant import get_slug
 LOG = logging.getLogger("bluefox-welcome.apply.kde_theme")
 
 BRANDING_RUNTIME = "/usr/share/bluefox/branding"
+WALLPAPERS_DIR = Path(BRANDING_RUNTIME) / "wallpapers"
 LOOK_AND_FEEL_ROOT = Path("/usr/share/plasma/look-and-feel")
+
+
+def _pick_random_wallpaper(
+    wallpapers_dir: Path = WALLPAPERS_DIR,
+    fallback: str = f"{BRANDING_RUNTIME}/wallpaper.jpg",
+    rng: random.Random | None = None,
+) -> str:
+    """Pick one random wallpaper from the pack, fallback to single default (#22433)."""
+    if not wallpapers_dir.is_dir():
+        return fallback
+    pack = sorted(wallpapers_dir.glob("*.png")) + sorted(wallpapers_dir.glob("*.jpg"))
+    if not pack:
+        return fallback
+    chooser = rng or random
+    return str(chooser.choice(pack))
 
 
 def _resolve_lookandfeel_pkg(tenant: dict, slug: str) -> str:
@@ -56,12 +73,13 @@ def _run(cmd: list[str]) -> tuple[bool, str]:
 def apply_kde_theme(
     tenant: dict,
     look_and_feel_root: Path = LOOK_AND_FEEL_ROOT,
+    wallpapers_dir: Path = WALLPAPERS_DIR,
 ) -> tuple[bool, str]:
     """Apply look-and-feel + wallpaper + font to the current user session."""
     slug = get_slug(tenant)
     pkg = _resolve_lookandfeel_pkg(tenant, slug)
     font = _resolve_font(tenant)
-    wallpaper = f"{BRANDING_RUNTIME}/wallpaper.jpg"
+    wallpaper = _pick_random_wallpaper(wallpapers_dir)
 
     notes: list[str] = []
     overall_ok = False
