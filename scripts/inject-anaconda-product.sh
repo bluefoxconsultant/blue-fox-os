@@ -37,7 +37,7 @@ ASSETS="${WORKDIR}/branding/anaconda"
 # silently skipped so a partial drop (e.g. only the CSS + conf, no pixmaps
 # yet) still produces a working overlay.
 declare -A OVERLAY=(
-    ["${ASSETS}/blue-fox-os.conf"]="usr/share/anaconda/profile.d/blue-fox-os.conf"
+    ["${ASSETS}/blue-fox-os.conf"]="etc/anaconda/profile.d/blue-fox-os.conf"
     ["${ASSETS}/blue-fox-os.css"]="usr/share/anaconda/pixmaps/blue-fox-os.css"
     ["${ASSETS}/buildstamp.ini"]=".buildstamp"
     ["${ASSETS}/sidebar-bg.png"]="usr/share/anaconda/pixmaps/sidebar-bg.png"
