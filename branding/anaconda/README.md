@@ -7,10 +7,12 @@ is missing, so a partial drop is safe — only files that are present land in
 the ISO. Olivier produces the PNGs himself; this README is the spec the
 PNGs need to satisfy.
 
-Tracks Odoo tasks **BF #22417** (logo top-left), **BF #22418** (sidebar
-pattern), and the GUI-title half of **BF #22419** (« BLUE FOX OS
-INSTALLATION »). The runtime keyboard + locale halves of #22419 are handled
-by boot params in `scripts/brand-iso.sh` and don't need anything here.
+Tracks Odoo tasks **BF #22417** (top-left logo, closed: covered by
+`sidebar-bg.png` wordmark — `.product-logo` slot neutralized in CSS),
+**BF #22418** (sidebar pattern), and the GUI-title half of **BF #22419**
+(« BLUE FOX OS INSTALLATION »). The runtime keyboard + locale halves of
+#22419 are handled by boot params in `scripts/brand-iso.sh` and don't
+need anything here.
 
 ## Files consumed by the overlay
 
@@ -22,8 +24,8 @@ so CI smoke builds don't bit-rot — replace them with the final designs.
 | --------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | `blue-fox-os.conf`          | `/etc/anaconda/profile.d/blue-fox-os.conf`                  | Profile config selected by `inst.profile=blue-fox-os`. Derives from `fedora-kinoite`. Plain text — already provided here.    |
 | `blue-fox-os.css`           | `/usr/share/anaconda/pixmaps/blue-fox-os.css`               | GTK4 stylesheet for sidebar + headerbar + suggested-action accents. Already provided here.                                    |
-| `sidebar-bg.png`            | `/usr/share/anaconda/pixmaps/sidebar-bg.png`                | Sidebar background (replaces Fedora triangle pattern). 256×800 PNG. BF accent `#29ABE1` on `#2D3031` anthracite. Lexend logotype acceptable but optional. |
-| `sidebar-logo.png`          | `/usr/share/anaconda/pixmaps/sidebar-logo.png`              | Logo overlaid on sidebar. 230×120 PNG, transparent. BF wordmark + fox glyph.                                                  |
+| `sidebar-bg.png`            | `/usr/share/anaconda/pixmaps/sidebar-bg.png`                | Sidebar background **including BF wordmark + fox glyph at top** (Olivier's « Barracuda Side Graphic », 1540×6400 PNG). `background-size: cover` + `center top` crops to the 256×800 sidebar slot. |
+| ~~`sidebar-logo.png`~~      | ~~`/usr/share/anaconda/pixmaps/sidebar-logo.png`~~          | **No longer needed (#22417)**. The wordmark + glyph live inside `sidebar-bg.png`; the `.product-logo` overlay slot is neutralized in the CSS to avoid duplicating the brand. |
 
 ## Brand reference
 
@@ -34,8 +36,8 @@ truth for the palette + typography:
 - Anthracite: `#2D3031`
 - Typeface: Lexend
 
-`branding/blue_fox_os_lossless.svg` is the canonical BFOS logotype to
-derive `sidebar-logo.png` from.
+`branding/blue_fox_os_lossless.svg` is the canonical BFOS logotype, kept
+in the repo as the source of truth for re-deriving any future brand asset.
 
 ## Validation
 
