@@ -48,6 +48,8 @@ modules:
       # surface-secureboot : modules signed avec la cle Microsoft Surface
       # pour passer Secure Boot sans desactiver MOK manuellement.
       - surface-secureboot
+      # plymouth-plugin-script : script.so requis par Plymouth theme [#22420]
+      - plymouth-plugin-script
       # Note : on n'installe PAS libwacom-surface car il conflicte avec
       # libwacom du stock Fedora qui est plus recent. La calibration pen
       # marche correctement avec libwacom stock + le kernel-surface ; on
@@ -82,6 +84,8 @@ modules:
       - rpm-ostree install /usr/share/bluefox/rpm-staging/bluefox-welcome.noarch.rpm && rm -rf /usr/share/bluefox/rpm-staging
       # Refresh fontconfig cache pour Lexend hand-baked (cf bf.yml).
       - fc-cache -f /usr/share/fonts/lexend/
+      # Bake Plymouth theme dans initramfs (cf bf.yml).
+      - PLYMOUTH_THEME=$(awk -F= '/^Theme=/{print $2}' /etc/plymouth/plymouthd.conf) && [ -n "$PLYMOUTH_THEME" ] && plymouth-set-default-theme -R "$PLYMOUTH_THEME"
 
   - type: systemd
     system:

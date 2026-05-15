@@ -17,6 +17,7 @@ modules:
       - tailscale
       - rclone           # P4.1 : rclone mount NC via systemd --user (BFOSP3)
       - fuse3            # rclone mount needs fusermount3
+      - plymouth-plugin-script   # script.so requis par Plymouth theme [#22420]
     remove:
       - firefox
       - firefox-langpacks
@@ -51,6 +52,8 @@ modules:
       - rpm-ostree install /usr/share/bluefox/rpm-staging/bluefox-welcome.noarch.rpm && rm -rf /usr/share/bluefox/rpm-staging
       # Refresh fontconfig cache pour Lexend hand-baked (cf bf.yml).
       - fc-cache -f /usr/share/fonts/lexend/
+      # Bake Plymouth theme dans initramfs (cf bf.yml).
+      - PLYMOUTH_THEME=$(awk -F= '/^Theme=/{print $2}' /etc/plymouth/plymouthd.conf) && [ -n "$PLYMOUTH_THEME" ] && plymouth-set-default-theme -R "$PLYMOUTH_THEME"
 
   - type: systemd
     system:
