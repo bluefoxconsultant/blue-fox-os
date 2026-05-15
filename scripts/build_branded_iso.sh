@@ -33,8 +33,17 @@ else
     echo "[branded-iso] FAIL: cannot fetch ${TENANT_CONFIG} and no in-repo fallback at ${INREPO_FALLBACK}" >&2
     exit 1
 fi
+# Validation jsonschema : facultative quand le module n'est pas installe (cas
+# Kinoite immutable sans `pip` / installeur RPM). Le JSON est de toute facon
+# valide a la lecture par les consommateurs (jq, python json.load) ; sauter
+# la validation schema-stricte est OK pour un build local.
 python3 -c "
-import json, jsonschema, sys
+import json, sys
+try:
+    import jsonschema
+except ModuleNotFoundError:
+    print('[branded-iso] jsonschema not installed ; skipping schema validation', file=sys.stderr)
+    sys.exit(0)
 schema = json.load(open('${WORKDIR}/config/schema.v1.json'))
 data = json.load(open('${TMP_CFG}'))
 jsonschema.validate(data, schema)
