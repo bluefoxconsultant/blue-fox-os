@@ -407,17 +407,36 @@ def emit_plymouth_theme(b: dict, files_root: Path) -> Path:
     bg_norm = (bg_r / 255, bg_g / 255, bg_b / 255)
     accent_norm = (accent_r / 255, accent_g / 255, accent_b / 255)
 
-    # Generate the loading-bar seed images (1×4 px solid colors) via PIL.
-    # Plymouth scripts can Scale() these horizontally to animate width.
+    # Generate the loading-bar seed images (1×4 px solid colors). Plymouth
+    # scripts Scale() these horizontally to animate width. PIL preferred ;
+    # ImageMagick `magick`/`convert` is a fallback for hosts where Pillow
+    # isn't installed (Kinoite/Garuda/Arch dev machines without venv).
     try:
         from PIL import Image as PImage
-        track = PImage.new("RGBA", (1, 4), (255, 255, 255, 60))   # subtle white track
+        track = PImage.new("RGBA", (1, 4), (255, 255, 255, 60))
         track.save(base / "bar-track.png")
         fill = PImage.new("RGBA", (1, 4), (accent_r, accent_g, accent_b, 255))
         fill.save(base / "bar-fill.png")
     except ImportError:
-        LOG.warning("PIL not available; loading bar pixels not generated. "
-                    "Install Pillow or run inside the BlueBuild CI container.")
+        import subprocess
+        magick = shutil.which("magick") or shutil.which("convert")
+        if magick:
+            subprocess.run(
+                [magick, "-size", "1x4", "xc:rgba(255,255,255,0.235)",
+                 str(base / "bar-track.png")],
+                check=True,
+            )
+            accent_rgba = f"xc:rgba({accent_r},{accent_g},{accent_b},1)"
+            subprocess.run(
+                [magick, "-size", "1x4", accent_rgba,
+                 str(base / "bar-fill.png")],
+                check=True,
+            )
+            LOG.info("plymouth bar PNGs generated via %s (PIL absent)", magick)
+        else:
+            LOG.warning("Neither PIL nor ImageMagick available; Plymouth "
+                        "loading bar will be invisible. Install python-pillow "
+                        "or imagemagick.")
 
     plymouth_conf = (
         f"[Plymouth Theme]\n"

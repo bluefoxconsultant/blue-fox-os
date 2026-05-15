@@ -66,7 +66,11 @@ modules:
     snippets:
       - rpm-ostree install /usr/share/bluefox/rpm-staging/bluefox-welcome.noarch.rpm && rm -rf /usr/share/bluefox/rpm-staging
       - fc-cache -f /usr/share/fonts/lexend/
-      - PLYMOUTH_THEME=$(awk -F= '/^Theme=/{print $2}' /etc/plymouth/plymouthd.conf) && [ -n "$PLYMOUTH_THEME" ] && plymouth-set-default-theme -R "$PLYMOUTH_THEME"
+      # `-R` retombe sur uname -r = kernel HOTE du build agent, qui n'est
+      # pas dans /lib/modules/ de l'image -> dracut FAIL. Split : symlink
+      # + conf via set-default-theme, puis dracut --regenerate-all qui
+      # itere sur /lib/modules/* (ignore uname -r).
+      - PLYMOUTH_THEME=$(awk -F= '/^Theme=/{print $2}' /etc/plymouth/plymouthd.conf) && [ -n "$PLYMOUTH_THEME" ] && plymouth-set-default-theme "$PLYMOUTH_THEME" && dracut --regenerate-all -f
 
   - type: systemd
     system:

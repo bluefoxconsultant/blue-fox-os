@@ -84,8 +84,14 @@ modules:
       - rpm-ostree install /usr/share/bluefox/rpm-staging/bluefox-welcome.noarch.rpm && rm -rf /usr/share/bluefox/rpm-staging
       # Refresh fontconfig cache pour Lexend hand-baked (cf bf.yml).
       - fc-cache -f /usr/share/fonts/lexend/
-      # Bake Plymouth theme dans initramfs (cf bf.yml).
-      - PLYMOUTH_THEME=$(awk -F= '/^Theme=/{print $2}' /etc/plymouth/plymouthd.conf) && [ -n "$PLYMOUTH_THEME" ] && plymouth-set-default-theme -R "$PLYMOUTH_THEME"
+      # Bake Plymouth theme dans initramfs. `-R` invoque dracut sans
+      # specifier de kernel, qui retombe sur `uname -r` = kernel HOTE
+      # (kernel du build agent ; sur Garuda/vir, c'est le kernel Zen, qui
+      # n'existe pas dans /lib/modules/ de l'image -> dracut FAIL).
+      # On split : set-default-theme sans -R (juste le symlink + conf),
+      # puis dracut --regenerate-all qui itere sur /lib/modules/* dans
+      # l'image et ignore uname -r.
+      - PLYMOUTH_THEME=$(awk -F= '/^Theme=/{print $2}' /etc/plymouth/plymouthd.conf) && [ -n "$PLYMOUTH_THEME" ] && plymouth-set-default-theme "$PLYMOUTH_THEME" && dracut --regenerate-all -f
 
   - type: systemd
     system:
