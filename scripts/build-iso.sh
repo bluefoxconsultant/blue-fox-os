@@ -66,6 +66,12 @@ echo "[build-iso] engine=${ENGINE}"
 # lands by default. Persistent paths (~/.config/containers/, ~/.docker/) are
 # also checked. Map whichever is found into BIB at /root/.docker/config.json
 # (BIB's internal podman reads that path).
+#
+# SKIP_PULL=1 : bypass ghcr pull and auth check. Use when the BF OCI image
+# is already in rootful /var/lib/containers/storage (e.g. just built locally
+# via build_branded_iso.sh + manual `podman tag` to the ghcr ref). Useful
+# when GHCR is unreachable (CI billing suspended) or when iterating on a
+# local-only image without pushing.
 INVOKING_UID=""
 if [ "${SUDO_USER:-}" != "" ]; then
     INVOKING_UID="$(id -u "${SUDO_USER}" 2>/dev/null || echo "")"
@@ -85,7 +91,12 @@ for cand in "${AUTH_CANDIDATES[@]}"; do
     fi
 done
 
-if [ -z "$AUTH_FILE" ]; then
+if [ "${SKIP_PULL:-0}" = "1" ]; then
+    echo "[build-iso] SKIP_PULL=1 ; bypassing ghcr pull, using local /var/lib/containers/storage"
+    if [ -z "$AUTH_FILE" ]; then
+        AUTH_FILE="/dev/null"
+    fi
+elif [ -z "$AUTH_FILE" ]; then
     cat >&2 <<EOF
 [build-iso] FAIL: no ghcr.io auth found.
     Tried: ${AUTH_CANDIDATES[*]}
@@ -99,6 +110,10 @@ if [ -z "$AUTH_FILE" ]; then
     Note: podman stores auth in \$XDG_RUNTIME_DIR (transient, lost on reboot).
     To persist, copy it after login:
         cp /run/user/\$(id -u)/containers/auth.json ~/.config/containers/auth.json
+
+    Local-only escape hatch (GHCR unreachable, image already built locally):
+        sudo podman tag localhost/blue-fox-os-${SLUG}:latest ${IMAGE}
+        sudo SKIP_PULL=1 \$0 ${1:-bf}
 EOF
     exit 1
 fi
@@ -133,7 +148,19 @@ mkdir -p /var/lib/containers/storage
 # Recent BIB versions no longer auto-pull. Pre-pull the BF image into
 # rootful storage (BIB reads from there). Rootless auth at /run/user/UID/
 # isn't visible to root by default, so pass --authfile explicitly.
-if [ "$ENGINE" = "podman" ]; then
+if [ "${SKIP_PULL:-0}" = "1" ]; then
+    echo "[build-iso] SKIP_PULL=1 ; verifying ${IMAGE} present in rootful storage"
+    if ! ${ENGINE} image exists "${IMAGE}" 2>/dev/null; then
+        cat >&2 <<EOF
+[build-iso] FAIL: SKIP_PULL=1 but ${IMAGE} not found in rootful storage.
+    Build the image locally then tag for the GHCR ref this script expects:
+        cd ${WORKDIR}
+        SLUG=${SLUG} ./scripts/build_branded_iso.sh
+        sudo ${ENGINE} tag localhost/blue-fox-os-${SLUG}:latest ${IMAGE}
+EOF
+        exit 1
+    fi
+elif [ "$ENGINE" = "podman" ]; then
     echo "[build-iso] pulling ${IMAGE} into rootful storage"
     podman pull --authfile "${AUTH_FILE}" "${IMAGE}"
 else
