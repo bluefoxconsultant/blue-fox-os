@@ -40,13 +40,16 @@
     background-color: transparent;
 }
 
-/* Product-specific logo slot — overlay BF wordmark + fox glyph here.
- * Fedora's profiles use this as the "filled by product.img" hook.
- * #22417 sidebar-logo.png ships once Olivier finalizes 230×120 PNG. */
+/* Product-specific logo slot — neutralized (#22417).
+ *
+ * Fedora profiles use this slot for a wordmark overlay on top of the
+ * sidebar BG. We don't need it: Olivier's Barracuda Side Graphic already
+ * embeds the BF wordmark + fox glyph at the top of the sidebar image
+ * (cf. .logo-sidebar above), so a second overlay would visually
+ * duplicate the brand. Treat the slot like the upstream `.logo` Fedora
+ * glyph: clear it. */
 .product-logo {
-    background-image: url("/usr/share/anaconda/pixmaps/sidebar-logo.png");
-    background-repeat: no-repeat;
-    background-position: center bottom;
+    background-image: none;
     background-color: transparent;
 }
 
