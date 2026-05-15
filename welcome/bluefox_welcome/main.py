@@ -37,6 +37,23 @@ USER_CONFIG_DIR = Path.home() / ".config" / "bluefox-welcome"
 USER_LOG = Path.home() / ".local/share/bluefox-welcome/firstboot.log"
 
 
+def _open_url_logged(url: str) -> None:
+    """Spawn xdg-open on a URL with stderr captured. Used by 'Ouvrir <svc>'
+    buttons in the wizard. Failures are logged but never propagate to Qt
+    (a raise inside a clicked-slot lambda would crash the wizard silently)."""
+    try:
+        subprocess.Popen(
+            ["xdg-open", url],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        LOG.info("xdg-open spawned for %s", url)
+    except FileNotFoundError:
+        LOG.error("xdg-open not found ; xdg-utils package missing from image")
+    except Exception as exc:
+        LOG.exception("xdg-open %s failed: %s", url, exc)
+
+
 def cli() -> int:
     parser = argparse.ArgumentParser(prog="bluefox-welcome")
     parser.add_argument("--service-mode", action="store_true",
@@ -131,7 +148,7 @@ def _authentik_page(tenant, QWizardPage, QVBoxLayout, QLabel, QLineEdit,
         "Connectez-vous à Authentik dans le navigateur pour configurer le MFA TOTP "
         "la première fois."))
     btn = QPushButton(f"Ouvrir {auth_url}")
-    btn.clicked.connect(lambda: subprocess.Popen(["xdg-open", auth_url]))
+    btn.clicked.connect(lambda: _open_url_logged(auth_url))
     layout.addWidget(btn)
     layout.addWidget(QLabel("Votre courriel Blue Fox :"))
     email = QLineEdit()
@@ -182,7 +199,7 @@ def _vault_page(tenant, QWizardPage, QVBoxLayout, QLabel, QPushButton):
         "Lance Bitwarden depuis le menu après l'assistant et connecte-toi "
         "— l'URL self-hosted sera déjà remplie."))
     btn_v = QPushButton(f"Ouvrir {vault_url}")
-    btn_v.clicked.connect(lambda: subprocess.Popen(["xdg-open", vault_url]))
+    btn_v.clicked.connect(lambda: _open_url_logged(vault_url))
     layout.addWidget(btn_v)
     layout.addWidget(QLabel("<br><b>2.</b> Brave Sync (BFOSP4) — seed phrase via Vaultwarden :"))
     layout.addWidget(QLabel(

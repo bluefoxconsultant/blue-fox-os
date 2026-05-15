@@ -1,0 +1,21 @@
+[Desktop Entry]
+# Lance le wizard bluefox-welcome au premier login KDE. Idempotent :
+# `bluefox-welcome --service-mode` quitte immediatement si
+# /var/lib/bluefox-welcome/done existe (cf. welcome/bluefox_welcome/main.py).
+#
+# Pourquoi un autostart en plus de la page Plasma Welcome extra-page ?
+# Parce que le bouton « Lancer la configuration Blue Fox » sur la page QML
+# utilise `Controller.runCommand(...)`, qui n'est pas une methode publique
+# de l'API Plasma Welcome upstream (Plasma 6 expose goNextPage/goPrev/restart,
+# pas un spawn de commande arbitraire). L'autostart garantit donc que le
+# wizard tourne au firstboot meme si le bouton QML est un no-op silencieux.
+#
+# `X-KDE-autostart-phase=2` : attendre que le shell Plasma soit prêt avant
+# de spawn le wizard, sinon course condition avec Plasma Welcome.
+Type=Application
+Name=Blue Fox OS — first-boot setup
+Name[fr_CA]=Blue Fox OS — configuration premier demarrage
+Exec=/usr/bin/bluefox-welcome --service-mode
+OnlyShowIn=KDE;
+X-KDE-autostart-phase=2
+NoDisplay=true

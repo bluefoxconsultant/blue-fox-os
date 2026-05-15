@@ -12,10 +12,12 @@ system_font}` (with BF canonical defaults if absent) and produces:
   <files>/etc/xdg/kdeglobals
   <files>/etc/sddm.conf.d/blue-fox.conf
   <files>/etc/skel/.config/kdeglobals
+  <files>/etc/skel/.config/plasma-org.kde.plasma.desktop-appletsrc
 
-Wallpaper / logo / splash are NOT copied — symlinked to
-`/usr/share/bluefox/branding/{wallpaper.jpg,logo.png,splash.png}` already
-shipped by the upstream stage of build_branded_iso.sh.
+Logo stays symlinked at runtime via the icon theme (resolved by Plasma at
+runtime); Plymouth splash + KDE wallpaper.jpg are **copied** (not symlinked)
+because dracut bake-into-initramfs for Plymouth is fragile across symlinks,
+and a duplicated MB of branding has negligible cost on an OCI image.
 
 Usage: python3 generate_kde_theme.py <tenant.json> <files_root>
        (files_root is typically <repo>/files/usr — but we accept the
@@ -26,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import shutil
 import sys
 from pathlib import Path
 
@@ -264,12 +267,21 @@ def emit_wallpaper_package(b: dict, files_root: Path) -> Path:
     }
     (base / "metadata.json").write_text(json.dumps(metadata, indent=2))
 
-    link = images / "wallpaper.jpg"
-    link_target = f"{BRANDING_RUNTIME}/wallpaper.jpg"
-    if link.is_symlink() or link.exists():
-        link.unlink()
-    link.symlink_to(link_target)
-    LOG.info("emit wallpaper pkg %s -> %s", link, link_target)
+    # Copy (not symlink) wallpaper.jpg into the KDE wallpaper package so that
+    # Plasma's wallpaper applet resolves a real file at config-write time. A
+    # symlink works at runtime but Plasma sometimes caches the resolved path
+    # in ~/.config/plasma-org.kde.plasma.desktop-appletsrc, which then points
+    # at the canonical /usr/share/bluefox/branding/ path and bypasses our
+    # wallpaper package — confusing for users picking the wallpaper later.
+    wallpaper_src = files_root / "usr/share/bluefox/branding/wallpaper.jpg"
+    wallpaper_dst = images / "wallpaper.jpg"
+    if wallpaper_dst.is_symlink() or wallpaper_dst.exists():
+        wallpaper_dst.unlink()
+    if wallpaper_src.is_file():
+        shutil.copy(wallpaper_src, wallpaper_dst)
+    else:
+        LOG.warning("wallpaper source %s missing", wallpaper_src)
+    LOG.info("emit wallpaper pkg %s", wallpaper_dst)
     return base
 
 
@@ -429,7 +441,7 @@ def emit_plymouth_theme(b: dict, files_root: Path) -> Path:
         f"Window.SetBackgroundTopColor({bg_norm[0]:.4f}, {bg_norm[1]:.4f}, {bg_norm[2]:.4f});\n"
         f"Window.SetBackgroundBottomColor({bg_norm[0]:.4f}, {bg_norm[1]:.4f}, {bg_norm[2]:.4f});\n"
         f"\n"
-        f"# Centered splash image (file 'splash.png' is a symlink to branding/splash.png).\n"
+        f"# Centered splash image (file 'splash.png' is a real copy of branding/splash.png).\n"
         f"splash.image = Image(\"splash.png\");\n"
         f"splash.sprite = Sprite(splash.image);\n"
         f"splash.sprite.SetX(Window.GetWidth() / 2 - splash.image.GetWidth() / 2);\n"
@@ -481,10 +493,18 @@ def emit_plymouth_theme(b: dict, files_root: Path) -> Path:
     )
     (base / f"{slug}.script").write_text(plymouth_script)
 
-    splash_link = base / "splash.png"
-    if splash_link.is_symlink() or splash_link.exists():
-        splash_link.unlink()
-    splash_link.symlink_to(f"{BRANDING_RUNTIME}/splash.png")
+    # Copy (not symlink) the splash PNG into the theme dir. `plymouth-set-
+    # default-theme -R` bakes the theme into initramfs via dracut, and dracut
+    # handling of symlinks in /usr/share/plymouth/themes/ has been flaky enough
+    # across Fedora versions that we just ship the bytes (~1 MB).
+    splash_src = files_root / "usr/share/bluefox/branding/splash.png"
+    splash_dst = base / "splash.png"
+    if splash_dst.is_symlink() or splash_dst.exists():
+        splash_dst.unlink()
+    if splash_src.is_file():
+        shutil.copy(splash_src, splash_dst)
+    else:
+        LOG.warning("splash source %s missing — Plymouth will show black bg", splash_src)
 
     LOG.info("emit plymouth theme %s", base)
     return base
@@ -689,6 +709,47 @@ def emit_skel_kdeglobals(b: dict, files_root: Path) -> Path:
     return target
 
 
+def emit_skel_plasma_appletsrc(b: dict, files_root: Path) -> Path:
+    """Pre-seed plasma-org.kde.plasma.desktop-appletsrc with the BF wallpaper.
+
+    Why: setting LookAndFeelPackage in kdeglobals is not enough to make the
+    wallpaper apply at first login — Plasma only consults the LnF `defaults`
+    file when `plasma-apply-lookandfeel` is invoked (typically by the welcome
+    wizard at the end of its flow). For accounts that log in BEFORE the wizard
+    fires (or if the user closes it without finishing), Plasma writes its own
+    appletsrc using its built-in defaults, which means the upstream Kinoite
+    wallpaper. By shipping this file in /etc/skel/.config/, we ensure every
+    new account starts its first session with the BF wallpaper already wired.
+
+    Plasma will augment Containment 1 with the standard panel + widgets at
+    first startup ; only the Wallpaper section is pre-seeded here.
+    """
+    target = files_root / "etc/skel/.config/plasma-org.kde.plasma.desktop-appletsrc"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    wallpaper_path = f"/usr/share/wallpapers/{b['slug']}/contents/images/wallpaper.jpg"
+    body = (
+        f"# Generated by scripts/generate_kde_theme.py — tenant {b['slug']}.\n"
+        f"# Pre-seeds the desktop Containment so the very first session uses\n"
+        f"# our wallpaper. Plasma adds taskbar / panels on top of this.\n"
+        f"\n"
+        f"[Containments][1]\n"
+        f"activityId=\n"
+        f"formfactor=0\n"
+        f"immutability=1\n"
+        f"location=0\n"
+        f"plugin=org.kde.plasma.folder\n"
+        f"wallpaperplugin=org.kde.image\n"
+        f"\n"
+        f"[Containments][1][Wallpaper][org.kde.image][General]\n"
+        f"Image=file://{wallpaper_path}\n"
+        f"PreviewImage=file://{wallpaper_path}\n"
+        f"FillMode=2\n"
+    )
+    target.write_text(body)
+    LOG.info("emit skel plasma appletsrc %s", target)
+    return target
+
+
 def emit_all(tenant: dict, files_root: Path) -> dict:
     b = resolve_branding(tenant)
     LOG.info(
@@ -705,6 +766,7 @@ def emit_all(tenant: dict, files_root: Path) -> dict:
         "plymouth_config": emit_plymouth_config(b, files_root),
         "xdg_kdeglobals": emit_xdg_kdeglobals(b, files_root),
         "skel_kdeglobals": emit_skel_kdeglobals(b, files_root),
+        "skel_appletsrc": emit_skel_plasma_appletsrc(b, files_root),
         "icon_theme": emit_icon_theme(b, files_root),
         "neofetch": emit_neofetch_config(b, files_root),
         "branding": b,

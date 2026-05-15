@@ -4,8 +4,10 @@
  *
  * Page Plasma Welcome extra-page Blue Fox OS — point d'entrée vers le wizard
  * bluefox-welcome (PyQt6) qui configure Nextcloud + Vaultwarden + Brave Sync
- * + KAccounts. Lance bluefox-welcome via Controller.runCommand depuis un
- * bouton, puis l'utilisateur poursuit Plasma Welcome après config.
+ * + KAccounts. Lance bluefox-welcome via Qt.openUrlExternally sur la Desktop
+ * Entry /usr/share/applications/bluefox-welcome.desktop. Le bouton sert de
+ * relance manuelle ; un autostart /etc/xdg/autostart/bluefox-welcome.desktop
+ * déclenche aussi le wizard au premier login KDE.
  *
  * Format documenté upstream : https://invent.kde.org/plasma/plasma-welcome
  * § « Extending Welcome Center with custom pages ». Doit hériter de
@@ -52,11 +54,17 @@ Welcome.GenericPage {
         text: i18nc("@action:button", "Lancer la configuration Blue Fox")
         icon.name: "system-run"
         highlighted: true
-        // Lance le wizard PyQt6 en arrière-plan. Plasma Welcome reste actif
-        // pendant que le wizard tourne ; l'utilisateur revient à Plasma
-        // Welcome après finalize. Le `--service-mode` skip le wizard si
-        // /var/lib/bluefox-welcome/done existe déjà.
-        onClicked: Controller.runCommand("bluefox-welcome")
+        // Lance le wizard PyQt6 via Qt.openUrlExternally sur la Desktop Entry.
+        // Sur KDE Plasma 6, openUrlExternally route les .desktop files vers
+        // kioclient/gtk-launch qui EXECUTE l'entry (vs xdg-open qui peut
+        // ouvrir le fichier dans Dolphin). C'est la primitive QML standard
+        // pour spawn une application — Controller.runCommand n'existe pas
+        // dans l'API Plasma Welcome upstream.
+        //
+        // Un autostart /etc/xdg/autostart/bluefox-welcome.desktop a deja
+        // declenche le wizard au login ; ce bouton sert de relance manuelle
+        // si l'utilisateur a ferme le wizard sans le terminer.
+        onClicked: Qt.openUrlExternally("file:///usr/share/applications/bluefox-welcome.desktop")
     }
 
     QQC2.Label {
