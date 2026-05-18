@@ -51,7 +51,11 @@ clearpart --all --initlabel
 autopart --type=btrfs --encrypted --nohome
 
 # Bootloader : pas de --location, Anaconda detecte EFI vs BIOS automatiquement.
-bootloader --timeout=3
+# `rhgb quiet splash` : Kinoite upstream les fournit deja dans /etc/default/grub,
+# mais on les force explicitement ici pour que Plymouth bf-surface s'affiche
+# pendant LUKS prompt + early boot (#22420). Sans ces flags, Plymouth boot
+# graphique est skippe et l'utilisateur voit du texte journald brut.
+bootloader --timeout=3 --append="rhgb quiet splash"
 
 # Securite : SELinux enforcing, firewall actif, pas de telemetrie.
 selinux --enforcing
