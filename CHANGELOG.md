@@ -4,9 +4,72 @@ Format : [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning Ca
 
 ## [Unreleased]
 
+## [v0.1.0-rc.1] - 2026-05-22
+
+Premier release candidate. Valide la chaîne install end-to-end (2 menuentries GRUB, zero-touch typed-domain + built-in defaults), le branding system-wide piloté par `tenant.json`, et le supply chain cosign + SBOM SPDX.
+
 ### Added
-- Squelette initial du dépôt (recipes, welcome agent, install kickstart, GH Actions, Makefile).
-- Pivot vers Fedora Kinoite + BlueBuild (vs plan initial Kubuntu+Cubic), 2026-04-27.
+
+**Branding piloté par tenant.json** (BFOSD8) :
+- `tenant.json` drives KDE Plasma, SDDM, Plymouth, icons, neofetch — un seul fichier de configuration par tenant pour tout l'aspect visuel.
+- Lexend comme sans-serif système par défaut, fontconfig `95-bluefox-default-fonts.conf` + `fc-cache` post-install dans tous les recipes (#28, #22421).
+- KDE Color Scheme dark BF avec foreground WCAG AAA sur fond sombre (Dolphin labels, champs wizard) (#27, #22422).
+- Rotation aléatoire du wallpaper au firstboot parmi 16 originaux Upscayl 4x digital-art (#35, #37, #22433).
+
+**Anaconda chrome overlay** (#22417/22418/22419) :
+- Mécanisme d'overlay stage2 squashfs : `inst.profile=blue-fox-os` + assets sidebar/CSS/buildstamp pick-up automatique au build (#32).
+- Sidebar gauche : Barracuda graphic 1540×6400 avec wordmark BF embarqué + glyphe renard, CSS `background-size: cover` (#34).
+- `inst.keymap=ca` + `inst.lang=fr_CA.UTF-8` sur les 3 menuentries GRUB et 2 isolinux (#32).
+- Neutralisation du slot `.product-logo` (le wordmark est dans la sidebar) (#36).
+
+**Plymouth splash branded** (#22420) :
+- Thème tenant baked dans l'initramfs au build pour éliminer l'écran noir au premier boot post-install (#31).
+- `dracut --regenerate-all` au lieu de `-R` pour détecter correctement les kernels installés (commit 02518db).
+
+**Plasma Welcome BFOS integration** (#22423/22424) :
+- Intégration via extra-pages QML — la première session Plasma présente le wizard BFOS plutôt que le welcome KDE générique (#30).
+
+**Default apps** (#22416) :
+- Brave configuré comme handler par défaut pour `http/https/HTML` via mimeapps.list (#29).
+
+**Zero-touch tenant provisioning** (PR #20, #21) :
+- `bf-os.ks` baked dans l'ISO + chrome boot menu via `scripts/brand-iso.sh` (#20).
+- Menuentry GRUB « zero-touch » avec `read` qui capture le domaine tenant, construit `inst.ks=https://<domain>/blue-fox-install.ks` à la volée (#21).
+- Endpoint live `https://bluefoxconsultant.com/blue-fox-install.ks` servi par le module Odoo `bf_zerotouch_install`, header `x-bf-zerotouch-version: v1`.
+
+**Supply chain — SBOM SPDX attestation** (P5.2 F7) :
+- syft attaché en attestation cosign sur chaque image tenant (bf, bf-surface, factice) (#24).
+- CI free-disk + force OCI registry auth pour syft attest-sbom (#25).
+- `syft --scope squashed` + timeout CI 25 min sur le job attest-sbom (#26).
+
+**Build infrastructure locale** :
+- `scripts/build-iso.sh` pour produire l'ISO Anaconda en local (sans GH Actions) (commit 188a922).
+- Pre-pull explicite de l'image BF (BIB ne pull plus automatiquement) (0b4c8ef).
+- Mount `/var/lib/containers/storage` + option SELinux dans le wrapper (c737544).
+- Support podman + docker, détection auth `$XDG_RUNTIME_DIR` (9fec221, 69c45c0).
+- `SKIP_PULL=1` escape hatch pour itérer hors réseau (6644097).
+- `build_branded_iso.sh` prep step avant BlueBuild dans CI (c8effee).
+- Validation jsonschema rendue optionnelle quand le module Python est absent (5c3c4b8).
+
+**Firstboot polish** :
+- Wallpaper, splash + bouton Welcome appliqués correctement sur install fraîche (56cb33f).
+
+**Recipes** :
+- `bf-surface` pinné à `kinoite-main:43` (BFOSL2, linux-surface F44 pas encore publié) (#19).
+
+### Caveats / Known issues
+
+- **#22415** — Reboot inattendu Plasma mid-firstboot observé au smoke 2026-05-10. Contournement : laisser le système rebooter une fois. Investigation deadline 2026-06-14, ciblée v0.1.2.
+- **#22424 Phase 2** — Wizard PyQt6 custom QML : différé v0.1.2 (Phase 1 plasma-welcome intégrée).
+- **PR #23** — Tests pytest-qt du QWizard : merge déféré post-rc.1 pour ne pas perturber le tag.
+- **PR #33** — SBOM CI timeout sur GitHub Actions : non-bloquant car les builds passent sur `vir` en local (cf. `feedback_bfos_builds_on_vir_not_gh.md`).
+- **GH org `bluefoxconsultant` billing** bloqué depuis 2026-05-15 : pas d'impact release (pipeline local), affecte uniquement les checks PR automatiques.
+
+### Supply chain verification
+
+- Image OCI : `cosign verify --key cosign.pub ghcr.io/bluefoxconsultant/blue-fox-os-bf:rc.1`
+- SBOM SPDX : attestation cosign attachée, vérifiable via `cosign verify-attestation`
+- Packages GHCR publics depuis 2026-05-10 (vérification cosign anonyme possible)
 
 ## [v26.07] - 2026-07-30 (cible)
 
@@ -15,5 +78,5 @@ Première release publique. Contenu prévu :
 - ISO dérivée signée GPG BF
 - Welcome agent PyQt6 fonctionnel (Thunderbird, Bitwarden, NC Talk, CalDAV, CardDAV)
 - Authentik OIDC sur Nextcloud + Odoo BF
-- Whitelabel paramétré par `{slug}.json`
+- Whitelabel paramétré par `tenant.json`
 - Audit sécurité v1 passé
