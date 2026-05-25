@@ -29,6 +29,7 @@ from .apply import (
 )
 from .auth.nc_login_flow import initiate as nc_login_initiate
 from .auth.nc_login_flow import poll_once as nc_login_poll_once
+from .provisioning import load_provisioning, merge_branding, user_login
 from .tenant import get_service_url, get_slug, load_tenant
 
 LOG = logging.getLogger("bluefox-welcome")
@@ -80,10 +81,15 @@ def cli() -> int:
         return 0
 
     tenant = load_tenant()
-    return run_wizard(tenant)
+    # Prefer the install-staged policy (bf-policy/v2) over the baked tenant.json:
+    # overlay its session branding and pre-fill the wizard with the authenticated
+    # user. Absent on built-in-defaults installs — degrades to tenant.json alone.
+    prov = load_provisioning()
+    tenant = merge_branding(tenant, prov)
+    return run_wizard(tenant, prefill_email=user_login(prov))
 
 
-def run_wizard(tenant: dict) -> int:
+def run_wizard(tenant: dict, prefill_email: str = "") -> int:
     try:
         from PyQt6.QtCore import QDateTime, QTimer
         from PyQt6.QtWidgets import (
@@ -102,7 +108,7 @@ def run_wizard(tenant: dict) -> int:
 
     wizard.addPage(_welcome_page(tenant, QWizardPage, QVBoxLayout, QLabel))
     wizard.addPage(_authentik_page(tenant, QWizardPage, QVBoxLayout, QLabel,
-                                   QLineEdit, QPushButton))
+                                   QLineEdit, QPushButton, prefill_email))
     wizard.addPage(_files_page(tenant, QWizardPage, QVBoxLayout, QLabel,
                                QCheckBox, QLineEdit, QPushButton,
                                QTimer, QDateTime))
@@ -140,7 +146,7 @@ def _welcome_page(tenant, QWizardPage, QVBoxLayout, QLabel):
 
 
 def _authentik_page(tenant, QWizardPage, QVBoxLayout, QLabel, QLineEdit,
-                    QPushButton):
+                    QPushButton, prefill_email=""):
     page = QWizardPage()
     page.setTitle("Identité — Authentik")
     auth_url = get_service_url(tenant, "authentik",
@@ -158,6 +164,8 @@ def _authentik_page(tenant, QWizardPage, QVBoxLayout, QLabel, QLineEdit,
     layout.addWidget(QLabel("Votre courriel Blue Fox :"))
     email = QLineEdit()
     email.setPlaceholderText("prenom@bluefoxconsultant.com")
+    if prefill_email:
+        email.setText(prefill_email)  # known from the install device-flow
     layout.addWidget(email)
     page.registerField("user_email*", email)
     page.setLayout(layout)
