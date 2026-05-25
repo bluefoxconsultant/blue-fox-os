@@ -30,9 +30,17 @@ import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 TEMPLATE_PATH = REPO / "install" / "blue-fox-install.ks.template"
+PROVISION_SCRIPT_PATH = REPO / "install" / "bfos_provision.py"
+APPLY_SCRIPT_PATH = REPO / "install" / "bfos_apply.py"
 
 # Tenant configs known to the offline renderer. v0.0.3 only supports BF ;
 # external tenants ship their own Odoo module + config + endpoint.
+#
+# OIDC device-flow + policy endpoints (BFOSI10 / bf_policy):
+#   AUTHENTIK_DEVICE_URL/TOKEN_URL  global Authentik OAuth2 endpoints on the
+#                                   org's auth.<domain> host
+#   OIDC_CLIENT_ID                  the public device-flow client ('blue-fox-os')
+#   POLICY_URL                      <domain>/api/v1/policy/me (bf_policy module)
 TENANTS = {
     "bf": {
         "TENANT_SLUG": "bf",
@@ -44,6 +52,10 @@ TENANTS = {
         "KEYBOARD_VC": "ca",
         "KEYBOARD_X": "'ca','us'",
         "TIMEZONE": "America/Montreal",
+        "AUTHENTIK_DEVICE_URL": "https://auth.bluefoxconsultant.com/application/o/device/",
+        "AUTHENTIK_TOKEN_URL": "https://auth.bluefoxconsultant.com/application/o/token/",
+        "OIDC_CLIENT_ID": "blue-fox-os",
+        "POLICY_URL": "https://bluefoxconsultant.com/api/v1/policy/me",
     },
     "bf-surface": {
         "TENANT_SLUG": "bf-surface",
@@ -55,11 +67,34 @@ TENANTS = {
         "KEYBOARD_VC": "ca",
         "KEYBOARD_X": "'ca','us'",
         "TIMEZONE": "America/Montreal",
+        "AUTHENTIK_DEVICE_URL": "https://auth.bluefoxconsultant.com/application/o/device/",
+        "AUTHENTIK_TOKEN_URL": "https://auth.bluefoxconsultant.com/application/o/token/",
+        "OIDC_CLIENT_ID": "blue-fox-os",
+        "POLICY_URL": "https://bluefoxconsultant.com/api/v1/policy/me",
     },
 }
 
 # {{PLACEHOLDER}} — only ASCII letters, digits, underscores between braces.
 PLACEHOLDER_RE = re.compile(r"\{\{([A-Z_][A-Z0-9_]*)\}\}")
+
+# A line starting with a kickstart section keyword would be read as a section
+# delimiter by pykickstart even inside a heredoc, corrupting the install. Guard
+# the embedded scripts against it.
+_KS_SECTION_RE = re.compile(r"^%(pre|post|end|packages|onerror|traceback|addon)\b")
+
+
+def _embed_script(path: pathlib.Path) -> str:
+    """Read a script for verbatim embedding into a kickstart %pre/%post heredoc,
+    failing loudly if any line would be mistaken for a kickstart section."""
+    text = path.read_text(encoding="utf-8").rstrip("\n")
+    for i, line in enumerate(text.splitlines(), 1):
+        if _KS_SECTION_RE.match(line):
+            raise SystemExit(
+                f"[render_zerotouch_ks] {path.name}:{i} starts with a kickstart "
+                f"section keyword ({line[:20]!r}); reword so no embedded line "
+                f"begins with %pre/%post/%end/etc."
+            )
+    return text
 
 
 def render(slug: str, generated_at: str | None = None) -> str:
@@ -75,6 +110,10 @@ def render(slug: str, generated_at: str | None = None) -> str:
     vars_["GENERATED_AT"] = generated_at or dt.datetime.now(dt.timezone.utc).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
+    # Embed the install-time scripts verbatim into the %pre/%post heredocs so the
+    # rendered kickstart is self-contained (no second fetch at install time).
+    vars_["PROVISION_SCRIPT"] = _embed_script(PROVISION_SCRIPT_PATH)
+    vars_["APPLY_SCRIPT"] = _embed_script(APPLY_SCRIPT_PATH)
 
     def replace(match: re.Match[str]) -> str:
         key = match.group(1)

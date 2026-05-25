@@ -12,19 +12,22 @@
 # needed. Kickstart syntax has no line continuation — keep on one line.
 ostreecontainer --url={{OCI_IMAGE_REF}} --transport=registry --no-signature-verification
 
-# Locale + keyboard from tenant config.
+# Installer-environment locale + keyboard (fallback defaults). The *installed*
+# system's locale / keymap / timezone / hostname / login come from the policy
+# JSON applied in %post (bfos_apply.py) ; these values also seed the %pre
+# fallback if the device flow can't reach the org.
 lang {{LANG}} --addsupport={{ADDSUPPORT}}
 keyboard --vckeymap={{KEYBOARD_VC}} --xlayouts={{KEYBOARD_X}} --switch=grp:alt_shift_toggle
 
-# Timezone.
+# Timezone (installer default ; policy may override on the installed system).
 timezone {{TIMEZONE}} --utc
 
 # Network : DHCP. Anaconda's dracut already brought the link up to fetch this
 # kickstart, so DHCP is known good.
 network --bootproto=dhcp --activate
 
-# Comptes : root verrouille, user cree interactivement par Anaconda
-# (jamais de credentials hardcoded dans un KS public).
+# Comptes : root verrouille. La politique peut le re-affirmer (mode 'locked')
+# ou, en mode 'enabled', le laisser tel quel. Jamais de credentials hardcoded.
 rootpw --lock
 
 # Disque : btrfs sur LUKS, passphrase saisie au wizard Anaconda.
@@ -42,12 +45,50 @@ firewall --enabled
 # Reboot apres install.
 reboot --eject
 
+# ---------------------------------------------------------------------------
+# %pre : OIDC device-flow authentication + policy fetch, BEFORE the install is
+# underway. The operator authorizes on a second device (2FA preserved), then we
+# pull the org's policy JSON and stage it at /tmp/bfos-provision.json. Never
+# aborts the install: bfos_provision.py writes an org-default fallback on any
+# failure. Script is embedded verbatim from install/bfos_provision.py.
+# ---------------------------------------------------------------------------
+%pre --interpreter=/bin/bash --log=/tmp/bfos-provision-pre.log
+export BFOS_OIDC_DEVICE_URL="{{AUTHENTIK_DEVICE_URL}}"
+export BFOS_OIDC_TOKEN_URL="{{AUTHENTIK_TOKEN_URL}}"
+export BFOS_OIDC_CLIENT_ID="{{OIDC_CLIENT_ID}}"
+export BFOS_POLICY_URL="{{POLICY_URL}}"
+export BFOS_FALLBACK_LANG="{{LANG}}"
+export BFOS_FALLBACK_KEYMAP="{{KEYBOARD_VC}}"
+export BFOS_FALLBACK_TIMEZONE="{{TIMEZONE}}"
+cat > /tmp/bfos_provision.py <<'BFOSPROVISIONEOF'
+{{PROVISION_SCRIPT}}
+BFOSPROVISIONEOF
+python3 /tmp/bfos_provision.py || true
+%end
+
+# ---------------------------------------------------------------------------
+# %post --nochroot : copy the staged policy JSON into the freshly installed
+# system so the chrooted %post and the firstboot agent can read it.
+# ---------------------------------------------------------------------------
+%post --nochroot --log=/tmp/bfos-provision-copy.log
+for ROOT in /mnt/sysroot /mnt/sysimage; do
+  if [ -d "$ROOT" ]; then
+    mkdir -p "$ROOT/var/lib/bluefox-welcome"
+    cp /tmp/bfos-provision.json "$ROOT/var/lib/bluefox-welcome/provisioning.json" 2>/dev/null || true
+  fi
+done
+%end
+
+# ---------------------------------------------------------------------------
+# %post (chroot) : auto-updates, tenant.json (back-compat), apply the policy
+# install block (hostname / locale / timezone / sssd login / root), rebase
+# sentinel. bfos_apply.py is embedded verbatim from install/bfos_apply.py.
+# ---------------------------------------------------------------------------
 %post --erroronfail --log=/var/log/bf-zerotouch-post.log
 # Activer les MAJ rpm-ostree automatiques.
 systemctl enable rpm-ostreed-automatic.timer
 
-# tenant.json consomme par le welcome agent (firstboot) pour configurer
-# Brave managed policy, Bitwarden URL, KAccounts NC, etc.
+# tenant.json : conserve pour compat ; provisioning.json (policy) prime.
 mkdir -p /var/lib/bluefox-welcome
 cat > /var/lib/bluefox-welcome/tenant.json <<'JSON'
 {
@@ -59,6 +100,14 @@ cat > /var/lib/bluefox-welcome/tenant.json <<'JSON'
   "provisioned_at": "{{GENERATED_AT}}"
 }
 JSON
+
+# Apply the policy install block if a provisioning.json was staged.
+cat > /tmp/bfos_apply.py <<'BFOSAPPLYEOF'
+{{APPLY_SCRIPT}}
+BFOSAPPLYEOF
+if [ -f /var/lib/bluefox-welcome/provisioning.json ]; then
+  python3 /tmp/bfos_apply.py /var/lib/bluefox-welcome/provisioning.json || true
+fi
 
 # Sentinel : le welcome agent verifie qu'il est sur l'image attendue. Si oui,
 # bluefox-rebase.service est un no-op ; sinon il rebase.

@@ -75,6 +75,8 @@ jobs:
           cd welcome
           pip install --quiet -e '.[test]'
           pytest -q
+      - name: Install-time provisioning scripts (stdlib-only)
+        run: pytest -q install/tests
 
   build-rpm:
     # Build le RPM bluefox-welcome dans Fedora 43 (matches la version Python
