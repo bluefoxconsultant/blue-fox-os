@@ -3,10 +3,13 @@
 V1 approach: launch `kcmshell6 kcm_kaccounts` non-blocking. The user adds
 the Nextcloud account manually (NC URL + credentials).
 
-Why not full DBus auto-pairing? KAccounts.createAccount() needs an app-password,
-which Authentik OIDC flow doesn't produce. Auto-pairing requires either a
-custom Authentik kaccounts-provider (1+ days of work) or fetching an NC OCS
-app-password (circular: needs the password first). Acceptable v1 trade-off.
+Why not full DBus auto-pairing yet? Since the SSO Login Flow v2 landed
+(auth/nc_login_flow.py), an NC app-password *is* now available at firstboot — so
+the old "circular: needs the password first" blocker is gone. What remains is
+the KAccounts side: createAccount() needs a custom Authentik/NC kaccounts
+provider (~1 day of work) to inject that app-password into Akonadi DAV. Deferred
+to a follow-up; manual add stays the acceptable v1 trade-off. The rclone mount
+(apply/rclone_mount.py) already consumes the Login Flow v2 app-password directly.
 """
 import logging
 import shutil

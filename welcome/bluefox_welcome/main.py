@@ -27,6 +27,8 @@ from .apply import (
     apply_kde_theme,
     apply_rclone_mount,
 )
+from .auth.nc_login_flow import initiate as nc_login_initiate
+from .auth.nc_login_flow import poll_once as nc_login_poll_once
 from .tenant import get_service_url, get_slug, load_tenant
 
 LOG = logging.getLogger("bluefox-welcome")
@@ -83,6 +85,7 @@ def cli() -> int:
 
 def run_wizard(tenant: dict) -> int:
     try:
+        from PyQt6.QtCore import QDateTime, QTimer
         from PyQt6.QtWidgets import (
             QApplication, QWizard, QWizardPage, QLabel, QLineEdit,
             QVBoxLayout, QPushButton, QCheckBox, QTextEdit,
@@ -101,7 +104,8 @@ def run_wizard(tenant: dict) -> int:
     wizard.addPage(_authentik_page(tenant, QWizardPage, QVBoxLayout, QLabel,
                                    QLineEdit, QPushButton))
     wizard.addPage(_files_page(tenant, QWizardPage, QVBoxLayout, QLabel,
-                               QCheckBox, QLineEdit))
+                               QCheckBox, QLineEdit, QPushButton,
+                               QTimer, QDateTime))
     wizard.addPage(_vault_page(tenant, QWizardPage, QVBoxLayout, QLabel,
                                QPushButton))
     done_page = _done_page(tenant, wizard, QWizardPage, QVBoxLayout, QTextEdit)
@@ -113,7 +117,8 @@ def run_wizard(tenant: dict) -> int:
             tenant=tenant,
             user_email=wizard.field("user_email") or "",
             do_mount=bool(wizard.field("do_mount")),
-            nc_password=wizard.field("nc_password") or "",
+            nc_login_name=wizard.field("nc_login_name") or "",
+            nc_app_password=wizard.field("nc_app_password") or "",
         )
         return 0
     return 1
@@ -159,30 +164,93 @@ def _authentik_page(tenant, QWizardPage, QVBoxLayout, QLabel, QLineEdit,
     return page
 
 
-def _files_page(tenant, QWizardPage, QVBoxLayout, QLabel, QCheckBox, QLineEdit):
+def _files_page(tenant, QWizardPage, QVBoxLayout, QLabel, QCheckBox, QLineEdit,
+                QPushButton, QTimer, QDateTime):
     page = QWizardPage()
     page.setTitle("Fichiers Nextcloud")
     nc_url = get_service_url(tenant, "nextcloud",
                              "https://nextcloud.bluefoxconsultant.com")
     layout = QVBoxLayout()
-    layout.addWidget(QLabel("Configuration rclone WebDAV mount (BFOSP3)."))
+    layout.addWidget(QLabel("Configuration du dossier Nextcloud (BFOSP3)."))
     layout.addWidget(QLabel(f"Serveur : <code>{nc_url}</code>"))
     layout.addWidget(QLabel("Cible : <code>~/Nextcloud/</code> — visible "
-                            "dans Dolphin et toutes apps."))
-    do_mount = QCheckBox("Configurer maintenant le mount systemd --user")
+                            "dans Dolphin et toutes les apps."))
+
+    do_mount = QCheckBox("Monter Nextcloud dans ~/Nextcloud après la connexion")
     do_mount.setChecked(True)
     layout.addWidget(do_mount)
     page.registerField("do_mount", do_mount)
 
-    layout.addWidget(QLabel("Mot de passe Nextcloud (laisser vide si do_mount décoché) :"))
-    nc_password = QLineEdit()
-    nc_password.setEchoMode(QLineEdit.EchoMode.Password)
-    nc_password.setPlaceholderText("••••••••")
-    layout.addWidget(nc_password)
-    page.registerField("nc_password", nc_password)
+    layout.addWidget(QLabel(
+        "Connectez-vous une seule fois : l'authentification se fait dans le "
+        "navigateur avec votre compte Blue Fox (SSO Authentik). Aucun mot de "
+        "passe à saisir ici."))
+    btn = QPushButton("Se connecter à Nextcloud (SSO)")
+    layout.addWidget(btn)
+    status = QLabel("Non connecté.")
+    layout.addWidget(status)
+
+    # Hidden fields carry the credentials acquired via Login Flow v2 to _finalize.
+    nc_login_name = QLineEdit()
+    nc_login_name.setVisible(False)
+    nc_app_password = QLineEdit()
+    nc_app_password.setVisible(False)
+    layout.addWidget(nc_login_name)
+    layout.addWidget(nc_app_password)
+    page.registerField("nc_login_name", nc_login_name)
+    page.registerField("nc_app_password", nc_app_password)
 
     layout.addWidget(QLabel("Mail / calendrier / contacts seront ajoutés "
                             "à KAccounts (System Settings → Online Accounts)."))
+
+    # NC Login Flow v2 driven by a QTimer: each tick is one quick poll, so the
+    # wizard stays responsive while the user authenticates in the browser.
+    state = {"poll_endpoint": None, "poll_token": None, "deadline": 0}
+    timer = QTimer(page)
+    timer.setInterval(2000)
+
+    def on_tick():
+        try:
+            res = nc_login_poll_once(state["poll_endpoint"], state["poll_token"])
+        except Exception as exc:  # noqa: BLE001 — surface to the user, never crash Qt
+            timer.stop()
+            btn.setEnabled(True)
+            status.setText(f"<span style='color:#c0392b'>Échec : {exc}</span>")
+            LOG.warning("nc login poll failed: %s", exc)
+            return
+        if res is not None:
+            timer.stop()
+            nc_login_name.setText(res[0])
+            nc_app_password.setText(res[1])
+            status.setText(f"<span style='color:#27ab63'>Connecté en tant que "
+                           f"<b>{res[0]}</b> ✓</span>")
+            btn.setText("Reconnecter")
+            btn.setEnabled(True)
+            return
+        if QDateTime.currentSecsSinceEpoch() > state["deadline"]:
+            timer.stop()
+            btn.setEnabled(True)
+            status.setText("<span style='color:#c0392b'>Délai dépassé — "
+                           "réessayez.</span>")
+
+    def on_click():
+        try:
+            login_url, endpoint, token = nc_login_initiate(nc_url)
+        except Exception as exc:  # noqa: BLE001
+            status.setText(f"<span style='color:#c0392b'>Impossible de démarrer "
+                           f"la connexion : {exc}</span>")
+            LOG.warning("nc login initiate failed: %s", exc)
+            return
+        state.update(poll_endpoint=endpoint, poll_token=token,
+                     deadline=QDateTime.currentSecsSinceEpoch() + 300)
+        _open_url_logged(login_url)
+        btn.setEnabled(False)
+        status.setText("Connectez-vous dans le navigateur…")
+        timer.start()
+
+    btn.clicked.connect(on_click)
+    timer.timeout.connect(on_tick)
+
     page.setLayout(layout)
     return page
 
@@ -227,13 +295,20 @@ def _done_page(tenant, wizard, QWizardPage, QVBoxLayout, QTextEdit):
         slug = get_slug(tenant)
         email = wizard.field("user_email") or "?"
         do_mount = bool(wizard.field("do_mount"))
+        nc_login = wizard.field("nc_login_name") or ""
+        connected = bool(nc_login and wizard.field("nc_app_password"))
+        if connected and do_mount:
+            nc_state = f"monté au clic suivant (connecté : {nc_login})"
+        elif connected:
+            nc_state = f"connecté ({nc_login}) — mount décoché"
+        else:
+            nc_state = "reporté (connexion SSO non complétée)"
         text = (
             f"<h3>Configuration prête</h3>"
             f"<ul>"
             f"<li>Tenant : <b>{slug}</b></li>"
             f"<li>Compte BF : {email}</li>"
-            f"<li>NC Files (rclone mount) : "
-            f"{'configuré au clic suivant' if do_mount else 'reporté'}</li>"
+            f"<li>NC Files (rclone mount, SSO) : {nc_state}</li>"
             f"<li>Bitwarden Desktop : URL Vaultwarden injectée au clic suivant</li>"
             f"<li>Brave : policy + extension Floccus poussées au clic suivant</li>"
             f"<li>Mail/Calendar/Contacts : System Settings ouvert au clic suivant</li>"
@@ -249,20 +324,26 @@ def _finalize_and_apply(
     tenant: dict,
     user_email: str,
     do_mount: bool,
-    nc_password: str,
+    nc_login_name: str,
+    nc_app_password: str,
 ) -> None:
     """Run the apply_* integrations, then write the done flag.
 
     Best-effort: one failed apply does not abort the others. All results
     are logged and surfaced in ~/.local/share/bluefox-welcome/firstboot.log.
+
+    The Nextcloud credential pair comes from the SSO Login Flow v2 (login name
+    + app-password), not a typed password — see auth/nc_login_flow.py.
     """
     results: list[tuple[str, bool, str]] = []
 
-    if do_mount and nc_password:
-        ok, msg = apply_rclone_mount(tenant, user=user_email, password=nc_password)
+    if do_mount and nc_login_name and nc_app_password:
+        ok, msg = apply_rclone_mount(
+            tenant, user=nc_login_name, password=nc_app_password)
         results.append(("rclone_mount", ok, msg))
     else:
-        results.append(("rclone_mount", False, "ignoré (do_mount décoché ou mdp vide)"))
+        results.append(("rclone_mount", False,
+                        "ignoré (connexion SSO non complétée ou mount décoché)"))
 
     ok, msg = apply_bitwarden_prefs(tenant)
     results.append(("bitwarden_prefs", ok, msg))
