@@ -26,10 +26,17 @@ from .apply import (
     apply_kaccounts,
     apply_kde_theme,
     apply_rclone_mount,
+    apply_session_mounts,
 )
 from .auth.nc_login_flow import initiate as nc_login_initiate
 from .auth.nc_login_flow import poll_once as nc_login_poll_once
-from .provisioning import load_provisioning, merge_branding, user_login
+from .provisioning import (
+    load_provisioning,
+    merge_branding,
+    session_mounts,
+    session_pwas,
+    user_login,
+)
 from .tenant import get_service_url, get_slug, load_tenant
 
 LOG = logging.getLogger("bluefox-welcome")
@@ -86,10 +93,10 @@ def cli() -> int:
     # user. Absent on built-in-defaults installs — degrades to tenant.json alone.
     prov = load_provisioning()
     tenant = merge_branding(tenant, prov)
-    return run_wizard(tenant, prefill_email=user_login(prov))
+    return run_wizard(tenant, prefill_email=user_login(prov), prov=prov)
 
 
-def run_wizard(tenant: dict, prefill_email: str = "") -> int:
+def run_wizard(tenant: dict, prefill_email: str = "", prov: dict | None = None) -> int:
     try:
         from PyQt6.QtCore import QDateTime, QTimer
         from PyQt6.QtWidgets import (
@@ -125,6 +132,7 @@ def run_wizard(tenant: dict, prefill_email: str = "") -> int:
             do_mount=bool(wizard.field("do_mount")),
             nc_login_name=wizard.field("nc_login_name") or "",
             nc_app_password=wizard.field("nc_app_password") or "",
+            prov=prov or {},
         )
         return 0
     return 1
@@ -334,6 +342,7 @@ def _finalize_and_apply(
     do_mount: bool,
     nc_login_name: str,
     nc_app_password: str,
+    prov: dict | None = None,
 ) -> None:
     """Run the apply_* integrations, then write the done flag.
 
@@ -342,13 +351,26 @@ def _finalize_and_apply(
 
     The Nextcloud credential pair comes from the SSO Login Flow v2 (login name
     + app-password), not a typed password — see auth/nc_login_flow.py.
+
+    `prov` is the staged bf-policy/v2 JSON: its session.mounts[] drive a
+    multi-mount (one rclone unit each) instead of the single ~/Nextcloud
+    default, and session.pwas[] are force-installed via the Brave policy.
     """
+    prov = prov or {}
+    mounts = session_mounts(prov)
+    pwas = session_pwas(prov)
     results: list[tuple[str, bool, str]] = []
 
     if do_mount and nc_login_name and nc_app_password:
-        ok, msg = apply_rclone_mount(
-            tenant, user=nc_login_name, password=nc_app_password)
-        results.append(("rclone_mount", ok, msg))
+        if mounts:
+            ok, msg = apply_session_mounts(
+                tenant, user=nc_login_name, password=nc_app_password,
+                mounts=mounts)
+            results.append(("rclone_mounts", ok, msg))
+        else:
+            ok, msg = apply_rclone_mount(
+                tenant, user=nc_login_name, password=nc_app_password)
+            results.append(("rclone_mount", ok, msg))
     else:
         results.append(("rclone_mount", False,
                         "ignoré (connexion SSO non complétée ou mount décoché)"))
@@ -356,7 +378,7 @@ def _finalize_and_apply(
     ok, msg = apply_bitwarden_prefs(tenant)
     results.append(("bitwarden_prefs", ok, msg))
 
-    ok, msg = apply_brave_policy(tenant)
+    ok, msg = apply_brave_policy(tenant, pwas=pwas)
     results.append(("brave_policy", ok, msg))
 
     ok, msg = apply_kaccounts(tenant)

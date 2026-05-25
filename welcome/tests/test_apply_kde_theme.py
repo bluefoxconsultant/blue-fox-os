@@ -10,8 +10,15 @@ from bluefox_welcome.apply.kde_theme import (
     _pick_random_wallpaper,
     _resolve_font,
     _resolve_lookandfeel_pkg,
+    _wallpaper_ext,
     apply_kde_theme,
 )
+
+
+class _CompletedOK:
+    returncode = 0
+    stderr = ""
+    stdout = ""
 
 
 def test_resolve_lookandfeel_pkg_defaults_to_slug():
@@ -146,3 +153,117 @@ def test_apply_kde_theme_uses_random_wallpaper_from_pack(monkeypatch,
     assert len(seen_wallpaper) == 1
     assert seen_wallpaper[0].endswith((".png",))
     assert seen_wallpaper[0].startswith(str(pack))
+
+
+# --- bf-policy/v2 session overrides (BFOSI10) -------------------------------
+
+def test_apply_kde_theme_generates_user_colorscheme_on_accent(monkeypatch,
+                                                              tmp_path: Path,
+                                                              tenant_data: dict):
+    """A session accent override → generate + apply a per-user scheme, not slug."""
+    tenant = dict(tenant_data, branding={"palette": {"accent": "#A020F0"}})
+    schemes = tmp_path / "color-schemes"
+    applied: list[str] = []
+
+    def fake_run(cmd, capture_output, text, timeout):
+        if cmd[0] == "plasma-apply-colorscheme":
+            applied.append(cmd[1])
+        return _CompletedOK()
+
+    monkeypatch.setattr("shutil.which", lambda x: f"/usr/bin/{x}")
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    ok, msg = apply_kde_theme(
+        tenant, look_and_feel_root=tmp_path,
+        wallpapers_dir=tmp_path / "wp", color_schemes_dir=schemes)
+    files = list(schemes.glob("*.colors"))
+    assert len(files) == 1
+    assert files[0].name == "bf-custom.colors"
+    assert applied == ["bf-custom"]  # generated scheme applied, not baked slug
+    # The override accent #A020F0 shows up raw in DecorationFocus.
+    assert "DecorationFocus=160,32,240" in files[0].read_text()
+    assert "colorscheme-gen(bf-custom):ok" in msg
+
+
+def test_apply_kde_theme_no_accent_uses_baked_slug(monkeypatch, tmp_path: Path,
+                                                   tenant_data: dict):
+    """No accent override → apply the baked <slug> scheme, generate nothing."""
+    schemes = tmp_path / "color-schemes"
+    applied: list[str] = []
+
+    def fake_run(cmd, capture_output, text, timeout):
+        if cmd[0] == "plasma-apply-colorscheme":
+            applied.append(cmd[1])
+        return _CompletedOK()
+
+    monkeypatch.setattr("shutil.which", lambda x: f"/usr/bin/{x}")
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    apply_kde_theme(tenant_data, look_and_feel_root=tmp_path,
+                    color_schemes_dir=schemes)
+    assert applied == ["bf"]
+    assert not list(schemes.glob("*.colors")) if schemes.exists() else True
+
+
+def test_apply_kde_theme_fetches_wallpaper_url(monkeypatch, tmp_path: Path,
+                                               tenant_data: dict):
+    """A session wallpaper_url is fetched + applied, not the random pack."""
+    tenant = dict(tenant_data, branding={"wallpaper_url": "https://nc.example/w.png"})
+    cache = tmp_path / "cache"
+    fetched: list[tuple[str, Path]] = []
+
+    def fake_fetch(url, dest):
+        fetched.append((url, dest))
+        dest.write_bytes(b"\x89PNG\r\n\x1a\n")
+        return True
+
+    seen: list[str] = []
+
+    def fake_run(cmd, capture_output, text, timeout):
+        if cmd[0] == "plasma-apply-wallpaperimage":
+            seen.append(cmd[1])
+        return _CompletedOK()
+
+    monkeypatch.setattr("shutil.which", lambda x: f"/usr/bin/{x}")
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    ok, msg = apply_kde_theme(
+        tenant, look_and_feel_root=tmp_path,
+        wallpaper_cache_dir=cache, fetch=fake_fetch)
+    assert len(fetched) == 1
+    assert fetched[0][0] == "https://nc.example/w.png"
+    assert seen and seen[0].endswith(".png")
+    assert seen[0].startswith(str(cache))
+    assert "wallpaper-fetch:ok" in msg
+
+
+def test_apply_kde_theme_wallpaper_fetch_failure_falls_back_to_pack(
+        monkeypatch, tmp_path: Path, tenant_data: dict):
+    """Fetch failure → fall back to a wallpaper from the baked pack."""
+    tenant = dict(tenant_data, branding={"wallpaper_url": "https://x/w.png"})
+    pack = tmp_path / "wp"
+    pack.mkdir()
+    (pack / "a.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    seen: list[str] = []
+
+    def fake_run(cmd, capture_output, text, timeout):
+        if cmd[0] == "plasma-apply-wallpaperimage":
+            seen.append(cmd[1])
+        return _CompletedOK()
+
+    monkeypatch.setattr("shutil.which", lambda x: f"/usr/bin/{x}")
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    ok, msg = apply_kde_theme(
+        tenant, look_and_feel_root=tmp_path, wallpapers_dir=pack,
+        wallpaper_cache_dir=tmp_path / "c", fetch=lambda url, dest: False)
+    assert seen and seen[0] == str(pack / "a.png")
+    assert "wallpaper-fetch:fail" in msg
+
+
+def test_wallpaper_ext_defaults_to_jpg():
+    assert _wallpaper_ext("https://x/a.png") == ".png"
+    assert _wallpaper_ext("https://x/a.webp") == ".webp"
+    assert _wallpaper_ext("https://x/a") == ".jpg"
+    assert _wallpaper_ext("https://x/a.gif") == ".jpg"
