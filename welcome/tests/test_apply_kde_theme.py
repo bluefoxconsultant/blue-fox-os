@@ -7,12 +7,45 @@ import pytest
 
 from bluefox_welcome.apply.kde_theme import (
     BRANDING_RUNTIME,
+    _MAX_WALLPAPER_BYTES,
+    _fetch_url,
     _pick_random_wallpaper,
     _resolve_font,
     _resolve_lookandfeel_pkg,
     _wallpaper_ext,
     apply_kde_theme,
 )
+
+
+class _FakeResp:
+    """Minimal urlopen() context-manager whose read(n) honours the byte cap."""
+    def __init__(self, data: bytes):
+        self._data = data
+
+    def read(self, n: int = -1) -> bytes:
+        return self._data[:n] if n and n >= 0 else self._data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_fetch_url_rejects_oversized(monkeypatch, tmp_path: Path):
+    big = b"x" * (_MAX_WALLPAPER_BYTES + 100)
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _FakeResp(big))
+    dest = tmp_path / "w.jpg"
+    assert _fetch_url("https://x/w.jpg", dest) is False
+    assert not dest.exists()
+
+
+def test_fetch_url_accepts_small(monkeypatch, tmp_path: Path):
+    small = b"PNGDATA"
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _FakeResp(small))
+    dest = tmp_path / "w.jpg"
+    assert _fetch_url("https://x/w.jpg", dest) is True
+    assert dest.read_bytes() == small
 
 
 class _CompletedOK:

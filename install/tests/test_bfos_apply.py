@@ -1,3 +1,4 @@
+import json
 import os
 
 import bfos_apply as ba
@@ -80,3 +81,46 @@ def test_apply_local_mode_creates_user(tmp_path):
     ba.apply(p, root=str(tmp_path), run=lambda argv, check=False: calls.append(argv))
     flat = [" ".join(c) for c in calls]
     assert any("useradd -m -G wheel olivier" in c for c in flat)
+
+
+# ------------------------------------------------------------ security hardening
+def test_render_sssd_conf_sanitizes_injection():
+    """A newline in any policy value must not inject extra sssd directives."""
+    p = {**POLICY,
+         "user": {"login": "olivier@bf.com\nrogue_user = 1"},
+         "install": {**POLICY["install"],
+                     "login": {"mode": "sssd",
+                               "ldap_uri": "ldaps://ok\nrogue_uri = 1",
+                               "ldap_base_dn": "dc=x\nrogue_dn = 1"}}}
+    lines = ba.render_sssd_conf(p).splitlines()
+    assert "rogue_uri = 1" not in lines
+    assert "rogue_dn = 1" not in lines
+    assert "rogue_user = 1" not in lines
+    # the sanitized value is collapsed onto its own legitimate directive line
+    assert "ldap_uri = ldaps://okrogue_uri = 1" in lines
+
+
+def test_render_hostname_rejects_invalid():
+    p = {**POLICY, "install": {**POLICY["install"], "hostname": "bad name\nrm -rf"}}
+    assert ba.render_hostname(p) == "blue-fox-os\n"
+
+
+def test_render_hostname_accepts_dotted_label():
+    p = {**POLICY, "install": {**POLICY["install"], "hostname": "bf-first.last"}}
+    assert ba.render_hostname(p) == "bf-first.last\n"
+
+
+def test_apply_local_mode_rejects_bad_username(tmp_path):
+    calls = []
+    p = {**POLICY, "user": {"login": "Bad Name@x"},
+         "install": {**POLICY["install"], "login": {"mode": "local"}}}
+    ba.apply(p, root=str(tmp_path),
+             run=lambda argv, check=False: calls.append(argv))
+    assert not any("useradd" in " ".join(c) for c in calls)
+
+
+def test_main_skips_non_v2_policy(tmp_path, capsys):
+    bad = tmp_path / "p.json"
+    bad.write_text(json.dumps({"schema": "nope", "install": {}}))
+    assert ba.main(["bfos_apply", str(bad)]) == 0
+    assert "skipping" in capsys.readouterr().err

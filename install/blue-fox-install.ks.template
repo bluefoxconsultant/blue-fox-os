@@ -75,6 +75,7 @@ for ROOT in /mnt/sysroot /mnt/sysimage; do
   if [ -d "$ROOT" ]; then
     mkdir -p "$ROOT/var/lib/bluefox-welcome"
     cp /tmp/bfos-provision.json "$ROOT/var/lib/bluefox-welcome/provisioning.json" 2>/dev/null || true
+    chmod 600 "$ROOT/var/lib/bluefox-welcome/provisioning.json" 2>/dev/null || true
   fi
 done
 %end

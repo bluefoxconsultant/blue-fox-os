@@ -142,6 +142,15 @@ def _error_code(http_error):
         return None
 
 
+def _valid_policy(d) -> bool:
+    """Structural sanity check on a policy payload (no jsonschema in Anaconda).
+    A wrong-shaped response is rejected so the caller falls back to org defaults
+    rather than staging a malformed policy for the root-level %post applier."""
+    return (isinstance(d, dict) and d.get("schema") == "bf-policy/v2"
+            and isinstance(d.get("install"), dict)
+            and isinstance(d.get("user"), dict))
+
+
 def fetch_policy(policy_url, token, get=_get):
     try:
         status, raw = get(policy_url, token)
@@ -150,9 +159,12 @@ def fetch_policy(policy_url, token, get=_get):
     if status != 200:
         raise ProvisionError(f"policy fetch HTTP {status}")
     try:
-        return json.loads(raw)
+        d = json.loads(raw)
     except ValueError as exc:
         raise ProvisionError(f"policy response bad JSON: {exc}") from exc
+    if not _valid_policy(d):
+        raise ProvisionError("policy response failed bf-policy/v2 schema check")
+    return d
 
 
 def fallback_policy(env=None):
@@ -227,6 +239,12 @@ def main(argv=None):
         policy = fallback_policy()
     with open(STAGED_JSON, "w") as fh:
         json.dump(policy, fh)
+    # The staged policy carries the operator login + LDAP endpoints (no token),
+    # so keep it owner-only rather than the installer's default umask (0o644).
+    try:
+        os.chmod(STAGED_JSON, 0o600)
+    except OSError:
+        pass
     return 0
 
 

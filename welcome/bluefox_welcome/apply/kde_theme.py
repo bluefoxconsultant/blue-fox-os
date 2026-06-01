@@ -38,6 +38,9 @@ LOG = logging.getLogger("bluefox-welcome.apply.kde_theme")
 
 BRANDING_RUNTIME = "/usr/share/bluefox/branding"
 WALLPAPERS_DIR = Path(BRANDING_RUNTIME) / "wallpapers"
+# Cap the policy-driven wallpaper download so a hostile/oversized wallpaper_url
+# can't OOM the firstboot agent (it reads into memory before writing to disk).
+_MAX_WALLPAPER_BYTES = 15 * 1024 * 1024
 LOOK_AND_FEEL_ROOT = Path("/usr/share/plasma/look-and-feel")
 WALLPAPER_CACHE_DIR = Path.home() / ".local/share/bluefox"
 _WALLPAPER_EXTS = (".jpg", ".jpeg", ".png", ".webp")
@@ -69,7 +72,11 @@ def _fetch_url(url: str, dest: Path, timeout: int = 30) -> bool:
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "blue-fox-os"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-            data = resp.read()
+            data = resp.read(_MAX_WALLPAPER_BYTES + 1)
+        if len(data) > _MAX_WALLPAPER_BYTES:
+            LOG.warning("wallpaper %s exceeds %d bytes ; skipping",
+                        url, _MAX_WALLPAPER_BYTES)
+            return False
         dest.write_bytes(data)
         return True
     except Exception as e:  # noqa: BLE001

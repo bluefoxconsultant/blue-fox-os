@@ -22,14 +22,35 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 
 STAGED_JSON = "/var/lib/bluefox-welcome/provisioning.json"
 
+# A single DNS label or dotted name; must start/end alphanumeric. Anything else
+# (spaces, newlines, control or shell chars) is rejected → safe default.
+_HOSTNAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,253}[A-Za-z0-9])?$")
+# POSIX-ish login name; gates the value handed to `useradd` in local mode.
+_USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]*$")
+
+
+def _ini_safe(value, default="") -> str:
+    """Sanitize a policy-supplied value before it lands in an INI-style config
+    (sssd.conf): drop CR/LF and control chars so a crafted value can't inject
+    extra directives. Defense-in-depth — the policy is first-party over TLS, but
+    this file is written as root, so we never trust its contents verbatim."""
+    s = str(value if value is not None else default)
+    s = s.replace("\r", "").replace("\n", "")
+    s = "".join(ch for ch in s if ord(ch) >= 0x20)
+    return s.strip()
+
 
 def render_hostname(policy) -> str:
-    return (policy.get("install", {}).get("hostname") or "blue-fox-os").strip() + "\n"
+    name = (policy.get("install", {}).get("hostname") or "").strip()
+    if not _HOSTNAME_RE.match(name):
+        name = "blue-fox-os"
+    return name + "\n"
 
 
 def render_locale_conf(policy) -> str:
@@ -49,7 +70,7 @@ def render_sssd_conf(policy) -> str:
     login = install.get("login", {})
     pol = policy.get("policies", {})
     offline = pol.get("offline_login", {}) if isinstance(pol, dict) else {}
-    user_login = policy.get("user", {}).get("login", "")
+    user_login = _ini_safe(policy.get("user", {}).get("login", ""))
 
     cache = "true" if offline.get("enabled", True) else "false"
     expire = int(offline.get("max_offline_days", 0) or 0)
@@ -65,8 +86,8 @@ def render_sssd_conf(policy) -> str:
         "id_provider = ldap\n"
         "auth_provider = ldap\n"
         "access_provider = simple\n"
-        f"ldap_uri = {login.get('ldap_uri', '')}\n"
-        f"ldap_search_base = {login.get('ldap_base_dn', '')}\n"
+        f"ldap_uri = {_ini_safe(login.get('ldap_uri', ''))}\n"
+        f"ldap_search_base = {_ini_safe(login.get('ldap_base_dn', ''))}\n"
         "ldap_schema = rfc2307bis\n"
         "ldap_user_object_class = user\n"
         "ldap_group_object_class = group\n"
@@ -124,7 +145,7 @@ def apply(policy, root="/", run=subprocess.run, writer=None):
     elif login.get("mode") == "local":
         user_login = policy.get("user", {}).get("login", "")
         username = user_login.split("@")[0] if user_login else ""
-        if username:
+        if username and _USERNAME_RE.match(username):
             record("local-user", lambda: run(
                 _chroot(root, ["useradd", "-m", "-G", "wheel", username]),
                 check=False))
@@ -155,6 +176,11 @@ def main(argv=None):
     except Exception as exc:  # noqa: BLE001
         print(f"[bfos-apply] cannot read {path}: {exc}", file=sys.stderr)
         return 0  # do not fail the install
+    if not (isinstance(policy, dict) and policy.get("schema") == "bf-policy/v2"
+            and isinstance(policy.get("install"), dict)):
+        print("[bfos-apply] staged policy missing or not bf-policy/v2 ; skipping",
+              file=sys.stderr)
+        return 0
     for action, ok, detail in apply(policy):
         print(f"[bfos-apply] {'OK' if ok else 'FAIL'} {action} {detail}".rstrip(),
               file=sys.stderr)

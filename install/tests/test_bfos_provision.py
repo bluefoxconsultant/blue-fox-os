@@ -101,13 +101,21 @@ def test_poll_token_timeout():
 def test_fetch_policy_ok():
     def get(url, token, timeout=30):
         assert token == "TOK"
-        return 200, json.dumps({"schema": "bf-policy/v2"})
+        return 200, json.dumps({"schema": "bf-policy/v2",
+                                "install": {}, "user": {"login": "x"}})
     assert bp.fetch_policy(POLICY_URL, "TOK", get=get)["schema"] == "bf-policy/v2"
 
 
 def test_fetch_policy_non200_raises():
     def get(url, token, timeout=30):
         return 403, "nope"
+    with pytest.raises(bp.ProvisionError):
+        bp.fetch_policy(POLICY_URL, "TOK", get=get)
+
+
+def test_fetch_policy_rejects_wrong_shape():
+    def get(url, token, timeout=30):
+        return 200, json.dumps({"schema": "bf-policy/v2"})  # no install/user
     with pytest.raises(bp.ProvisionError):
         bp.fetch_policy(POLICY_URL, "TOK", get=get)
 
@@ -125,7 +133,7 @@ def test_run_happy_path():
 
     def get(url, token, timeout=30):
         assert (url, token) == (POLICY_URL, "TOK")
-        return 200, json.dumps({"schema": "bf-policy/v2",
+        return 200, json.dumps({"schema": "bf-policy/v2", "install": {},
                                 "user": {"login": "olivier"}})
 
     env = {"BFOS_OIDC_DEVICE_URL": DEVICE_URL, "BFOS_OIDC_TOKEN_URL": TOKEN_URL,
@@ -156,3 +164,13 @@ def test_fallback_policy_uses_env():
     fb = bp.fallback_policy(env=env)
     assert fb["install"]["locale"] == "en_CA.UTF-8"
     assert fb["install"]["keymap"] == "us"
+
+
+def test_main_chmods_staged_file(tmp_path, monkeypatch):
+    staged = tmp_path / "p.json"
+    monkeypatch.setattr(bp, "STAGED_JSON", str(staged))
+    for var in ("BFOS_OIDC_DEVICE_URL", "BFOS_OIDC_TOKEN_URL",
+                "BFOS_OIDC_CLIENT_ID", "BFOS_POLICY_URL"):
+        monkeypatch.delenv(var, raising=False)
+    assert bp.main([]) == 0
+    assert oct(staged.stat().st_mode)[-3:] == "600"

@@ -404,7 +404,9 @@ def _finalize_and_apply(
     except PermissionError:
         LOG.warning("cannot write %s as user ; firstboot.service should mkdir at /var/lib", STATE_DIR)
     USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    (USER_CONFIG_DIR / "user_email").write_text(user_email + "\n")
+    email_file = USER_CONFIG_DIR / "user_email"
+    email_file.write_text(user_email + "\n")
+    email_file.chmod(0o600)
     LOG.info("wizard finished ; flagged done at %s", DONE_FLAG)
 
 
