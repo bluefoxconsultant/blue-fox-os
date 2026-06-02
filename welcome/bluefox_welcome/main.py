@@ -9,10 +9,13 @@ Architecture (BFOSP1, BFOSP3, BFOSP4, BFOSI8, BFOSI9, BFOSD8) :
 - Brave Sync : seed phrase stockee dans Vaultwarden, copy-paste manuelle
 - Login machine : statu quo BFOSI2 (compte local, sssd v1.1)
 
-Le wizard collecte les inputs (email + mot de passe NC + choix mount),
-puis _finalize() orchestre les apply_* en best-effort : un échec d'une
-intégration ne bloque pas les autres, et tout résultat est affiché dans
-la page de récap.
+Deux flux au firstboot (BFOSI10 #22436), dispatchés par select_flow() :
+- policy stagée présente (install device-flow) -> flux provisionné : 1 écran
+  (confirme l'identité connue + 1 SSO Nextcloud) puis apply auto de tout le reste.
+- pas de policy (install built-in defaults) -> le wizard manuel 5 pages qui
+  collecte les inputs (email + choix mount).
+Dans les deux cas _finalize_and_apply() orchestre les apply_* en best-effort :
+un échec d'une intégration ne bloque pas les autres ; tout résultat est journalisé.
 """
 import argparse
 import logging
@@ -96,7 +99,139 @@ def cli() -> int:
     return run_wizard(tenant, prefill_email=user_login(prov), prov=prov)
 
 
+def select_flow(prov: dict | None) -> str:
+    """'provisioned' when a valid staged policy names the user (we know who they
+    are + their session prefs -> minimal interaction) ; else 'manual' (the full
+    5-page wizard). A tiny pure function so the dispatch is unit-testable
+    without Qt."""
+    return "provisioned" if (prov and user_login(prov)) else "manual"
+
+
 def run_wizard(tenant: dict, prefill_email: str = "", prov: dict | None = None) -> int:
+    """Firstboot entry point (BFOSI10 #22436). A device-flow install stages a
+    bf-policy/v2 policy -> the provisioned flow (1 screen: confirm identity + one
+    NC SSO + auto-apply). A built-in-defaults install has no policy -> the manual
+    5-page wizard."""
+    prov = prov or {}
+    if select_flow(prov) == "provisioned":
+        return _run_provisioned_flow(tenant, prov)
+    return _run_manual_wizard(tenant, prefill_email, prov)
+
+
+def _apply_from_policy(tenant: dict, prov: dict, nc_creds) -> None:
+    """Qt-free orchestration for the provisioned flow. ``nc_creds`` is
+    (login_name, app_password) on a completed Nextcloud SSO, or None when the
+    user skipped it — decision A: apply everything except the NC mounts."""
+    login, password = nc_creds if nc_creds else ("", "")
+    _finalize_and_apply(
+        tenant=tenant,
+        user_email=user_login(prov),
+        do_mount=bool(nc_creds),
+        nc_login_name=login,
+        nc_app_password=password,
+        prov=prov,
+    )
+
+
+def _run_provisioned_flow(tenant: dict, prov: dict) -> int:
+    """Minimal firstboot for a device-flow install: identity + session prefs are
+    already known from the staged policy, so the only interaction is the one NC
+    SSO (Login Flow v2 — the mount credential cannot come from the device-flow
+    token, see auth/nc_login_flow.py). Everything else applies on Terminer."""
+    try:
+        from PyQt6.QtCore import QDateTime, QTimer
+        from PyQt6.QtWidgets import (
+            QApplication, QWizard, QWizardPage, QLabel, QPushButton, QVBoxLayout,
+        )
+    except ImportError:
+        LOG.error("PyQt6 absent ; applying policy headless (no NC mount)")
+        _apply_from_policy(tenant, prov, nc_creds=None)
+        return 0
+
+    app = QApplication(sys.argv)  # noqa: F841 — kept alive for Qt
+    wizard = QWizard()
+    wizard.setWindowTitle("Blue Fox OS — Premier démarrage")
+    wizard.setOption(QWizard.WizardOption.NoBackButtonOnStartPage, True)
+
+    login = user_login(prov)
+    nc_url = get_service_url(tenant, "nextcloud",
+                             "https://nextcloud.bluefoxconsultant.com")
+    creds = {"value": None}
+
+    page = QWizardPage()
+    page.setTitle("Bienvenue sur Blue Fox OS")
+    layout = QVBoxLayout()
+    layout.addWidget(QLabel(
+        f"Configuration automatique de votre poste pour <b>{login}</b>."))
+    layout.addWidget(QLabel(
+        "Connectez-vous une fois à Nextcloud (SSO) pour activer vos fichiers. "
+        "Le thème, le navigateur, le vault et les comptes mail sont configurés "
+        "automatiquement à la fin."))
+    btn = QPushButton("Se connecter à Nextcloud (SSO)")
+    layout.addWidget(btn)
+    status = QLabel("Non connecté — vous pouvez ignorer et le faire plus tard.")
+    layout.addWidget(status)
+    page.setLayout(layout)
+    wizard.addPage(page)
+
+    # NC Login Flow v2 on a QTimer (same mechanism as the manual _files_page ;
+    # TODO dedupe into a shared helper once the manual path gets test coverage).
+    state = {"poll_endpoint": None, "poll_token": None, "deadline": 0}
+    timer = QTimer(page)
+    timer.setInterval(2000)
+
+    def on_tick():
+        try:
+            res = nc_login_poll_once(state["poll_endpoint"], state["poll_token"])
+        except Exception as exc:  # noqa: BLE001 — surface to the user, never crash Qt
+            timer.stop()
+            btn.setEnabled(True)
+            status.setText(f"<span style='color:#c0392b'>Échec : {exc}</span>")
+            LOG.warning("nc login poll failed: %s", exc)
+            return
+        if res is not None:
+            timer.stop()
+            creds["value"] = (res[0], res[1])
+            status.setText(f"<span style='color:#27ab63'>Connecté en tant que "
+                           f"<b>{res[0]}</b> ✓</span>")
+            btn.setText("Reconnecter")
+            btn.setEnabled(True)
+            return
+        if QDateTime.currentSecsSinceEpoch() > state["deadline"]:
+            timer.stop()
+            btn.setEnabled(True)
+            status.setText("<span style='color:#c0392b'>Délai dépassé — "
+                           "réessayez.</span>")
+
+    def on_click():
+        try:
+            login_url, endpoint, token = nc_login_initiate(nc_url)
+        except Exception as exc:  # noqa: BLE001
+            status.setText(f"<span style='color:#c0392b'>Impossible de démarrer "
+                           f"la connexion : {exc}</span>")
+            LOG.warning("nc login initiate failed: %s", exc)
+            return
+        state.update(poll_endpoint=endpoint, poll_token=token,
+                     deadline=QDateTime.currentSecsSinceEpoch() + 300)
+        _open_url_logged(login_url)
+        btn.setEnabled(False)
+        status.setText("Connectez-vous dans le navigateur…")
+        timer.start()
+
+    btn.clicked.connect(on_click)
+    timer.timeout.connect(on_tick)
+
+    rc = wizard.exec()
+    if rc == QWizard.DialogCode.Accepted:
+        _apply_from_policy(tenant, prov, creds["value"])
+        return 0
+    return 1
+
+
+def _run_manual_wizard(tenant: dict, prefill_email: str = "",
+                       prov: dict | None = None) -> int:
+    """The full 5-page wizard for built-in-defaults installs (no staged policy):
+    welcome, Authentik identity, NC files + SSO, vault, recap."""
     try:
         from PyQt6.QtCore import QDateTime, QTimer
         from PyQt6.QtWidgets import (
@@ -108,7 +243,7 @@ def run_wizard(tenant: dict, prefill_email: str = "", prov: dict | None = None) 
         print("[stub] Blue Fox OS welcome wizard ; PyQt6 manquant.")
         return 0
 
-    app = QApplication(sys.argv)
+    app = QApplication(sys.argv)  # noqa: F841 — kept alive for Qt
     wizard = QWizard()
     wizard.setWindowTitle("Blue Fox OS — Premier démarrage")
     wizard.setOption(QWizard.WizardOption.NoBackButtonOnStartPage, True)
