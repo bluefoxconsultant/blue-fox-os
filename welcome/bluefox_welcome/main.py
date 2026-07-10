@@ -228,22 +228,23 @@ def _run_provisioned_flow(tenant: dict, prov: dict) -> int:
     return 1
 
 
-def _run_manual_wizard(tenant: dict, prefill_email: str = "",
-                       prov: dict | None = None) -> int:
-    """The full 5-page wizard for built-in-defaults installs (no staged policy):
-    welcome, Authentik identity, NC files + SSO, vault, recap."""
-    try:
-        from PyQt6.QtCore import QDateTime, QTimer
-        from PyQt6.QtWidgets import (
-            QApplication, QWizard, QWizardPage, QLabel, QLineEdit,
-            QVBoxLayout, QPushButton, QCheckBox, QTextEdit,
-        )
-    except ImportError:
-        LOG.error("PyQt6 not available ; falling back to terminal stub")
-        print("[stub] Blue Fox OS welcome wizard ; PyQt6 manquant.")
-        return 0
+def build_manual_wizard(tenant: dict, prefill_email: str = "",
+                        prov: dict | None = None):
+    """Construct the manual 5-page QWizard *without* executing it.
 
-    app = QApplication(sys.argv)  # noqa: F841 — kept alive for Qt
+    Returns ``(app, wizard)`` so both the firstboot entry point and the
+    pytest-qt harness (#22234) build the exact same wizard, then drive
+    navigation / inspect fields before (or instead of) ``exec()``. PyQt6 is
+    imported here lazily so main.py stays importable on the pure-Python test
+    lane; an already-running QApplication (pytest-qt owns one via its ``qapp``
+    fixture) is reused rather than constructing a second."""
+    from PyQt6.QtCore import QDateTime, QTimer
+    from PyQt6.QtWidgets import (
+        QApplication, QWizard, QWizardPage, QLabel, QLineEdit,
+        QVBoxLayout, QPushButton, QCheckBox, QTextEdit,
+    )
+
+    app = QApplication.instance() or QApplication(sys.argv)
     wizard = QWizard()
     wizard.setWindowTitle("Blue Fox OS — Premier démarrage")
     wizard.setOption(QWizard.WizardOption.NoBackButtonOnStartPage, True)
@@ -256,19 +257,40 @@ def _run_manual_wizard(tenant: dict, prefill_email: str = "",
                                QTimer, QDateTime))
     wizard.addPage(_vault_page(tenant, QWizardPage, QVBoxLayout, QLabel,
                                QPushButton))
-    done_page = _done_page(tenant, wizard, QWizardPage, QVBoxLayout, QTextEdit)
-    wizard.addPage(done_page)
+    wizard.addPage(_done_page(tenant, wizard, QWizardPage, QVBoxLayout,
+                              QTextEdit))
+    return app, wizard
 
-    rc = wizard.exec()
-    if rc == QWizard.DialogCode.Accepted:
-        _finalize_and_apply(
-            tenant=tenant,
-            user_email=wizard.field("user_email") or "",
-            do_mount=bool(wizard.field("do_mount")),
-            nc_login_name=wizard.field("nc_login_name") or "",
-            nc_app_password=wizard.field("nc_app_password") or "",
-            prov=prov or {},
-        )
+
+def _finalize_from_wizard(wizard, tenant: dict, prov: dict) -> None:
+    """Marshal the accepted manual wizard's fields into _finalize_and_apply.
+
+    Split out of _run_manual_wizard so the accept path is exercised by the same
+    code the tests call — no field-marshalling copy living in the harness."""
+    _finalize_and_apply(
+        tenant=tenant,
+        user_email=wizard.field("user_email") or "",
+        do_mount=bool(wizard.field("do_mount")),
+        nc_login_name=wizard.field("nc_login_name") or "",
+        nc_app_password=wizard.field("nc_app_password") or "",
+        prov=prov,
+    )
+
+
+def _run_manual_wizard(tenant: dict, prefill_email: str = "",
+                       prov: dict | None = None) -> int:
+    """The full 5-page wizard for built-in-defaults installs (no staged policy):
+    welcome, Authentik identity, NC files + SSO, vault, recap."""
+    try:
+        app, wizard = build_manual_wizard(tenant, prefill_email, prov)  # noqa: F841 — app kept alive for Qt
+    except ImportError:
+        LOG.error("PyQt6 not available ; falling back to terminal stub")
+        print("[stub] Blue Fox OS welcome wizard ; PyQt6 manquant.")
+        return 0
+
+    from PyQt6.QtWidgets import QWizard  # safe: build_manual_wizard succeeded
+    if wizard.exec() == QWizard.DialogCode.Accepted:
+        _finalize_from_wizard(wizard, tenant, prov or {})
         return 0
     return 1
 
