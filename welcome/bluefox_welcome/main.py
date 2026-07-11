@@ -67,6 +67,71 @@ def _open_url_logged(url: str) -> None:
         LOG.exception("xdg-open %s failed: %s", url, exc)
 
 
+def _wire_nc_login_poll(page, btn, status, nc_url, on_success):
+    """Wire an NC Login Flow v2 poll loop onto a wizard page.
+
+    Shared by the provisioned flow and the manual _files_page — the two used to
+    carry byte-identical copies of this block. A click on ``btn`` initiates the
+    browser SSO (Login Flow v2, no password typed) and starts a 2 s QTimer whose
+    every tick is one quick poll, so the wizard stays responsive while the user
+    authenticates. Polling stops on success, on a 300 s deadline, or on error.
+
+    ``btn`` / ``status`` feedback is identical across both call sites; the ONLY
+    per-flow difference is where the acquired credential goes, so
+    ``on_success(login_name, app_password)`` is the sole callback — the
+    provisioned flow stashes it in a dict, the manual page writes it into two
+    hidden fields. PyQt6 is imported lazily so main.py stays importable on the
+    pure-Python test lane. Returns the QTimer (parented to ``page``; the return
+    lets callers / the pytest-qt harness hold and drive it)."""
+    from PyQt6.QtCore import QDateTime, QTimer
+
+    state = {"poll_endpoint": None, "poll_token": None, "deadline": 0}
+    timer = QTimer(page)
+    timer.setInterval(2000)
+
+    def on_tick():
+        try:
+            res = nc_login_poll_once(state["poll_endpoint"], state["poll_token"])
+        except Exception as exc:  # noqa: BLE001 — surface to the user, never crash Qt
+            timer.stop()
+            btn.setEnabled(True)
+            status.setText(f"<span style='color:#c0392b'>Échec : {exc}</span>")
+            LOG.warning("nc login poll failed: %s", exc)
+            return
+        if res is not None:
+            timer.stop()
+            on_success(res[0], res[1])
+            status.setText(f"<span style='color:#27ab63'>Connecté en tant que "
+                           f"<b>{res[0]}</b> ✓</span>")
+            btn.setText("Reconnecter")
+            btn.setEnabled(True)
+            return
+        if QDateTime.currentSecsSinceEpoch() > state["deadline"]:
+            timer.stop()
+            btn.setEnabled(True)
+            status.setText("<span style='color:#c0392b'>Délai dépassé — "
+                           "réessayez.</span>")
+
+    def on_click():
+        try:
+            login_url, endpoint, token = nc_login_initiate(nc_url)
+        except Exception as exc:  # noqa: BLE001
+            status.setText(f"<span style='color:#c0392b'>Impossible de démarrer "
+                           f"la connexion : {exc}</span>")
+            LOG.warning("nc login initiate failed: %s", exc)
+            return
+        state.update(poll_endpoint=endpoint, poll_token=token,
+                     deadline=QDateTime.currentSecsSinceEpoch() + 300)
+        _open_url_logged(login_url)
+        btn.setEnabled(False)
+        status.setText("Connectez-vous dans le navigateur…")
+        timer.start()
+
+    btn.clicked.connect(on_click)
+    timer.timeout.connect(on_tick)
+    return timer
+
+
 def cli() -> int:
     parser = argparse.ArgumentParser(prog="bluefox-welcome")
     parser.add_argument("--service-mode", action="store_true",
@@ -139,7 +204,6 @@ def _run_provisioned_flow(tenant: dict, prov: dict) -> int:
     SSO (Login Flow v2 — the mount credential cannot come from the device-flow
     token, see auth/nc_login_flow.py). Everything else applies on Terminer."""
     try:
-        from PyQt6.QtCore import QDateTime, QTimer
         from PyQt6.QtWidgets import (
             QApplication, QWizard, QWizardPage, QLabel, QPushButton, QVBoxLayout,
         )
@@ -174,52 +238,13 @@ def _run_provisioned_flow(tenant: dict, prov: dict) -> int:
     page.setLayout(layout)
     wizard.addPage(page)
 
-    # NC Login Flow v2 on a QTimer (same mechanism as the manual _files_page ;
-    # TODO dedupe into a shared helper once the manual path gets test coverage).
-    state = {"poll_endpoint": None, "poll_token": None, "deadline": 0}
-    timer = QTimer(page)
-    timer.setInterval(2000)
+    # NC Login Flow v2 on a QTimer — shared with the manual _files_page. The only
+    # per-flow difference is the success sink: here the credential lands in the
+    # local ``creds`` dict that the exec() path below reads.
+    def _store(login_name, app_password):
+        creds["value"] = (login_name, app_password)
 
-    def on_tick():
-        try:
-            res = nc_login_poll_once(state["poll_endpoint"], state["poll_token"])
-        except Exception as exc:  # noqa: BLE001 — surface to the user, never crash Qt
-            timer.stop()
-            btn.setEnabled(True)
-            status.setText(f"<span style='color:#c0392b'>Échec : {exc}</span>")
-            LOG.warning("nc login poll failed: %s", exc)
-            return
-        if res is not None:
-            timer.stop()
-            creds["value"] = (res[0], res[1])
-            status.setText(f"<span style='color:#27ab63'>Connecté en tant que "
-                           f"<b>{res[0]}</b> ✓</span>")
-            btn.setText("Reconnecter")
-            btn.setEnabled(True)
-            return
-        if QDateTime.currentSecsSinceEpoch() > state["deadline"]:
-            timer.stop()
-            btn.setEnabled(True)
-            status.setText("<span style='color:#c0392b'>Délai dépassé — "
-                           "réessayez.</span>")
-
-    def on_click():
-        try:
-            login_url, endpoint, token = nc_login_initiate(nc_url)
-        except Exception as exc:  # noqa: BLE001
-            status.setText(f"<span style='color:#c0392b'>Impossible de démarrer "
-                           f"la connexion : {exc}</span>")
-            LOG.warning("nc login initiate failed: %s", exc)
-            return
-        state.update(poll_endpoint=endpoint, poll_token=token,
-                     deadline=QDateTime.currentSecsSinceEpoch() + 300)
-        _open_url_logged(login_url)
-        btn.setEnabled(False)
-        status.setText("Connectez-vous dans le navigateur…")
-        timer.start()
-
-    btn.clicked.connect(on_click)
-    timer.timeout.connect(on_tick)
+    _wire_nc_login_poll(page, btn, status, nc_url, _store)
 
     rc = wizard.exec()
     if rc == QWizard.DialogCode.Accepted:
@@ -238,7 +263,6 @@ def build_manual_wizard(tenant: dict, prefill_email: str = "",
     imported here lazily so main.py stays importable on the pure-Python test
     lane; an already-running QApplication (pytest-qt owns one via its ``qapp``
     fixture) is reused rather than constructing a second."""
-    from PyQt6.QtCore import QDateTime, QTimer
     from PyQt6.QtWidgets import (
         QApplication, QWizard, QWizardPage, QLabel, QLineEdit,
         QVBoxLayout, QPushButton, QCheckBox, QTextEdit,
@@ -253,8 +277,7 @@ def build_manual_wizard(tenant: dict, prefill_email: str = "",
     wizard.addPage(_authentik_page(tenant, QWizardPage, QVBoxLayout, QLabel,
                                    QLineEdit, QPushButton, prefill_email))
     wizard.addPage(_files_page(tenant, QWizardPage, QVBoxLayout, QLabel,
-                               QCheckBox, QLineEdit, QPushButton,
-                               QTimer, QDateTime))
+                               QCheckBox, QLineEdit, QPushButton))
     wizard.addPage(_vault_page(tenant, QWizardPage, QVBoxLayout, QLabel,
                                QPushButton))
     wizard.addPage(_done_page(tenant, wizard, QWizardPage, QVBoxLayout,
@@ -338,7 +361,7 @@ def _authentik_page(tenant, QWizardPage, QVBoxLayout, QLabel, QLineEdit,
 
 
 def _files_page(tenant, QWizardPage, QVBoxLayout, QLabel, QCheckBox, QLineEdit,
-                QPushButton, QTimer, QDateTime):
+                QPushButton):
     page = QWizardPage()
     page.setTitle("Fichiers Nextcloud")
     nc_url = get_service_url(tenant, "nextcloud",
@@ -376,53 +399,14 @@ def _files_page(tenant, QWizardPage, QVBoxLayout, QLabel, QCheckBox, QLineEdit,
     layout.addWidget(QLabel("Mail / calendrier / contacts seront ajoutés "
                             "à KAccounts (System Settings → Online Accounts)."))
 
-    # NC Login Flow v2 driven by a QTimer: each tick is one quick poll, so the
-    # wizard stays responsive while the user authenticates in the browser.
-    state = {"poll_endpoint": None, "poll_token": None, "deadline": 0}
-    timer = QTimer(page)
-    timer.setInterval(2000)
+    # NC Login Flow v2 on a QTimer — shared with the provisioned flow. The only
+    # per-flow difference is the success sink: here the credential lands in the
+    # two hidden fields that _finalize reads via wizard.field().
+    def _store(login_name, app_password):
+        nc_login_name.setText(login_name)
+        nc_app_password.setText(app_password)
 
-    def on_tick():
-        try:
-            res = nc_login_poll_once(state["poll_endpoint"], state["poll_token"])
-        except Exception as exc:  # noqa: BLE001 — surface to the user, never crash Qt
-            timer.stop()
-            btn.setEnabled(True)
-            status.setText(f"<span style='color:#c0392b'>Échec : {exc}</span>")
-            LOG.warning("nc login poll failed: %s", exc)
-            return
-        if res is not None:
-            timer.stop()
-            nc_login_name.setText(res[0])
-            nc_app_password.setText(res[1])
-            status.setText(f"<span style='color:#27ab63'>Connecté en tant que "
-                           f"<b>{res[0]}</b> ✓</span>")
-            btn.setText("Reconnecter")
-            btn.setEnabled(True)
-            return
-        if QDateTime.currentSecsSinceEpoch() > state["deadline"]:
-            timer.stop()
-            btn.setEnabled(True)
-            status.setText("<span style='color:#c0392b'>Délai dépassé — "
-                           "réessayez.</span>")
-
-    def on_click():
-        try:
-            login_url, endpoint, token = nc_login_initiate(nc_url)
-        except Exception as exc:  # noqa: BLE001
-            status.setText(f"<span style='color:#c0392b'>Impossible de démarrer "
-                           f"la connexion : {exc}</span>")
-            LOG.warning("nc login initiate failed: %s", exc)
-            return
-        state.update(poll_endpoint=endpoint, poll_token=token,
-                     deadline=QDateTime.currentSecsSinceEpoch() + 300)
-        _open_url_logged(login_url)
-        btn.setEnabled(False)
-        status.setText("Connectez-vous dans le navigateur…")
-        timer.start()
-
-    btn.clicked.connect(on_click)
-    timer.timeout.connect(on_tick)
+    _wire_nc_login_poll(page, btn, status, nc_url, _store)
 
     page.setLayout(layout)
     return page
