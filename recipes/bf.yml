@@ -2,7 +2,7 @@
 # Voir recipes/_base.yml pour le rationale des modules.
 
 name: blue-fox-os-bf
-description: Blue Fox OS - image BF (pilote interne Olivier + Pablo)
+description: Blue Fox OS - image BF (pilote interne Olivier + Jace)
 
 base-image: ghcr.io/ublue-os/kinoite-main
 image-version: latest

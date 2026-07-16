@@ -2,7 +2,7 @@
 
 Custom Fedora Kinoite image for Blue Fox Inc. clients. Image-based, atomique, brandable per-tenant via BlueBuild.
 
-> **v1 portée :** pilote interne Olivier + Pablo seulement. Premier client externe = v1.1.
+> **v1 portée :** pilote interne Olivier + Jace seulement. Premier client externe = v1.1.
 
 ## Stack
 

@@ -45,7 +45,7 @@ network --bootproto=dhcp --activate
 rootpw --lock
 
 # Disque : btrfs sur LUKS, passphrase saisie au wizard Anaconda.
-# Pas de TPM bind en v1 (decision : keep it boring, Pablo doit pouvoir relire).
+# Pas de TPM bind en v1 (decision : keep it boring, Jace doit pouvoir relire).
 zerombr
 clearpart --all --initlabel
 autopart --type=btrfs --encrypted --nohome
