@@ -219,7 +219,14 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    timeout-minutes: 25
+    # 25 min ne tient pas : run 25639428878 - factice SIGTERM exit 143 a
+    # 20m49s, bf+bf-surface timeout a 30m. syft scan registry: --scope
+    # squashed sur image Kinoite ~9 GB prend 20-25 min sur runner ubuntu-
+    # latest, plus 1-2 min de cosign attest. 50 min laisse x2 marge sans
+    # masquer une vraie regression syft (le commentaire ligne 244 mentionne
+    # l'OOM observe a 50 min avec scope=all-layers — squashed est moins
+    # memory-heavy, devrait tenir).
+    timeout-minutes: 50
     permissions:
       contents: read
       packages: write
