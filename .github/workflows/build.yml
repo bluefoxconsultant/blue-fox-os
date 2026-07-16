@@ -1,16 +1,27 @@
-name: Build Blue Fox OS images
+name: Validate Blue Fox OS
+
+# Ce workflow ne construit PLUS d'images OCI (2026-07-16).
+#
+# Build + push + signature cosign + SBOM + attestation se font desormais en
+# local, sur la machine de build, via `make publish SLUG=<tenant>`
+# (scripts/publish-image.sh) — au meme endroit que l'assemblage de l'ISO.
+# Ce qui reste ici est de la validation pure : lint kickstart, schema des
+# manifests tenant, tests du welcome agent, build du RPM, plus un controle
+# quotidien de la chaine de confiance sur les images deja publiees.
+#
+# Consequence assumee du retrait du rebuild quotidien : les mises a jour
+# upstream de Fedora n'atterrissent plus dans :latest toutes seules. C'est
+# `make publish` qui les ramasse, quand il est lance.
 
 on:
   push:
     branches: [main]
-    tags: ['v*']     # tag v* declenche le job release (P6.1 ISO build)
-    # paths filter retire : on accepte de re-run sur tous les push main
-    # pour que les tag pushes (qui n'ont pas de notion de paths modifies
-    # dans le sens habituel) declenchent toujours.
   pull_request:
   workflow_dispatch:
   schedule:
-    # Rebuild quotidien à 04:00 UTC pour ramasser les mises à jour upstream.
+    # Ne reconstruit rien : seul verify-published tourne sur ce cron, pour
+    # detecter qu'une image publiee perd sa signature (cle rotee, push non
+    # signe). Les lanes de validation se rejouent sur push/PR, pas ici.
     - cron: '0 4 * * *'
 
 env:
@@ -18,7 +29,10 @@ env:
   REGISTRY_USER: ${{ github.actor }}
 
 jobs:
+  # Les 4 lanes de validation ne tournent pas sur le cron : le commit n'a pas
+  # bouge depuis le dernier push, les rejouer chaque nuit ne prouve rien.
   validate-kickstart:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -63,6 +77,7 @@ jobs:
           '
 
   test-wizard:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -79,8 +94,12 @@ jobs:
   build-rpm:
     # Build le RPM bluefox-welcome dans Fedora 43 (matches la version Python
     # 3.14 du base Kinoite-main, sinon depsolve echoue sur python3.Xdist()).
-    # Le job build le re-stage dans files/ pour que la recipe BlueBuild puisse
-    # rpm-ostree install le binaire pendant la construction de l'image.
+    #
+    # Depuis le retrait du job `build`, ce RPM n'alimente plus aucune image :
+    # c'est un test de non-regression du .spec (le depsolve Fedora casse a bas
+    # bruit) et l'artefact reste telechargeable pour depannage. Le RPM qui finit
+    # reellement dans l'image est rebuild en local par scripts/publish-image.sh.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     container: fedora:43
@@ -101,6 +120,7 @@ jobs:
           if-no-files-found: error
 
   validate-config:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -126,178 +146,23 @@ jobs:
           sys.exit(rc)
           PY
 
-  build:
-    runs-on: ubuntu-latest
-    needs: [validate-kickstart, validate-config, test-wizard, build-rpm]
-    permissions:
-      contents: read
-      packages: write
-      id-token: write   # nécessaire pour cosign keyless
-
-    strategy:
-      fail-fast: false
-      matrix:
-        tenant:
-          - bf
-          - bf-surface
-          - factice
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Lint recipes
-        run: |
-          python3 -c "import yaml; yaml.safe_load(open('recipes/${{ matrix.tenant }}.yml'))"
-          python3 -c "import json; json.load(open('config/schema.v1.json'))"
-
-      # Stage le RPM bluefox-welcome dans l'overlay files/ pour qu'il soit
-      # present dans l'image au moment ou le module script (recipe) lance
-      # rpm-ostree install. Le RPM disparait du commit final via le cleanup
-      # script (voir recipes/_base notes).
-      # Stage le RPM dans files/usr/share/bluefox/rpm-staging/ : le module
-      # files copie files/usr/* vers /usr/* dans l'image, donc le RPM se
-      # retrouvera a /usr/share/bluefox/rpm-staging/bluefox-welcome.noarch.rpm
-      # ou le module script va le rpm-ostree install. /usr/share est un vrai
-      # repertoire immutable de Kinoite (contrairement a /usr/local qui est
-      # symlinke vers /var/usrlocal et exclu de l'image).
-      - name: Download bluefox-welcome RPM
-        uses: actions/download-artifact@v4
-        with:
-          name: bluefox-welcome-rpm
-          path: files/usr/share/bluefox/rpm-staging/
-
-      # Le snippet du module BlueBuild script ne fait pas d'expansion glob
-      # (script.nu invoque commands sans subshell bash), donc on aplatit le
-      # nom versionne en bluefox-welcome.noarch.rpm pour pouvoir le passer
-      # litteralement a rpm-ostree install dans la recipe.
-      - name: Normalize RPM filename
-        run: |
-          mv files/usr/share/bluefox/rpm-staging/bluefox-welcome-*.noarch.rpm \
-             files/usr/share/bluefox/rpm-staging/bluefox-welcome.noarch.rpm
-          ls -la files/usr/share/bluefox/rpm-staging/
-
-      # Materialise tenant.json + branding/ → files/ AND run
-      # generate_kde_theme.py to emit color scheme, look-and-feel package,
-      # SDDM theme, Plymouth theme + bar PNGs, kdeglobals, icon theme,
-      # neofetch config. BUILD=0 short-circuits before bluebuild — let
-      # blue-build/github-action handle the actual OCI build below.
-      - name: Stage branding + generate KDE theme
-        run: |
-          python3 -m pip install --quiet jsonschema Pillow
-          SLUG="${{ matrix.tenant }}" BUILD=0 ./scripts/build_branded_iso.sh
-
-      # Cosign signature via keypair BlueBuild canonical.
-      # Note : l'action prefixe ./recipes/ au input recipe automatiquement,
-      # donc on passe juste le filename (pas recipes/${{ matrix.tenant }}.yml).
-      # cosign.pub committe au repo, COSIGN_PRIVATE_KEY en GH Secret.
-      # Verification client : cosign verify --key cosign.pub <image>
-      # Note : la roadmap BFOSD7 envisageait keyless Sigstore Fulcio, mais
-      # blue-build/github-action@v1 ne supporte pas l'OIDC keyless out of the
-      # box (exige cosign.key OU COSIGN_PRIVATE_KEY). Keypair est l'approche
-      # canonique BlueBuild ; cle privee scopee aux GH Actions seulement.
-      - name: Build image (BlueBuild)
-        uses: blue-build/github-action@v1
-        with:
-          recipe: ${{ matrix.tenant }}.yml
-          registry_token: ${{ secrets.GITHUB_TOKEN }}
-          cosign_private_key: ${{ secrets.COSIGN_PRIVATE_KEY }}
-          pr_event_number: ${{ github.event.number }}
-          # Sans ca, l'action fait un re-checkout + git clean -ffdx qui
-          # supprime notre RPM stage en untracked dans files/usr/share/.
-          skip_checkout: "true"
-
-      - name: Output image reference
-        run: |
-          echo "Image: ${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:latest"
-
-  # P5.2 F7 : attache un SBOM SPDX-JSON signé en attestation cosign à chaque
-  # image OCI publiée. Comble le gap identifié au pré-audit P5.2 (cosign tree
-  # ne montrait que la signature). Verification client : cosign verify-attestation
-  # --key cosign.pub --type spdx <image>.
-  attest-sbom:
-    runs-on: ubuntu-latest
-    needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    timeout-minutes: 25
-    permissions:
-      contents: read
-      packages: write
-    strategy:
-      fail-fast: false
-      matrix:
-        tenant: [bf, bf-surface, factice]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: sigstore/cosign-installer@v3
-
-      # Image OCI ~9 GB par tenant ; le runner ubuntu-latest a ~14 GB free
-      # par defaut. Sans cette etape, syft sature le disque pendant la copie
-      # Docker tar de l'image. Meme action que le release job utilise.
-      - name: Maximize build space
-        uses: hastd/free-disk-space@v0.1.2
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          swap-storage: false
-
-      - name: Install syft
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
-            | sh -s -- -b /usr/local/bin
-          syft version
-
-      # Auth GHCR : le repo ghcr.io/bluefoxconsultant/blue-fox-os-* est prive,
-      # syft doit s'authentifier. SYFT_REGISTRY_AUTH_* + le prefixe
-      # registry: forcent le pull via l'API OCI (pas via le docker daemon
-      # qui exploserait l'espace disque local).
-      #
-      # Scope = squashed : un seul SBOM sur l'image flattenee plutot que
-      # par layer. Evite l'OOM observe au run 25604321931 ou syft avec
-      # scope=all-layers (defaut) tournait > 50 min sur l'image Kinoite
-      # (~9 GB, ~30 layers) et le runner perdait communication avec le
-      # serveur GH Actions a 50 min (RAM ~7 GB epuisee). Le scope
-      # squashed reflete ce que les utilisateurs exploitent au runtime :
-      # c'est le bon scope pour un SBOM.
-      - name: Generate SBOM (SPDX JSON)
-        env:
-          SYFT_REGISTRY_AUTH_AUTHORITY: ghcr.io
-          SYFT_REGISTRY_AUTH_USERNAME: ${{ github.actor }}
-          SYFT_REGISTRY_AUTH_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          syft scan registry:${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:latest \
-            --scope squashed \
-            -o spdx-json=sbom.spdx.json
-          ls -lh sbom.spdx.json
-      - name: Attest SBOM via cosign
-        env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-        run: |
-          cosign attest --yes \
-            --predicate sbom.spdx.json \
-            --type spdx \
-            --key env://COSIGN_PRIVATE_KEY \
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:latest
-      - name: Verify attestation roundtrip
-        run: |
-          cosign verify-attestation \
-            --key cosign.pub \
-            --type spdx \
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:latest \
-            > /dev/null
-          echo "Attestation verified for blue-fox-os-${{ matrix.tenant }}"
-
-  # BFOSL3 / P5.2 : smoke test du pipeline securite. Apres chaque push main,
-  # verifie que la nouvelle image OCI publiee est bien signable + verifiable
-  # avec la cle publique commitee. Coupe la chaine de confiance si jamais
-  # cosign keypair est rotated ou que l'image n'a pas ete signee.
+  # BFOSL3 / P5.2 : controle de la chaine de confiance sur les images deja
+  # publiees. Ne construit rien et ne depend plus du job `build` (retire) : il
+  # verifie que ce que GHCR sert aujourd'hui porte toujours une signature valide
+  # pour la cle publique commitee. Il attrape donc une cle rotee, un push local
+  # non signe, ou une image ecrasee hors pipeline — les 3 facons dont la chaine
+  # de confiance peut casser maintenant que la publication est manuelle.
+  #
+  # Tourne sur le cron quotidien + a la demande, PAS sur push/PR : le commit ne
+  # dit plus rien de l'image publiee.
+  #
+  # TODO : y ajouter `cosign verify-attestation --type spdx` une fois que
+  # scripts/publish-image.sh aura attache un premier SBOM aux 3 tenants. Avant
+  # ca, le check echouerait tous les jours pour une raison connue (P5.2 F7).
   verify-published:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: read
@@ -315,182 +180,3 @@ jobs:
           cosign verify \
             --key cosign.pub \
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:latest
-
-  # P6.1 : tag v* declenche un release. Pour chaque tenant publie, pull
-  # l'image OCI taggee, l'ISO-ifie via bootc-image-builder, signe avec
-  # cosign keyless (Sigstore Fulcio + Rekor), attache a un draft GitHub
-  # release. Verification client : cosign verify-blob --certificate-* iso.sig.
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: write
-      packages: read
-      id-token: write   # cosign keyless OIDC
-    strategy:
-      fail-fast: false
-      matrix:
-        tenant:
-          - bf
-          - bf-surface
-          # factice exclu : whitelabel test, jamais distribue
-    steps:
-      - uses: actions/checkout@v4
-      - uses: sigstore/cosign-installer@v3
-
-      # Le runner ubuntu-latest n'a que ~14 GB free par defaut.
-      # OCI image (~9 GB) + ISO build (~5 GB) sature. On retire le software
-      # pre-installe inutile (Android SDK, .NET, Haskell, toolcache) pour
-      # liberer ~30 GB. Meme action que BlueBuild utilise.
-      - name: Maximize build space
-        uses: hastd/free-disk-space@v0.1.2
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          swap-storage: false
-
-      - name: Install podman
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -q podman
-
-      - name: Login to GHCR (private repo)
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | sudo podman login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-      # BlueBuild ne publie pas le tag {ref_name} brut sur tag push : il
-      # taggue avec un prefixe (`br-{ref_name}-{fedora_version}`) qui est
-      # fragile a referencer. Le tag push pointe sur main HEAD donc :latest
-      # (publie au merge precedent vers main) contient le meme commit. On
-      # tire :latest qui est stable.
-      - name: Pull tenant OCI image
-        run: sudo podman pull ${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:latest
-
-      # Render install/bib-config.toml from install/bf-os.ks. BIB embeds this
-      # as the kickstart so Anaconda prompts for LUKS passphrase + user
-      # creation per BF spec (otherwise BIB falls back to a bare OSTree-only
-      # kickstart with no auth prompt).
-      - name: Render BIB config from kickstart
-        run: python3 scripts/render_bib_config.py
-
-      - name: Build Anaconda ISO via bootc-image-builder
-        run: |
-          mkdir -p output
-          sudo podman run \
-            --rm \
-            --privileged \
-            --security-opt label=type:unconfined_t \
-            -v "$(pwd)/install/bib-config.toml:/config.toml:ro" \
-            -v "$(pwd)/output:/output" \
-            -v /var/lib/containers/storage:/var/lib/containers/storage \
-            quay.io/centos-bootc/bootc-image-builder:latest \
-            --type anaconda-iso \
-            --use-librepo=true \
-            --rootfs btrfs \
-            --config /config.toml \
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/blue-fox-os-${{ matrix.tenant }}:latest
-
-      # Brand the ISO chrome (boot menu, GRUB theme, splash). Must happen
-      # BEFORE sha256/cosign so the signature covers the branded artifact.
-      - name: Brand ISO chrome
-        run: |
-          # squashfs-tools is required by scripts/inject-anaconda-product.sh
-          # (called from brand-iso.sh) to overlay the Anaconda chrome into
-          # the stage2 squashfs of the ISO.
-          sudo apt-get install -y -q xorriso squashfs-tools
-          sudo ./scripts/brand-iso.sh output/bootiso/install.iso
-
-      # GitHub Releases plafonne a 2 GiB par asset. Une ISO Anaconda + le
-      # squashfs du rootfs Kinoite + BF fait ~5 GiB. xz n'aide pas (data
-      # deja compressee). On signe + sha l'ISO complet, puis on splite en
-      # parts de 1900 MiB pour upload. Users recombinent avec `cat`.
-      - name: Stage + sign + split ISO
-        run: |
-          ISO_NAME="blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}.iso"
-          sudo mv output/bootiso/install.iso "output/$ISO_NAME"
-          sudo chown -R "$USER:$USER" output
-          cd output
-          ls -lh "$ISO_NAME"
-
-          # 1. SHA256 + cosign keyless sur le fichier complet (avant split).
-          sha256sum "$ISO_NAME" > "$ISO_NAME.sha256"
-          cosign sign-blob --yes \
-            --output-certificate "$ISO_NAME.cert" \
-            --output-signature "$ISO_NAME.sig" \
-            "$ISO_NAME"
-
-          # 2. Split en parts de 1900 MiB (sous le seuil 2 GiB GH).
-          # Suffix numerique 2-digit, padded zero : .part-00 .part-01 .part-02
-          split -b 1900M -d -a 2 "$ISO_NAME" "$ISO_NAME.part-"
-          ls -lh "$ISO_NAME"*
-
-          # 3. Free disk : on garde sig/cert/sha256/parts, on supprime l'ISO
-          # original (les parts permettent de le reconstruire).
-          rm "$ISO_NAME"
-          ls -lh
-
-      # Genere un README de reassemblage pour les users.
-      - name: Write reassembly README
-        run: |
-          BASE="blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}"
-          cat > "output/$BASE.iso.README.md" <<EOF
-          # Blue Fox OS ISO — Reassembly & Verification
-
-          GitHub Releases plafonnent a 2 GiB par fichier ; l'ISO de ${{ matrix.tenant }}
-          (~5 GiB) est splitee en parts. Les commandes suivantes telechargent,
-          recombinent et verifient l'ISO complete.
-
-          ## 1. Telecharger les parts + signatures
-
-          \`\`\`bash
-          gh release download ${{ github.ref_name }} -p '$BASE.iso.part-*' -p '$BASE.iso.sha256' -p '$BASE.iso.sig' -p '$BASE.iso.cert'
-          \`\`\`
-
-          ## 2. Recombiner
-
-          \`\`\`bash
-          cat $BASE.iso.part-* > $BASE.iso
-          rm $BASE.iso.part-*
-          \`\`\`
-
-          ## 3. Verifier l'integrite (SHA256)
-
-          \`\`\`bash
-          sha256sum -c $BASE.iso.sha256
-          \`\`\`
-
-          ## 4. Verifier la signature cosign keyless (Sigstore)
-
-          \`\`\`bash
-          cosign verify-blob \\
-            --certificate $BASE.iso.cert \\
-            --signature $BASE.iso.sig \\
-            --certificate-identity-regexp '^https://github.com/bluefoxconsultant/.*' \\
-            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \\
-            $BASE.iso
-          \`\`\`
-
-          ## 5. Flasher sur USB
-
-          \`\`\`bash
-          sudo dd if=$BASE.iso of=/dev/sdX bs=4M status=progress oflag=sync
-          \`\`\`
-
-          (\`/dev/sdX\` = ton cle USB, verifier avec \`lsblk\` avant.)
-          EOF
-
-      - name: Attach to GitHub release (draft)
-        uses: softprops/action-gh-release@v2
-        with:
-          draft: true
-          generate_release_notes: true
-          files: |
-            output/blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}.iso.part-*
-            output/blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}.iso.sha256
-            output/blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}.iso.sig
-            output/blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}.iso.cert
-            output/blue-fox-os-${{ matrix.tenant }}-${{ github.ref_name }}.iso.README.md
