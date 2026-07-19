@@ -84,14 +84,18 @@ modules:
       - rpm-ostree install /usr/share/bluefox/rpm-staging/bluefox-welcome.noarch.rpm && rm -rf /usr/share/bluefox/rpm-staging
       # Refresh fontconfig cache pour Lexend hand-baked (cf bf.yml).
       - fc-cache -f /usr/share/fonts/lexend/
-      # Bake Plymouth theme dans initramfs. `-R` invoque dracut sans
-      # specifier de kernel, qui retombe sur `uname -r` = kernel HOTE
-      # (kernel du build agent ; sur Garuda/vir, c'est le kernel Zen, qui
-      # n'existe pas dans /lib/modules/ de l'image -> dracut FAIL).
-      # On split : set-default-theme sans -R (juste le symlink + conf),
-      # puis dracut --regenerate-all qui itere sur /lib/modules/* dans
-      # l'image et ignore uname -r.
-      - PLYMOUTH_THEME=$(awk -F= '/^Theme=/{print $2}' /etc/plymouth/plymouthd.conf) && [ -n "$PLYMOUTH_THEME" ] && plymouth-set-default-theme "$PLYMOUTH_THEME" && dracut --regenerate-all -f
+      # Bake Plymouth theme dans initramfs. `-R` retombe sur `uname -r` =
+      # kernel HOTE du build agent, absent de /lib/modules/ de l'image.
+      # ⚠️ Et `--regenerate-all` ne suffit pas non plus (corrige 2026-07-19,
+      # cf. le bloc de commentaires equivalent dans bf.yml) :
+      #   1. il meurt sur « Invalid tmpdir '/var/tmp' » — /var est vide dans
+      #      une image bootc a la construction -> --tmpdir /tmp ;
+      #   2. il ecrit dans /boot/, qu'ostree ignore : l'initramfs d'une image
+      #      ostree vit dans /usr/lib/modules/<kver>/initramfs.img.
+      # La boucle couvre les DEUX noyaux de cette variante (Fedora + surface).
+      - PLYMOUTH_THEME=$(awk -F= '/^Theme=/{print $2}' /etc/plymouth/plymouthd.conf) && [ -n "$PLYMOUTH_THEME" ] && plymouth-set-default-theme "$PLYMOUTH_THEME" && for KDIR in /usr/lib/modules/*/; do KVER=$(basename "$KDIR"); dracut -f --kver "$KVER" --tmpdir /tmp "${KDIR}initramfs.img" || exit 1; lsinitrd "${KDIR}initramfs.img" | grep -q "plymouth/themes/${PLYMOUTH_THEME}/" || { echo "ERREUR - theme ${PLYMOUTH_THEME} absent de ${KDIR}initramfs.img"; exit 1; }; done
+      # Nom de marque dans l'entree de demarrage (cf. bf.yml). ID reste fedora.
+      - . /usr/lib/os-release && sed -i "s|^NAME=.*|NAME=\"Blue Fox OS\"|; s|^PRETTY_NAME=.*|PRETTY_NAME=\"Blue Fox OS ${VERSION_ID} (Kinoite)\"|" /usr/lib/os-release
 
   - type: systemd
     system:

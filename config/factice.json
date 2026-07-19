@@ -19,8 +19,8 @@
     }
   },
   "branding": {
-    "logo_url": "https://raw.githubusercontent.com/bluefoxconsultant/blue-fox-os/main/branding/logo.png",
-    "wallpaper_url": "https://raw.githubusercontent.com/bluefoxconsultant/blue-fox-os/main/branding/wallpaper.jpg",
+    "logo_url": "https://config.bluefoxconsultant.com/branding/logo.png",
+    "wallpaper_url": "https://config.bluefoxconsultant.com/branding/wallpaper.jpg",
     "palette": {
       "primary": "#7B2CBF",
       "secondary": "#1A0E2E",

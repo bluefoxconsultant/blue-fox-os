@@ -58,10 +58,22 @@ modules:
   # ont fc-cache dans leur scriptlet, pas les fichiers via module `files`).
   # Sans ça, `fc-match sans-serif` peut retourner Cantarell au premier boot.
   # Plymouth : bake notre theme (généré par generate_kde_theme.py et déjà
-  # en place dans /usr/share/plymouth/themes/<slug>/) dans l'initramfs via
-  # plymouth-set-default-theme -R, sinon le splash BF est invisible
-  # pendant LUKS prompt + early boot (rapporté par Olivier sur #22420 :
-  # « No splash screen, should have branded splash + Blue Fox OS logo »).
+  # en place dans /usr/share/plymouth/themes/<slug>/) dans l'initramfs, sinon
+  # le splash BF est invisible pendant LUKS prompt + early boot (rapporté par
+  # Olivier sur #22420 : « No splash screen, should have branded splash +
+  # Blue Fox OS logo »).
+  #
+  # ⚠️ DEUX PIEGES, corriges le 2026-07-19 apres que le splash LUKS soit
+  # ressorti en Fedora sur la machine installee :
+  #   1. `dracut --regenerate-all` MEURT sur une image bootc :
+  #      « dracut[F]: Invalid tmpdir '/var/tmp' » — /var est vide a la
+  #      construction, il n'est peuple qu'au deploiement. D'ou --tmpdir /tmp.
+  #   2. Meme repare, --regenerate-all ecrit dans /boot/initramfs-<kver>.img,
+  #      que ostree IGNORE : une image ostree lit son initramfs dans
+  #      /usr/lib/modules/<kver>/initramfs.img. On cible donc explicitement.
+  # Le snippet se terminait en exit 1 sans faire echouer le build — d'ou un
+  # defaut qui a traverse tous les builds depuis #22420. Il verifie maintenant
+  # que le theme est bien DANS l'initramfs et echoue sinon.
   - type: script
     snippets:
       - rpm-ostree install /usr/share/bluefox/rpm-staging/bluefox-welcome.noarch.rpm && rm -rf /usr/share/bluefox/rpm-staging
@@ -70,7 +82,16 @@ modules:
       # pas dans /lib/modules/ de l'image -> dracut FAIL. Split : symlink
       # + conf via set-default-theme, puis dracut --regenerate-all qui
       # itere sur /lib/modules/* (ignore uname -r).
-      - PLYMOUTH_THEME=$(awk -F= '/^Theme=/{print $2}' /etc/plymouth/plymouthd.conf) && [ -n "$PLYMOUTH_THEME" ] && plymouth-set-default-theme "$PLYMOUTH_THEME" && dracut --regenerate-all -f
+      - PLYMOUTH_THEME=$(awk -F= '/^Theme=/{print $2}' /etc/plymouth/plymouthd.conf) && [ -n "$PLYMOUTH_THEME" ] && plymouth-set-default-theme "$PLYMOUTH_THEME" && for KDIR in /usr/lib/modules/*/; do KVER=$(basename "$KDIR"); dracut -f --kver "$KVER" --tmpdir /tmp "${KDIR}initramfs.img" || exit 1; lsinitrd "${KDIR}initramfs.img" | grep -q "plymouth/themes/${PLYMOUTH_THEME}/" || { echo "ERREUR - theme ${PLYMOUTH_THEME} absent de ${KDIR}initramfs.img"; exit 1; }; done
+      # Nom de marque dans l'entree de demarrage. Les entrees BLS derivent de
+      # /usr/lib/os-release (/etc/os-release en est un lien) : sans ca le menu
+      # GRUB du systeme installe affiche « Fedora Linux 44 (Kinoite) ».
+      # ⚠️ On ne touche PAS a ID=fedora : rpm-ostree, les depots tiers et de
+      # nombreux scripts s'y fient. Corollaire assume : la detection auto du
+      # profil Anaconda (`os_id = blue-fox-os` dans blue-fox-os.conf) ne peut
+      # pas matcher, d'ou `inst.profile=blue-fox-os` force au boot par
+      # scripts/brand-iso.sh.
+      - . /usr/lib/os-release && sed -i "s|^NAME=.*|NAME=\"Blue Fox OS\"|; s|^PRETTY_NAME=.*|PRETTY_NAME=\"Blue Fox OS ${VERSION_ID} (Kinoite)\"|" /usr/lib/os-release
 
   - type: systemd
     system:

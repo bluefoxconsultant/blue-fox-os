@@ -53,7 +53,11 @@ modules:
       # Refresh fontconfig cache pour Lexend hand-baked (cf bf.yml).
       - fc-cache -f /usr/share/fonts/lexend/
       # Bake Plymouth theme dans initramfs (cf bf.yml).
-      - PLYMOUTH_THEME=$(awk -F= '/^Theme=/{print $2}' /etc/plymouth/plymouthd.conf) && [ -n "$PLYMOUTH_THEME" ] && plymouth-set-default-theme -R "$PLYMOUTH_THEME"
+      # ⚠️ `-R` retombe sur `uname -r` = kernel de l'hote de build, absent de
+      # l'image -> dracut FAIL. Meme correctif que bf.yml (2026-07-19) :
+      # --tmpdir /tmp (/var vide en image bootc) + cible explicite dans
+      # /usr/lib/modules/<kver>/, qu'ostree lit reellement.
+      - PLYMOUTH_THEME=$(awk -F= '/^Theme=/{print $2}' /etc/plymouth/plymouthd.conf) && [ -n "$PLYMOUTH_THEME" ] && plymouth-set-default-theme "$PLYMOUTH_THEME" && for KDIR in /usr/lib/modules/*/; do KVER=$(basename "$KDIR"); dracut -f --kver "$KVER" --tmpdir /tmp "${KDIR}initramfs.img" || exit 1; lsinitrd "${KDIR}initramfs.img" | grep -q "plymouth/themes/${PLYMOUTH_THEME}/" || { echo "ERREUR - theme ${PLYMOUTH_THEME} absent de ${KDIR}initramfs.img"; exit 1; }; done
 
   - type: systemd
     system:

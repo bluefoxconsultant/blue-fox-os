@@ -117,7 +117,10 @@ SLUG="$SLUG" BUILD=0 ./scripts/build_branded_iso.sh
 # cette CLI). Le registre est derive du remote git, d'ou ghcr.io/bluefoxconsultant.
 if [ "$DRY_RUN" = "1" ]; then
     log "4/7 DRY_RUN : build local sans push"
-    bluebuild build --push=false "recipes/${SLUG}.yml"
+    # Pas de `--push=false` : dans BlueBuild 0.9.36 `--push` est un DRAPEAU
+    # booleen (clap), il n'accepte aucune valeur. `--push=false` echoue avec
+    # « unexpected value 'false' for '--push' ». Ne rien passer = ne pas pousser.
+    bluebuild build "recipes/${SLUG}.yml"
     log "DRY_RUN termine — etapes 5 a 7 sautees (elles operent sur l'image publiee)."
     exit 0
 fi
