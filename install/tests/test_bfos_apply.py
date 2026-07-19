@@ -31,7 +31,71 @@ def test_render_locale_conf():
 
 
 def test_render_vconsole_conf():
-    assert ba.render_vconsole_conf(POLICY) == "KEYMAP=ca\n"
+    """No explicit x_layout: the console keymap seeds the graphical layout."""
+    assert ba.render_vconsole_conf(POLICY) == "KEYMAP=ca\nXKBLAYOUT=ca\n"
+
+
+# ------------------------------------------------------------ keyboard (XKB)
+CSA = {**POLICY, "install": {**POLICY["install"],
+                             "x_layout": "ca", "x_variant": "multix",
+                             "x_options": "grp:alt_shift_toggle"}}
+
+
+def test_render_vconsole_conf_with_xkb():
+    assert ba.render_vconsole_conf(CSA) == (
+        "KEYMAP=ca\nXKBLAYOUT=ca\nXKBVARIANT=multix\n"
+        "XKBOPTIONS=grp:alt_shift_toggle\n")
+
+
+def test_render_x11_keymap_conf():
+    conf = ba.render_x11_keymap_conf(CSA)
+    assert 'Option "XkbLayout" "ca"' in conf
+    assert 'Option "XkbVariant" "multix"' in conf
+    assert 'Option "XkbOptions" "grp:alt_shift_toggle"' in conf
+    assert conf.startswith("#") and conf.rstrip().endswith("EndSection")
+
+
+def test_render_x11_keymap_conf_omits_empty_variant():
+    """A blank variant must not emit an empty Option — Xorg would refuse it."""
+    conf = ba.render_x11_keymap_conf(POLICY)
+    assert 'Option "XkbLayout" "ca"' in conf
+    assert "XkbVariant" not in conf
+    assert "XkbOptions" not in conf
+
+
+def test_render_kxkbrc():
+    rc = ba.render_kxkbrc(CSA)
+    assert "LayoutList=ca\n" in rc
+    assert "VariantList=multix\n" in rc
+    # Plasma ignores the layout list without this.
+    assert "Use=true\n" in rc
+    assert "Options=grp:alt_shift_toggle\n" in rc
+
+
+def test_xkb_rejects_injection():
+    """A crafted layout must not break out of the xorg.conf quoting."""
+    p = {**POLICY, "install": {**POLICY["install"],
+                               "x_layout": 'ca"\nOption "Evil" "1',
+                               "x_variant": "multix\nrogue"}}
+    conf = ba.render_x11_keymap_conf(p)
+    assert "Evil" not in conf
+    assert "rogue" not in conf
+    # falls back to the console keymap, and drops the bad variant entirely
+    assert 'Option "XkbLayout" "ca"' in conf
+    assert "XkbVariant" not in conf
+
+
+def test_apply_writes_keyboard_before_useradd(tmp_path):
+    """skel is copied at account creation — a later write would be lost."""
+    calls = []
+    p = {**CSA, "install": {**CSA["install"], "login": {"mode": "local"}}}
+    ba.apply(p, root=str(tmp_path),
+             run=lambda argv, check=False: calls.append(argv))
+
+    kb = tmp_path / "etc/X11/xorg.conf.d/00-keyboard.conf"
+    assert 'Option "XkbVariant" "multix"' in kb.read_text()
+    assert "LayoutList=ca" in (tmp_path / "etc/skel/.config/kxkbrc").read_text()
+    assert any("useradd" in " ".join(c) for c in calls)
 
 
 def test_render_sssd_conf_cache_on():

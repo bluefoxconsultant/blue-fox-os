@@ -6,6 +6,9 @@ post-install no-chroot step) and applies the *install block* to the freshly
 installed system:
 
   - /etc/hostname, /etc/locale.conf, /etc/vconsole.conf, /etc/localtime
+  - keyboard: /etc/vconsole.conf (console) AND the graphical layout, which is a
+    separate setting entirely — /etc/X11/xorg.conf.d/00-keyboard.conf plus a
+    /etc/skel/.config/kxkbrc seed so the account created below starts with it
   - root account locked/enabled per policy
   - seat login: when login.mode == 'sssd', write /etc/sssd/sssd.conf pointed at
     the Authentik LDAP outpost, enable offline credential caching per the policy,
@@ -33,6 +36,10 @@ STAGED_JSON = "/var/lib/bluefox-welcome/provisioning.json"
 _HOSTNAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,253}[A-Za-z0-9])?$")
 # POSIX-ish login name; gates the value handed to `useradd` in local mode.
 _USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]*$")
+# XKB layout / variant / options tokens, e.g. "ca", "multix", "ca,us",
+# "grp:alt_shift_toggle". Deliberately narrow: these values are interpolated
+# into an xorg.conf Section and an INI file, both written as root.
+_XKB_RE = re.compile(r"^[A-Za-z0-9_,:+()-]*$")
 
 
 def _ini_safe(value, default="") -> str:
@@ -58,9 +65,84 @@ def render_locale_conf(policy) -> str:
     return f"LANG={locale}\n"
 
 
+def _xkb(policy) -> tuple:
+    """Resolve (layout, variant, options) for the *graphical* session.
+
+    `keymap` alone is not enough: it only ever reaches /etc/vconsole.conf, which
+    the console reads and the desktop ignores. The policy may carry an explicit
+    x_layout (e.g. keymap 'ca' but layout 'ca' variant 'multix' for the CSA
+    Canadian Multilingual layout); when it doesn't, the console keymap is the
+    best available guess. Anything failing _XKB_RE degrades to the default
+    rather than landing verbatim in a root-written config.
+    """
+    install = policy.get("install", {})
+
+    def clean(key, default=""):
+        value = str(install.get(key) or "").strip()
+        return value if _XKB_RE.match(value) else default
+
+    layout = clean("x_layout") or clean("keymap", "ca") or "ca"
+    return layout, clean("x_variant"), clean("x_options")
+
+
 def render_vconsole_conf(policy) -> str:
+    """Console keymap + the XKB triple systemd-localed also records here.
+
+    localectl keeps both in this file; writing the XKB keys means a later
+    `localectl status` reports what we actually provisioned instead of showing
+    the layout as unset.
+    """
     keymap = policy.get("install", {}).get("keymap", "ca")
-    return f"KEYMAP={keymap}\n"
+    layout, variant, options = _xkb(policy)
+    out = f"KEYMAP={keymap}\nXKBLAYOUT={layout}\n"
+    if variant:
+        out += f"XKBVARIANT={variant}\n"
+    if options:
+        out += f"XKBOPTIONS={options}\n"
+    return out
+
+
+def render_x11_keymap_conf(policy) -> str:
+    """/etc/X11/xorg.conf.d/00-keyboard.conf — the system-wide graphical layout.
+
+    Canonical location written by `localectl set-x11-keymap`; honoured by X11
+    and by Wayland compositors that fall back to the system default.
+    """
+    layout, variant, options = _xkb(policy)
+    lines = [
+        "# Written by Blue Fox OS install-time provisioning (bfos_apply.py).",
+        "# Change it via the org/user policy in Odoo, not by hand: a re-provision",
+        "# rewrites this file.",
+        'Section "InputClass"',
+        '        Identifier "system-keyboard"',
+        '        MatchIsKeyboard "on"',
+        f'        Option "XkbLayout" "{layout}"',
+    ]
+    if variant:
+        lines.append(f'        Option "XkbVariant" "{variant}"')
+    if options:
+        lines.append(f'        Option "XkbOptions" "{options}"')
+    lines.append("EndSection")
+    return "\n".join(lines) + "\n"
+
+
+def render_kxkbrc(policy) -> str:
+    """/etc/skel/.config/kxkbrc — Plasma's own keyboard config.
+
+    KWin reads kxkbrc first and only consults the system default when the user
+    has none, so seeding skel is what makes the layout stick for the account
+    created moments later in local mode. `Use=true` is required — without it
+    Plasma treats the layout list as inactive.
+    """
+    layout, variant, options = _xkb(policy)
+    out = ("[Layout]\n"
+           f"LayoutList={layout}\n"
+           f"VariantList={variant}\n"
+           "Use=true\n"
+           "SwitchMode=Global\n")
+    if options:
+        out += f"Options={options}\nResetOldOptions=true\n"
+    return out
 
 
 def render_sssd_conf(policy) -> str:
@@ -122,6 +204,12 @@ def apply(policy, root="/", run=subprocess.run, writer=None):
     record("hostname", lambda: writer("/etc/hostname", render_hostname(policy)))
     record("locale", lambda: writer("/etc/locale.conf", render_locale_conf(policy)))
     record("vconsole", lambda: writer("/etc/vconsole.conf", render_vconsole_conf(policy)))
+    record("x11-keymap", lambda: writer(
+        "/etc/X11/xorg.conf.d/00-keyboard.conf", render_x11_keymap_conf(policy)))
+    # Must precede the useradd below: skel is copied at account creation, so a
+    # kxkbrc written afterwards would never reach the user's home.
+    record("skel-kxkbrc", lambda: writer(
+        "/etc/skel/.config/kxkbrc", render_kxkbrc(policy)))
 
     tz = install.get("timezone")
     if tz:

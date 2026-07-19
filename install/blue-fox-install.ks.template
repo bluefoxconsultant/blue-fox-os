@@ -36,7 +36,13 @@ clearpart --all --initlabel
 autopart --type=btrfs --encrypted --nohome
 
 # Bootloader : EFI vs BIOS auto-detect.
-bootloader --timeout=3
+# `rhgb quiet splash` : sans ces kargs, Plymouth ne demarre PAS le splash de
+# boot — on voit le journal brut, alors que le splash d'arret s'affiche quand
+# meme (il ne depend pas de rhgb). C'etait la derive entre ce template et
+# install/bf-os.ks, qui lui les porte depuis #22420 : une install zero-touch
+# sortait sans splash de boot, une install par ISO locale l'avait. Garder les
+# deux kickstarts alignes.
+bootloader --timeout=3 --append="rhgb quiet splash"
 
 # Securite.
 selinux --enforcing
