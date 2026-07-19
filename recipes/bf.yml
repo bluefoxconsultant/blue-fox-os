@@ -78,6 +78,11 @@ modules:
         - rpm-ostreed-automatic.timer
         - bluefox-rebase.service   # premier rebase apres install KS, conditionne au sentinelle
         - firstboot.service        # P4.1 : welcome wizard au premier boot, conditionne au sentinelle /var/lib/bluefox-welcome/done
+        # Auto-deverrouillage LUKS par TPM2, pilote par la policy Odoo
+        # (policies.tpm_autounlock). Inerte tant que le champ est a faux, donc
+        # sans effet sur les machines existantes. Doit rester une unite ROOT :
+        # systemd-cryptenroll ne tourne pas en tant qu'utilisateur.
+        - bluefox-tpm-enroll.service
       masked:
         - tailscaled.service       # user doit `systemctl enable --now tailscaled` consciemment
 
