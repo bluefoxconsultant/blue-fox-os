@@ -1,17 +1,25 @@
 # Blue Fox OS - build helpers
-# Pablo : tu n'as normalement qu'à faire `git push` ; CI fait le reste.
-# Ce Makefile sert pour les builds locaux de dev et le smoke test.
+#
+# Depuis le 2026-07-16, la CI ne construit plus d'images : elle ne fait que
+# valider (lint, tests, RPM). La publication d'une image OCI — build, push,
+# signature cosign, SBOM, attestation — se fait ici, en local :
+#
+#     make publish SLUG=bf
+#
+# Le reste du Makefile sert aux builds de dev, à l'ISO et au smoke test.
 
 SLUG ?= bf
 TAG ?= dev
 REGISTRY ?= ghcr.io/bluefoxconsultant
 IMAGE = $(REGISTRY)/blue-fox-os-$(SLUG):$(TAG)
 
-.PHONY: help image iso verify clean lint test welcome-rpm bib-config brand-iso zerotouch-render zerotouch-sync
+.PHONY: help image publish iso verify clean lint test welcome-rpm bib-config brand-iso zerotouch-render zerotouch-sync bootstrap-garuda
 
 help:
 	@echo "Cibles disponibles :"
-	@echo "  make image SLUG=bf            Build local de l'image OCI"
+	@echo "  make bootstrap-garuda        Installe les prérequis de build (Garuda/Arch)"
+	@echo "  make image SLUG=bf            Build local de l'image OCI (sans push)"
+	@echo "  make publish SLUG=bf          Build + push + signe + SBOM + atteste (remplace la CI)"
 	@echo "  make iso SLUG=bf              Génère l'ISO d'install via bootc-image-builder"
 	@echo "  make bib-config               Régénère install/bib-config.toml depuis bf-os.ks"
 	@echo "  make zerotouch-render SLUG=bf Rend le KS zero-touch pour validation"
@@ -23,9 +31,21 @@ help:
 	@echo "  make test                     Tests unitaires welcome agent"
 	@echo "  make clean                    Nettoie les artefacts locaux"
 
+# Build local complet, sans push. Délègue à publish-image.sh en DRY_RUN :
+# appeler `bluebuild build` directement (ce que faisait cette cible) saute le
+# build + staging du RPM welcome et du branding, et la recipe casse ensuite sur
+# `rpm-ostree install .../rpm-staging/bluefox-welcome.noarch.rpm`. Ça ne
+# marchait qu'en CI, où un job séparé faisait le staging au préalable.
 image:
-	@which bluebuild >/dev/null 2>&1 || { echo "Installer bluebuild d'abord : https://blue-build.org/learn/getting-started/"; exit 1; }
-	bluebuild build --push=false recipes/$(SLUG).yml
+	SLUG=$(SLUG) DRY_RUN=1 ./scripts/publish-image.sh
+
+bootstrap-garuda:
+	./scripts/bootstrap-garuda.sh
+
+# TAG n'est volontairement pas passé : publish-image.sh cible :latest, qui est
+# ce que bluebuild pousse. Voir l'en-tête du script.
+publish:
+	SLUG=$(SLUG) ./scripts/publish-image.sh
 
 iso:
 	@test -f recipes/$(SLUG).yml || { echo "Recipe recipes/$(SLUG).yml introuvable"; exit 1; }

@@ -36,10 +36,10 @@
     }
   },
   "branding": {
-    "logo_url": "https://raw.githubusercontent.com/bluefoxconsultant/blue-fox-os/main/branding/logo.png",
-    "wallpaper_url": "https://raw.githubusercontent.com/bluefoxconsultant/blue-fox-os/main/branding/wallpaper.jpg",
-    "splash_url": "https://raw.githubusercontent.com/bluefoxconsultant/blue-fox-os/main/branding/splash.png",
-    "app_icon_url": "https://raw.githubusercontent.com/bluefoxconsultant/blue-fox-os/main/branding/app-icon.svg",
+    "logo_url": "https://config.bluefoxconsultant.com/branding/logo.png",
+    "wallpaper_url": "https://config.bluefoxconsultant.com/branding/wallpaper.jpg",
+    "splash_url": "https://config.bluefoxconsultant.com/branding/splash.png",
+    "app_icon_url": "https://config.bluefoxconsultant.com/branding/app-icon.svg",
     "palette": {
       "primary": "#29ABE1",
       "secondary": "#2D3031",
