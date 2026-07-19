@@ -78,6 +78,13 @@ modules:
     snippets:
       - rpm-ostree install /usr/share/bluefox/rpm-staging/bluefox-welcome.noarch.rpm && rm -rf /usr/share/bluefox/rpm-staging
       - fc-cache -f /usr/share/fonts/lexend/
+      # Les tables MIME de Fedora designent firefox pour http/https/text-html,
+      # or la recette le RETIRE de l'image. Un gestionnaire fantome fait
+      # descendre xdg-open jusqu'au premier programme revendiquant text/html
+      # — un editeur de texte. Vecu le 2026-07-19 (« le bouton ouvre Kate »),
+      # et ça cassait aussi le bouton SSO Nextcloud, donc le montage.
+      # Notre /etc/xdg/mimeapps.list (Brave) reste seul en place.
+      - sed -i "/=org\.mozilla\.firefox\.desktop$/d" /usr/share/applications/mimeapps.list
       # `-R` retombe sur uname -r = kernel HOTE du build agent, qui n'est
       # pas dans /lib/modules/ de l'image -> dracut FAIL. Split : symlink
       # + conf via set-default-theme, puis dracut --regenerate-all qui

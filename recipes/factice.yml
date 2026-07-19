@@ -52,6 +52,13 @@ modules:
       - rpm-ostree install /usr/share/bluefox/rpm-staging/bluefox-welcome.noarch.rpm && rm -rf /usr/share/bluefox/rpm-staging
       # Refresh fontconfig cache pour Lexend hand-baked (cf bf.yml).
       - fc-cache -f /usr/share/fonts/lexend/
+      # Les tables MIME de Fedora designent firefox pour http/https/text-html,
+      # or la recette le RETIRE de l'image. Un gestionnaire fantome fait
+      # descendre xdg-open jusqu'au premier programme revendiquant text/html
+      # — un editeur de texte. Vecu le 2026-07-19 (« le bouton ouvre Kate »),
+      # et ça cassait aussi le bouton SSO Nextcloud, donc le montage.
+      # Notre /etc/xdg/mimeapps.list (Brave) reste seul en place.
+      - sed -i "/=org\.mozilla\.firefox\.desktop$/d" /usr/share/applications/mimeapps.list
       # Bake Plymouth theme dans initramfs (cf bf.yml).
       # ⚠️ `-R` retombe sur `uname -r` = kernel de l'hote de build, absent de
       # l'image -> dracut FAIL. Meme correctif que bf.yml (2026-07-19) :

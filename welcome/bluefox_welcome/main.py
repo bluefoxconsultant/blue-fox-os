@@ -19,6 +19,7 @@ un échec d'une intégration ne bloque pas les autres ; tout résultat est journ
 """
 import argparse
 import logging
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -50,21 +51,89 @@ USER_CONFIG_DIR = Path.home() / ".config" / "bluefox-welcome"
 USER_LOG = Path.home() / ".local/share/bluefox-welcome/firstboot.log"
 
 
-def _open_url_logged(url: str) -> None:
-    """Spawn xdg-open on a URL with stderr captured. Used by 'Ouvrir <svc>'
-    buttons in the wizard. Failures are logged but never propagate to Qt
-    (a raise inside a clicked-slot lambda would crash the wizard silently)."""
+BROWSER_FLATPAK_ID = "com.brave.Browser"
+
+
+def browser_argv(
+    url: str,
+    flatpak_installed=None,
+    desktop_exists=None,
+) -> list[str] | None:
+    """Return the argv that opens ``url`` in a real browser, or None.
+
+    ⚠️ NE PAS revenir a un simple `xdg-open` (regression vecue le 2026-07-19 :
+    « le bouton ouvre Kate »). Au premier demarrage, DEUX gestionnaires MIME
+    pointent dans le vide :
+      - /etc/xdg/mimeapps.list (le notre) designe com.brave.Browser.desktop,
+        mais Brave est un flatpak installe par system-flatpak-setup.service —
+        il n'est PAS encore la quand l'agent tourne ;
+      - /usr/share/applications/mimeapps.list (Fedora) designe firefox, que la
+        recette RETIRE de l'image.
+    xdg-open descend alors jusqu'au premier programme qui revendique text/html
+    et lance un editeur de texte. Ce n'est pas cosmetique : le meme chemin sert
+    au bouton SSO Nextcloud, donc la connexion — et le montage des fichiers —
+    echouait avec lui.
+
+    Les deux sondes sont injectables pour les tests.
+    """
+    if flatpak_installed is None:
+        def flatpak_installed(app_id: str) -> bool:
+            if not shutil.which("flatpak"):
+                return False
+            try:
+                return subprocess.run(
+                    ["flatpak", "info", app_id],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=10,
+                ).returncode == 0
+            except Exception:  # noqa: BLE001 — une sonde ne doit jamais lever
+                return False
+
+    if desktop_exists is None:
+        def desktop_exists() -> bool:
+            # xdg-open n'est fiable que si le gestionnaire declare existe
+            # vraiment. On ne verifie pas QUEL est le gestionnaire : n'importe
+            # quel .desktop de navigateur present fait l'affaire.
+            roots = [
+                Path("/var/lib/flatpak/exports/share/applications"),
+                Path.home() / ".local/share/flatpak/exports/share/applications",
+                Path("/usr/share/applications"),
+            ]
+            names = [f"{BROWSER_FLATPAK_ID}.desktop", "firefox.desktop",
+                     "org.mozilla.firefox.desktop", "chromium-browser.desktop"]
+            return any((r / n).exists() for r in roots for n in names)
+
+    if flatpak_installed(BROWSER_FLATPAK_ID):
+        return ["flatpak", "run", BROWSER_FLATPAK_ID, url]
+    if desktop_exists():
+        return ["xdg-open", url]
+    return None
+
+
+def _open_url_logged(url: str) -> bool:
+    """Ouvre ``url`` dans un navigateur. Utilise par les boutons « Ouvrir <svc> »
+    ET par le bouton SSO Nextcloud. Un echec est journalise mais ne remonte
+    jamais a Qt (une exception dans un slot clicked ferait planter le wizard
+    en silence). Retourne True si un processus a ete lance."""
+    argv = browser_argv(url)
+    if argv is None:
+        LOG.error(
+            "aucun navigateur disponible pour ouvrir %s — Brave (flatpak %s) "
+            "n'est pas encore installe et aucun .desktop de navigateur n'est "
+            "present. On n'appelle PAS xdg-open : il ouvrirait un editeur de "
+            "texte (cf. browser_argv).", url, BROWSER_FLATPAK_ID)
+        return False
     try:
         subprocess.Popen(
-            ["xdg-open", url],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        LOG.info("xdg-open spawned for %s", url)
+        LOG.info("ouverture de %s via %s", url, argv[0])
+        return True
     except FileNotFoundError:
-        LOG.error("xdg-open not found ; xdg-utils package missing from image")
+        LOG.error("%s introuvable pour ouvrir %s", argv[0], url)
     except Exception as exc:
-        LOG.exception("xdg-open %s failed: %s", url, exc)
+        LOG.exception("ouverture de %s via %s echouee: %s", url, argv[0], exc)
+    return False
 
 
 def _wire_nc_login_poll(page, btn, status, nc_url, on_success):
