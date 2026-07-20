@@ -175,6 +175,33 @@ def test_plymouth_uses_boot_bg_color(tmp_path: Path):
     assert "0.0000, 0.0824, 0.2000" in script
 
 
+def test_plymouth_theme_can_display_a_password(tmp_path: Path):
+    """Regression: a script theme draws everything itself, so without this
+    callback the LUKS passphrase prompt is invisible and the machine looks
+    hung. Vecu le 2026-07-20 — Olivier a du taper sa phrase de passe a
+    l'aveugle. Ne jamais retirer cette assertion."""
+    artifacts = gkt.emit_all({"slug": "bf", "branding": {}}, tmp_path)
+    script = (artifacts["plymouth_theme"] / "bf.script").read_text()
+    assert "Plymouth.SetDisplayPasswordFunction(" in script
+    # Le retour a l'affichage courant doit exister aussi, sinon la zone de
+    # saisie reste a l'ecran une fois le disque ouvert.
+    assert "Plymouth.SetDisplayNormalFunction(" in script
+    # Un asterisque par caractere saisi : sans retour visuel on ne sait pas
+    # si le clavier repond.
+    assert "bullets" in script
+
+
+def test_plymouth_logo_is_scaled_down_and_low(tmp_path: Path):
+    """Le splash source fait 1024x1024 : pose tel quel il occupe tout l'ecran.
+    Il doit etre remis a l'echelle et descendu dans le tiers inferieur."""
+    artifacts = gkt.emit_all({"slug": "bf", "branding": {}}, tmp_path)
+    script = (artifacts["plymouth_theme"] / "bf.script").read_text()
+    assert ".Scale(" in script.split("# Loading bar")[0], "logo non redimensionne"
+    assert "Window.GetHeight() * 0.58" in script, "logo non descendu"
+    # L'ancienne mise en page centrait sur la moitie de l'ecran.
+    assert "Window.GetHeight() / 2 - splash.image.GetHeight() / 2" not in script
+
+
 def test_plymouth_loading_bar_uses_accent(tmp_path: Path):
     tenant = {
         "slug": "bf",
