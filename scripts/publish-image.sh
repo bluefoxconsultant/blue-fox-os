@@ -161,6 +161,19 @@ bluebuild build --push "recipes/${SLUG}.yml"
 # qui tuait le runner GitHub (~7 GB de RAM) — d'ou son rapatriement ici.
 SBOM="${WORKDIR}/sbom-${SLUG}.spdx.json"
 log "5/7 generation du SBOM SPDX -> $(basename "$SBOM")"
+# ⚠️ syft s'est fait OOM-killer ici le 2026-07-20 : 13,1 Go de RSS sur une
+# machine de 31 Go, `make publish` sortant en Error 137 (SIGKILL) avec un SBOM
+# a 0 octet. Le meme scan tuait deja les runners GitHub (~7 Go) — la note
+# « en local, contrainte absente » etait fausse.
+#
+# syft est ecrit en Go : GOMEMLIMIT est une limite SOUPLE qui augmente la
+# pression du ramasse-miettes en approche du seuil, au prix du temps CPU. On
+# se cale nettement sous les 13 Go observes tout en laissant de la marge.
+# ⚠️ Attenuation NON VERIFIEE a ce jour : si l'etape retombe en Error 137,
+# baisser encore, ou scanner une archive OCI locale plutot que `registry:`
+# (qui re-telecharge l'image et garde les blobs en memoire). On garde
+# `registry:` a dessein — l'inventaire doit decrire ce qui est PUBLIE.
+export GOMEMLIMIT="${GOMEMLIMIT:-8GiB}"
 syft scan "registry:${IMAGE}" --scope squashed -o "spdx-json=${SBOM}"
 log "    $(du -h "$SBOM" | cut -f1)"
 
