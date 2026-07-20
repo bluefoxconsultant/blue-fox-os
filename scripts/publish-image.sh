@@ -24,7 +24,11 @@
 #     ni syft ne sont packages pour Arch — ils passent par leurs installeurs
 #     upstream). Sur Fedora, tout est dans dnf.
 #   - auth GHCR :
+#       gh auth login          # une fois, interactif
 #       gh auth token | podman login ghcr.io -u "$(gh api user -q .login)" --password-stdin
+#     `gh` doit rester disponible : le preflight en derive BB_USERNAME/BB_PASSWORD
+#     pour bluebuild, qui ne sait pas lire la session podman. Contournement si
+#     `gh` est absent : exporter BB_USERNAME et BB_PASSWORD soi-meme.
 #   - COSIGN_PRIVATE_KEY = contenu de cosign.key (PAS le chemin)
 #   - ~20 GB libres : l'image Kinoite fait ~9 GB
 #
@@ -82,6 +86,27 @@ if [ "$DRY_RUN" = "0" ]; then
     [ -n "${COSIGN_PRIVATE_KEY:-}" ] || die "COSIGN_PRIVATE_KEY vide. Exporter le CONTENU de cosign.key, pas son chemin."
     podman login --get-login ghcr.io >/dev/null 2>&1 \
         || die "pas authentifie sur ghcr.io. Voir les prerequis en tete de script."
+
+    # --- credentials pour bluebuild --------------------------------------
+    # ⚠️ Hors CI, `bluebuild build --push` EXIGE --registry / --username /
+    # --password : il ne lit PAS la session podman et ne devine PAS le
+    # registre depuis le remote git. Sans eux il retombe sur `localhost` et
+    # meurt en boucle sur « pinging container registry localhost: dial tcp
+    # [::1]:443: connect: connection refused ». Le cas ne s'etait jamais
+    # presente tant que personne n'avait pousse depuis la machine locale.
+    # On passe par l'ENVIRONNEMENT (BB_*) et non par des arguments : une
+    # ligne de commande est lisible par n'importe qui via `ps`.
+    export BB_REGISTRY="${BB_REGISTRY:-${REGISTRY%%/*}}"
+    export BB_REGISTRY_NAMESPACE="${BB_REGISTRY_NAMESPACE:-${REGISTRY#*/}}"
+    if [ -z "${BB_USERNAME:-}" ] || [ -z "${BB_PASSWORD:-}" ]; then
+        command -v gh >/dev/null 2>&1 \
+            || die "BB_USERNAME/BB_PASSWORD non definis et 'gh' introuvable pour les deriver."
+        BB_USERNAME="${BB_USERNAME:-$(gh api user -q .login)}"
+        BB_PASSWORD="${BB_PASSWORD:-$(gh auth token)}"
+        export BB_USERNAME BB_PASSWORD
+    fi
+    [ -n "$BB_PASSWORD" ] || die "BB_PASSWORD vide (gh auth token n'a rien rendu ?)."
+    log "registre bluebuild: ${BB_REGISTRY}/${BB_REGISTRY_NAMESPACE} (utilisateur ${BB_USERNAME})"
 fi
 
 log "tenant=${SLUG} image=${IMAGE} dry_run=${DRY_RUN}"
@@ -114,7 +139,8 @@ SLUG="$SLUG" BUILD=0 ./scripts/build_branded_iso.sh
 # --- 4. build + push + signature ------------------------------------------
 # bluebuild signe l'image avec COSIGN_PRIVATE_KEY au moment du push (meme
 # comportement que blue-build/github-action@v1, qui ne faisait que wrapper
-# cette CLI). Le registre est derive du remote git, d'ou ghcr.io/bluefoxconsultant.
+# cette CLI). Le registre vient des BB_* exportes au preflight — il n'est PAS
+# derive du remote git (cette croyance a coute un push en echec le 2026-07-19).
 if [ "$DRY_RUN" = "1" ]; then
     log "4/7 DRY_RUN : build local sans push"
     # Pas de `--push=false` : dans BlueBuild 0.9.36 `--push` est un DRAPEAU
