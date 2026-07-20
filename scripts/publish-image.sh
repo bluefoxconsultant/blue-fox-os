@@ -166,15 +166,26 @@ log "5/7 generation du SBOM SPDX -> $(basename "$SBOM")"
 # a 0 octet. Le meme scan tuait deja les runners GitHub (~7 Go) — la note
 # « en local, contrainte absente » etait fausse.
 #
-# syft est ecrit en Go : GOMEMLIMIT est une limite SOUPLE qui augmente la
-# pression du ramasse-miettes en approche du seuil, au prix du temps CPU. On
-# se cale nettement sous les 13 Go observes tout en laissant de la marge.
-# ⚠️ Attenuation NON VERIFIEE a ce jour : si l'etape retombe en Error 137,
-# baisser encore, ou scanner une archive OCI locale plutot que `registry:`
-# (qui re-telecharge l'image et garde les blobs en memoire). On garde
-# `registry:` a dessein — l'inventaire doit decrire ce qui est PUBLIE.
-export GOMEMLIMIT="${GOMEMLIMIT:-8GiB}"
-syft scan "registry:${IMAGE}" --scope squashed -o "spdx-json=${SBOM}"
+# DEUX reglages, et ils vont ensemble — corriger l'un seul deplace la panne :
+#
+#   GOMEMLIMIT : syft est ecrit en Go ; c'est une limite SOUPLE qui augmente la
+#   pression du ramasse-miettes en approche du seuil, au prix du temps CPU.
+#
+#   TMPDIR : ⚠️ sur Garuda/Arch, /tmp est un **tmpfs de 15,6 Go, donc en RAM**.
+#   Avec le seul GOMEMLIMIT, syft cesse de tout garder en tas et deverse son
+#   cache de couches (~9,5 Go pour cette image) dans /tmp — c'est-a-dire
+#   toujours en RAM, mais sous un autre nom. L'OOM (Error 137) se change alors
+#   en « no space left on device » sans avoir rien resolu. Vecu les deux fois
+#   le 2026-07-20. /var/tmp est sur le btrfs (716 Go libres) : c'est le seul
+#   des deux qui soit un vrai disque.
+#
+# Portee limitee a syft : ni podman ni bluebuild n'ont ce probleme, et leur
+# imposer /var/tmp changerait leur comportement sans raison.
+#
+# On garde `registry:` a dessein — un inventaire doit decrire ce qui est
+# PUBLIE, pas un artefact local suppose identique.
+GOMEMLIMIT="${GOMEMLIMIT:-8GiB}" TMPDIR="${SYFT_TMPDIR:-/var/tmp}" \
+    syft scan "registry:${IMAGE}" --scope squashed -o "spdx-json=${SBOM}"
 log "    $(du -h "$SBOM" | cut -f1)"
 
 # --- 6. attestation --------------------------------------------------------
