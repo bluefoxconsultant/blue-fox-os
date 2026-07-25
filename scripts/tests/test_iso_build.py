@@ -26,9 +26,21 @@ def test_bib_runs_in_the_host_network_by_default():
     )
 
 
+def _real_run_index(body: str) -> int:
+    """Position du run BIB reel.
+
+    ⚠️ `body.index('"${ENGINE}" run')` tombe sur le PREFLIGHT, qui est lui aussi
+    un `run` — et le piege est silencieux : l'assertion passe pour la mauvaise
+    raison. Le run reel est le dernier, celui qui porte --privileged.
+    """
+    idx = body.rindex('"${ENGINE}" run')
+    assert "--privileged" in body[idx:idx + 400], "le dernier run n'est pas le run BIB"
+    return idx
+
+
 def test_network_mode_is_passed_to_the_bib_run():
     body = _body()
-    run = body[body.index('"${ENGINE}" run'):]
+    run = body[_real_run_index(body):]
     assert '--network="${BIB_NETWORK}"' in run, "le mode reseau n'atteint pas le run BIB"
 
 
@@ -45,8 +57,8 @@ def test_dns_is_checked_before_the_long_build():
     rien."""
     body = _body()
     pre = body.index("preflight DNS")
-    run = body.index('"${ENGINE}" run')
-    assert pre < run, "le controle DNS doit precedent le run BIB"
+    run = _real_run_index(body)
+    assert pre < run, "le controle DNS doit preceder le run BIB"
     preflight = body[pre:run]
     assert '--network="${BIB_NETWORK}"' in preflight, (
         "un controle dans un autre mode reseau ne prouve rien"
