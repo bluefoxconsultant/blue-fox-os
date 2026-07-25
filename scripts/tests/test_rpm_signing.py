@@ -12,11 +12,15 @@ Trois proprietes a tenir, et chacune se perd differemment :
 """
 
 import re
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
+PUBKEY = REPO_ROOT / "files" / "usr" / "share" / "bluefox" / "keys" / "RPM-GPG-KEY-blue-fox-os"
 BUILD_RPM = REPO_ROOT / "scripts" / "build-welcome-rpm.sh"
 SIGN_RPM = REPO_ROOT / "scripts" / "sign-welcome-rpm.sh"
 GEN_KEY = REPO_ROOT / "scripts" / "generate-rpm-signing-key.sh"
@@ -31,6 +35,29 @@ def test_scripts_exist_and_are_executable():
     for path in (SIGN_RPM, GEN_KEY, INSTALL_RPM):
         assert path.is_file(), f"{path.name} manquant"
         assert path.stat().st_mode & 0o111, f"{path.name} non executable"
+
+
+def test_public_key_is_committed_and_tracked():
+    """La cle PUBLIQUE de signature doit etre en depot et suivie par git.
+
+    Empreinte au 2026-07-25 : 87AE3740C30E30D4DD7536F88DFE12C567353716
+    (uid « Blue Fox OS Package Signing <info@bluefoxconsultant.com> », creee sur
+    la machine de build). Les recipes la deposent dans l'image et verifient le
+    RPM avec elle : absente, tout build echoue.
+
+    Le nom de fichier n'a pas d'extension .asc a dessein — c'est la convention
+    Fedora (/etc/pki/rpm-gpg/RPM-GPG-KEY-*), et ca evite la regle `*.asc` du
+    .gitignore qui avait deja avale une cle publique en silence.
+    """
+    assert PUBKEY.is_file(), f"{PUBKEY} absent — lancer `make rpm-signing-key`"
+    assert PUBKEY.read_text().startswith("-----BEGIN PGP PUBLIC KEY BLOCK-----")
+    if shutil.which("git") is None or not (REPO_ROOT / ".git").exists():
+        pytest.skip("hors arbre git")
+    rc = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "ls-files", "--error-unmatch", str(PUBKEY)],
+        capture_output=True,
+    ).returncode
+    assert rc == 0, "cle publique presente sur le disque mais non suivie par git"
 
 
 def test_publish_requires_a_signing_key():
