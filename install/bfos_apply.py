@@ -183,6 +183,30 @@ def render_sssd_conf(policy) -> str:
     )
 
 
+def render_flatpak_list(app_ids, kind) -> str:
+    """Rend un fichier de liste Flatpak pour system-flatpak-setup.
+
+    Format : un ID par ligne, `#` en commentaire. Ce sont les fichiers
+    /etc/bluebuild/default-flatpaks/system/{install,remove}, que
+    system-flatpak-setup (root, premier demarrage + minuterie) combine ainsi :
+
+        (liste bakee dans l'image  −  /etc remove)  +  /etc install
+
+    D'ou une semantique d'ajout et de retrait par-dessus la base de l'image,
+    sans que nous ayons a installer quoi que ce soit nous-memes : on ecrit deux
+    fichiers texte et le service amont fait le travail, y compris l'ajout du
+    remote Flathub. La minuterie fait aussi qu'un changement de politique
+    finit par converger sur une machine deja installee.
+    """
+    header = [
+        f"# Genere par bfos_apply.py depuis la politique ({kind}).",
+        "# Un ID Flatpak par ligne. Ne pas editer a la main : ce fichier est",
+        "# reecrit a chaque application de la politique.",
+        "",
+    ]
+    return "\n".join(header + list(app_ids)) + "\n"
+
+
 def apply(policy, root="/", run=subprocess.run, writer=None):
     """Apply the install block to the target rooted at `root`.
 
@@ -210,6 +234,20 @@ def apply(policy, root="/", run=subprocess.run, writer=None):
     # kxkbrc written afterwards would never reach the user's home.
     record("skel-kxkbrc", lambda: writer(
         "/etc/skel/.config/kxkbrc", render_kxkbrc(policy)))
+
+    # Applications Flatpak choisies dans la politique (bloc additif : une
+    # politique d'avant cette version n'a pas de cle "apps" et on n'ecrit alors
+    # AUCUN fichier, ce qui laisse la base de l'image telle quelle).
+    apps = policy.get("apps") or {}
+    for key, path in (
+        ("install", "/etc/bluebuild/default-flatpaks/system/install"),
+        ("remove", "/etc/bluebuild/default-flatpaks/system/remove"),
+    ):
+        ids = [str(a).strip() for a in (apps.get(key) or []) if str(a).strip()]
+        if not ids:
+            continue
+        record(f"flatpak-{key}", lambda p=path, i=ids, k=key: writer(
+            p, render_flatpak_list(i, k)))
 
     tz = install.get("timezone")
     if tz:

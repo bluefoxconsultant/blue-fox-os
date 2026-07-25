@@ -188,3 +188,52 @@ def test_main_skips_non_v2_policy(tmp_path, capsys):
     bad.write_text(json.dumps({"schema": "nope", "install": {}}))
     assert ba.main(["bfos_apply", str(bad)]) == 0
     assert "skipping" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Applications Flatpak (bloc "apps" de la politique)
+# ---------------------------------------------------------------------------
+FLATPAK_DIR = "etc/bluebuild/default-flatpaks/system"
+
+
+def test_apply_writes_flatpak_lists(tmp_path):
+    """Les deux listes atterrissent la ou system-flatpak-setup les lit."""
+    p = {**POLICY, "apps": {
+        "install": ["org.libreoffice.LibreOffice", "com.spotify.Client"],
+        "remove": ["org.mozilla.Thunderbird"]}}
+    results = ba.apply(p, root=str(tmp_path), run=lambda argv, check=False: None)
+    actions = {a: ok for a, ok, _ in results}
+    assert actions["flatpak-install"] and actions["flatpak-remove"]
+
+    installed = (tmp_path / FLATPAK_DIR / "install").read_text()
+    # Un ID par ligne, commentaires ignores par le service amont.
+    assert [l for l in installed.splitlines() if l and not l.startswith("#")] == [
+        "org.libreoffice.LibreOffice", "com.spotify.Client"]
+    removed = (tmp_path / FLATPAK_DIR / "remove").read_text()
+    assert [l for l in removed.splitlines() if l and not l.startswith("#")] == [
+        "org.mozilla.Thunderbird"]
+
+
+def test_apply_without_apps_block_writes_nothing(tmp_path):
+    """Une politique d'avant cette version ne doit pas toucher aux listes : la
+    base bakee dans l'image reste seule en vigueur."""
+    ba.apply(POLICY, root=str(tmp_path), run=lambda argv, check=False: None)
+    assert not (tmp_path / FLATPAK_DIR / "install").exists()
+    assert not (tmp_path / FLATPAK_DIR / "remove").exists()
+
+
+def test_apply_ignores_empty_and_blank_entries(tmp_path):
+    p = {**POLICY, "apps": {"install": ["  ", "", "com.brave.Browser"], "remove": []}}
+    ba.apply(p, root=str(tmp_path), run=lambda argv, check=False: None)
+    installed = (tmp_path / FLATPAK_DIR / "install").read_text()
+    assert [l for l in installed.splitlines() if l and not l.startswith("#")] == [
+        "com.brave.Browser"]
+    # remove vide => pas de fichier, donc rien n'est retire de la base image.
+    assert not (tmp_path / FLATPAK_DIR / "remove").exists()
+
+
+def test_flatpak_list_format_is_one_id_per_line():
+    out = ba.render_flatpak_list(["a.b.C", "d.e.F"], "install")
+    body = [l for l in out.splitlines() if l and not l.startswith("#")]
+    assert body == ["a.b.C", "d.e.F"]
+    assert out.endswith("\n")
