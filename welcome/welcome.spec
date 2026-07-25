@@ -21,8 +21,8 @@ Requires:       fuse3
 
 %description
 Agent de premier démarrage pour Blue Fox OS. Wizard 4-5 écrans
-qui demande le courriel BF de l'utilisateur, fetch la config tenant
-depuis config.bluefoxconsultant.com/{slug}.json, et configure
+qui demande le courriel BF de l'utilisateur, lit la config tenant
+déposée dans l'image (/usr/share/bluefox/tenant.json), et configure
 KAccounts (Nextcloud), Thunderbird (Migadu), Bitwarden, NC Talk,
 CalDAV, CardDAV, et l'imprimante réseau.
 
