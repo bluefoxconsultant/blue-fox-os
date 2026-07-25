@@ -198,6 +198,11 @@ def render_flatpak_list(app_ids, kind) -> str:
     remote Flathub. La minuterie fait aussi qu'un changement de politique
     finit par converger sur une machine deja installee.
     """
+    # ⚠️ Aucune validation de forme ici : c'est bf.policy.app qui la porte, cote
+    # Odoo, et son motif a ete valide contre les 3 269 identifiants reels de
+    # Flathub (14 d'entre eux ont un label commencant par « _ », convention
+    # Flatpak quand le segment de domaine commence par un chiffre). Revalider un
+    # id ici, avec un motif invente, ne ferait que reintroduire ce faux rejet.
     header = [
         f"# Genere par bfos_apply.py depuis la politique ({kind}).",
         "# Un ID Flatpak par ligne. Ne pas editer a la main : ce fichier est",
