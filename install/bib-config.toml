@@ -80,7 +80,8 @@ systemctl enable rpm-ostreed-automatic.timer
 # Le service systemd qui consomme ce sentinelle (bluefox-rebase.service)
 # est livre par P4.1 ; tant qu'il n'existe pas, le sentinelle reste sans effet.
 mkdir -p /var/lib/bluefox-welcome
-touch /var/lib/bluefox-welcome/needs-rebase
-
+# sentinelle needs-rebase strippee par scripts/render_bib_config.py — l'ISO BIB deploie deja l'image du tenant ; la garder ferait rebaser la
+# machine vers l'image publiee sur GHCR au premier demarrage, en
+# remplacant celle qu'on vient d'installer (constate le 2026-07-25).
 %end
 """

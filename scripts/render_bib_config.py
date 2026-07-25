@@ -10,6 +10,23 @@ BIB then auto-appends an `ostreecontainer` directive that pulls the OCI image
 specified on its CLI. So we MUST strip the standalone `ostreesetup` line from
 bf-os.ks before injecting — it would conflict with what BIB adds.
 
+⚠️ ET la sentinelle de rebase, pour la meme raison (2026-07-25, essai ISO).
+bf-os.ks pose /var/lib/bluefox-welcome/needs-rebase ; au premier demarrage,
+bluefox-rebase.service la consomme et fait
+`rpm-ostree rebase ostree-unverified-image:docker://…/blue-fox-os-<slug>:latest`
+puis redemarre. Dans le chemin BIB, l'ISO a DEJA deploye notre image : ce rebase
+n'est donc pas le no-op que l'en-tete de bf-os.ks annonce — il remplace l'image
+qu'on vient d'installer par celle que GHCR sert, c'est-a-dire (au 2026-07-25) un
+build du 2026-05-18.
+
+Consequence observee sur une install de test : la machine demarre sur l'image
+locale correcte, rebase vers GHCR, redemarre, et tout ce qu'on inspecte ensuite
+appartient a l'image perimee — d'ou un GRUB « Fedora Kinoite », un ecran LUKS
+« Fedora », et aucune trace des correctifs du jour. On strippe donc la
+sentinelle : dans le chemin standalone (`inst.ks=` contre une ISO Kinoite
+officielle) elle reste indispensable, c'est bien la seule facon d'arriver a
+l'image BF.
+
 Run as:  python3 scripts/render_bib_config.py
 Output:  install/bib-config.toml (overwritten in place; idempotent).
 """
@@ -24,6 +41,7 @@ KS_PATH = REPO / "install" / "bf-os.ks"
 TOML_PATH = REPO / "install" / "bib-config.toml"
 
 OSTREESETUP_RE = re.compile(r"^ostreesetup\b.*$", re.MULTILINE)
+SENTINEL_RE = re.compile(r"^touch /var/lib/bluefox-welcome/needs-rebase\s*$", re.MULTILINE)
 
 
 def main() -> int:
@@ -42,6 +60,25 @@ def main() -> int:
         print(
             f"[render_bib_config] FAIL: expected exactly 1 ostreesetup line in {KS_PATH}, "
             f"found {n}. Edit bf-os.ks to keep exactly one.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Sentinelle de rebase : inutile ET nuisible dans le chemin BIB (voir
+    # l'en-tete). Le `mkdir -p` reste : le welcome agent ecrit dans ce dossier.
+    stripped, n = SENTINEL_RE.subn(
+        "# sentinelle needs-rebase strippee par scripts/render_bib_config.py — "
+        "l'ISO BIB deploie deja l'image du tenant ; la garder ferait rebaser la\n"
+        "# machine vers l'image publiee sur GHCR au premier demarrage, en\n"
+        "# remplacant celle qu'on vient d'installer (constate le 2026-07-25).",
+        stripped,
+        count=1,
+    )
+    if n != 1:
+        print(
+            f"[render_bib_config] FAIL: expected exactly 1 needs-rebase sentinel line in "
+            f"{KS_PATH}, found {n}. Si elle a ete renommee, mettre SENTINEL_RE a jour — "
+            f"sinon l'ISO BIB rebasera vers GHCR au premier demarrage.",
             file=sys.stderr,
         )
         return 1
