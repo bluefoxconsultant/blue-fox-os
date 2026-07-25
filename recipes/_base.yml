@@ -8,6 +8,13 @@
 base-image: ghcr.io/ublue-os/kinoite-main
 image-version: latest
 
+# Provenance : à dupliquer dans CHAQUE recipe tenant (#23810). Une recipe qui
+# l'oublie publie une image sans lien vers son commit source — le trou que
+# l'audit P5.2 a mis deux mois à voir. scripts/tests/test_provenance.py le
+# vérifie pour toutes les recipes.
+labels:
+  org.opencontainers.image.revision: "${BF_GIT_REVISION}"
+
 # Modules communs à appliquer en plus du branding tenant-specific.
 # Les tenants doivent dupliquer cette liste avant d'ajouter leurs overrides.
 modules:

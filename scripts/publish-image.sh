@@ -31,6 +31,10 @@
 #     `gh` est absent : exporter BB_USERNAME et BB_PASSWORD soi-meme.
 #   - COSIGN_PRIVATE_KEY = contenu de cosign.key (PAS le chemin)
 #   - ~20 GB libres : l'image Kinoite fait ~9 GB
+#   - un arbre git propre, pousse, a jour sur son remote de suivi. Refus de
+#     publier sinon (#23810) — voir la section « provenance » plus bas.
+#     PUBLISH_ALLOW_UNCLEAN=1 passe outre, en le disant, et etiquette alors la
+#     revision « <sha>-dirty ».
 #
 # Portable hors Fedora : l'etape 1 (RPM) se construit dans un container
 # fedora:43 — build-welcome-rpm.sh detecte l'absence des macros RPM Fedora et
@@ -43,7 +47,7 @@
 #   4. build + push + sig <- bluebuild
 #   5. SBOM SPDX          <- syft
 #   6. attestation        <- cosign attest
-#   7. verification       <- cosign verify + verify-attestation
+#   7. verification       <- cosign verify + verify-attestation + provenance
 
 set -euo pipefail
 
@@ -55,7 +59,32 @@ WORKDIR="$(cd "$(dirname "$0")/.." && pwd)"
 DRY_RUN="${DRY_RUN:-0}"
 
 log() { echo "[publish] $*"; }
-die() { echo "[publish] ERREUR: $*" >&2; exit 1; }
+
+# PUSHED passe a 1 des que l'image est en ligne : au-dela, tout echec laisse un
+# artefact publie et incomplet, et doit le dire. Voir post_push_notice().
+PUSHED=0
+die() {
+    echo "[publish] ERREUR: $*" >&2
+    [ "$PUSHED" = "1" ] && post_push_notice
+    exit 1
+}
+
+# ⚠️ Defaut structurel releve par l'audit P5.2 : les etapes 5 a 7 operent sur
+# une image DEJA en ligne. Un echec de syft, de cosign attest ou du controle de
+# provenance laisse donc une image publiee et signee, sans SBOM — l'etat exact
+# du registre pendant deux mois. On ne peut pas inverser l'ordre sans attester un
+# artefact local suppose identique au publie (cf. le choix de `registry:` a
+# l'etape 5) ; ce qu'on peut faire, c'est ne jamais sortir en silence sur cette
+# fenetre.
+post_push_notice() {
+    echo "[publish] ---" >&2
+    echo "[publish] ⚠️  ${IMAGE} est EN LIGNE et signee, mais la chaine n'est" >&2
+    echo "[publish]     pas allee au bout : SBOM, attestation ou provenance" >&2
+    echo "[publish]     manquants. L'image publiee n'est PAS complete." >&2
+    echo "[publish]     Remediation : relancer ce script, ou retirer le tag du" >&2
+    echo "[publish]     registre. Ne pas laisser cet etat en place — c'est" >&2
+    echo "[publish]     precisement le blocage B1 de l'audit P5.2." >&2
+}
 
 # --- COSIGN_PASSWORD -------------------------------------------------------
 # cosign veut cette variable DEFINIE, meme vide. La cle BlueBuild est un
@@ -109,6 +138,68 @@ if [ "$DRY_RUN" = "0" ]; then
     log "registre bluebuild: ${BB_REGISTRY}/${BB_REGISTRY_NAMESPACE} (utilisateur ${BB_USERNAME})"
 fi
 
+# --- provenance : etat de l'arbre + revision -------------------------------
+# Audit P5.2 du 2026-07-22, blocage B2 : blue-fox-os-bf:latest a ete construite
+# le 2026-07-22 mais taguee f2661e5-44, commit du 2026-05-18 — deux mois de
+# publications depuis un checkout perime, sans un signal. Ce qui l'a revele
+# n'est pas un controle mais un LABEL : le prenom corrige en local le 2026-07-16
+# etait toujours dans org.opencontainers.image.description publie.
+#
+# Deux manques a combler, et ils vont ensemble :
+#   1. l'image ne portait aucun lien verifiable vers son commit source
+#      (org.opencontainers.image.revision absent) ;
+#   2. rien n'empechait de publier depuis un arbre sale ou en retard.
+# Etiqueter sans controler donne une provenance exacte... vers un commit que
+# personne d'autre ne peut relire. Controler sans etiqueter laisse le lien
+# invisible depuis le registre. D'ou les deux ici.
+#
+# L'etiquette elle-meme est posee par les recipes (`labels:` -> ${BF_GIT_REVISION}).
+# ⚠️ BlueBuild resout ces valeurs via shellexpand SANS erreur sur variable
+# absente : une variable non exportee ne casse rien, elle publie le litteral
+# « ${BF_GIT_REVISION} » comme revision. C'est pourquoi l'etape 7 relit
+# l'etiquette au lieu de faire confiance a l'export.
+git -C "$WORKDIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || die "pas un arbre git : impossible d'etablir la provenance de l'image."
+
+BF_GIT_REVISION="$(git -C "$WORKDIR" rev-parse HEAD)"
+
+if [ "$DRY_RUN" = "0" ]; then
+    VIOLATIONS=()
+
+    [ -z "$(git -C "$WORKDIR" status --porcelain)" ] \
+        || VIOLATIONS+=("arbre de travail sale (git status --porcelain non vide)")
+
+    UPSTREAM="$(git -C "$WORKDIR" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
+    if [ -z "$UPSTREAM" ]; then
+        VIOLATIONS+=("branche sans remote de suivi : la revision etiquetee ne serait relisible par personne")
+    elif ! git -C "$WORKDIR" fetch --quiet 2>/dev/null; then
+        VIOLATIONS+=("git fetch a echoue : impossible de savoir si le checkout est a jour")
+    else
+        BEHIND="$(git -C "$WORKDIR" rev-list --count "HEAD..${UPSTREAM}")"
+        AHEAD="$(git -C "$WORKDIR" rev-list --count "${UPSTREAM}..HEAD")"
+        [ "$BEHIND" = "0" ] || VIOLATIONS+=("checkout en retard de ${BEHIND} commit(s) sur ${UPSTREAM} — c'est EXACTEMENT le cas B2")
+        [ "$AHEAD" = "0" ] || VIOLATIONS+=("${AHEAD} commit(s) non pousse(s) : la revision etiquetee n'existerait pas sur le remote")
+    fi
+
+    if [ ${#VIOLATIONS[@]} -gt 0 ]; then
+        if [ "${PUBLISH_ALLOW_UNCLEAN:-0}" = "1" ]; then
+            log "⚠️  PUBLISH_ALLOW_UNCLEAN=1 — publication malgre :"
+            for v in "${VIOLATIONS[@]}"; do log "      - $v"; done
+            # Une image construite sur du non-commite ne doit pas se presenter
+            # comme etant ce commit-la.
+            [ -z "$(git -C "$WORKDIR" status --porcelain)" ] \
+                || BF_GIT_REVISION="${BF_GIT_REVISION}-dirty"
+        else
+            for v in "${VIOLATIONS[@]}"; do echo "[publish]   - $v" >&2; done
+            die "refus de publier : l'image ne pourrait pas etre rattachee a un commit relisible.
+Corriger l'arbre (commit + push, ou git pull), ou assumer explicitement avec
+PUBLISH_ALLOW_UNCLEAN=1 — la revision sera alors etiquetee « <sha>-dirty »."
+        fi
+    fi
+fi
+export BF_GIT_REVISION
+log "provenance: revision=${BF_GIT_REVISION}"
+
 log "tenant=${SLUG} image=${IMAGE} dry_run=${DRY_RUN}"
 cd "$WORKDIR"
 
@@ -154,6 +245,12 @@ fi
 log "4/7 build + push + signature cosign"
 bluebuild build --push "recipes/${SLUG}.yml"
 
+# A partir d'ici, l'image est en ligne : `die` et le trap ERR ajoutent tous deux
+# l'avertissement d'artefact incomplet. Le trap couvre les commandes qui meurent
+# seules (syft, cosign), `die` couvre les controles explicites.
+PUSHED=1
+trap 'rc=$?; post_push_notice; exit $rc' ERR
+
 # --- 5. SBOM ---------------------------------------------------------------
 # --scope squashed : un seul SBOM sur l'image aplatie plutot que par layer.
 # C'est ce que les utilisateurs exploitent au runtime, et c'est nettement
@@ -197,9 +294,50 @@ cosign attest --yes \
     "$IMAGE"
 
 # --- 7. verification -------------------------------------------------------
-log "7/7 verification signature + attestation"
+log "7/7 verification signature + attestation + provenance"
 cosign verify --key cosign.pub "$IMAGE" > /dev/null
 cosign verify-attestation --key cosign.pub --type spdx "$IMAGE" > /dev/null
 
-log "OK — ${IMAGE} publie, signe et atteste."
+# Provenance : relire l'etiquette telle que PUBLIEE, pas telle qu'on croit
+# l'avoir passee. Une variable non exportee, une recipe ou le bloc `labels:`
+# manque, un shellexpand qui laisse le litteral — les trois donnent une image
+# signee et attestee dont la provenance ne veut rien dire, sans une erreur.
+#
+# skopeo lit le registre (la verite), podman se rabat sur la copie locale
+# fraichement poussee (memes octets, meme digest — celui que cosign vient de
+# verifier ci-dessus). Si aucun des deux ne rend l'etiquette, on echoue : un
+# controle de provenance qui s'auto-desactive ne prouve rien.
+REVISION_LABEL=""
+if command -v skopeo >/dev/null 2>&1; then
+    REVISION_LABEL="$(skopeo inspect "docker://${IMAGE}" 2>/dev/null \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin).get("Labels",{}).get("org.opencontainers.image.revision",""))' 2>/dev/null || true)"
+    log "    provenance lue via skopeo (registre)"
+fi
+if [ -z "$REVISION_LABEL" ]; then
+    REVISION_LABEL="$(podman image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE" 2>/dev/null || true)"
+    [ -n "$REVISION_LABEL" ] && log "    provenance lue via podman (copie locale poussee)"
+fi
+
+[ -n "$REVISION_LABEL" ] || die \
+    "org.opencontainers.image.revision illisible sur ${IMAGE}.
+Ni skopeo ni podman n'ont rendu l'etiquette : verifier que la recipe porte bien
+son bloc \`labels:\`. L'image est publiee, signee et attestee — mais sans lien
+verifiable vers son commit source (#23810)."
+
+[ "$REVISION_LABEL" = "$BF_GIT_REVISION" ] || die \
+    "provenance incoherente sur ${IMAGE} :
+  attendu : ${BF_GIT_REVISION}
+  publie  : ${REVISION_LABEL}
+Un litteral « \${BF_GIT_REVISION} » signale une recipe qui declare l'etiquette
+sans que la variable soit exportee au moment du build."
+
+log "OK — ${IMAGE} publie, signe, atteste, revision ${BF_GIT_REVISION}."
 log "Controle : cosign tree ${IMAGE}  (doit lister Signatures ET Attestations)"
+# SLSA (#23810, dernier point) : l'attestation SPDX dit ce qu'il y a DANS
+# l'image, pas d'ou elle vient. L'etiquette de revision ci-dessus donne le lien
+# vers le commit, mais elle n'est pas signee separement — elle est couverte par
+# la signature de l'image, ce qui suffit a la rendre infalsifiable a posteriori,
+# pas a prouver QUI a construit. Une attestation de provenance SLSA
+# (cosign attest --type slsaprovenance) reste a evaluer ; elle n'a de valeur
+# qu'avec une identite de build attestable — soit un builder distant, soit une
+# cle dediee a la machine de build. A trancher avec la posture de cle de #23815.

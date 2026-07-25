@@ -35,6 +35,11 @@ base-image: ghcr.io/ublue-os/kinoite-main
 #     tombe : le 404 du tree f<N> ressort comme tel, pas en echec de depsolve.
 image-version: "43"
 
+# Provenance de l'image (#23810) — voir recipes/bf.yml pour le rationale et le
+# piege du shellexpand sur variable absente.
+labels:
+  org.opencontainers.image.revision: "${BF_GIT_REVISION}"
+
 modules:
 
   # Depot linux-surface durci, AVANT le module rpm-ostree qui en depend

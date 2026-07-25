@@ -7,6 +7,22 @@ description: Blue Fox OS - image BF (pilote interne Olivier + Jace)
 base-image: ghcr.io/ublue-os/kinoite-main
 image-version: latest
 
+# Provenance de l'image (#23810, audit P5.2 blocage B2). BlueBuild pose de
+# lui-meme title / description / source / base.name / base.digest / created,
+# mais PAS revision : rien ne rattachait une image publiee a son commit. Deux
+# mois de publications depuis un checkout perime ont passe inapercus, et c'est
+# un label — la description — qui a fini par le reveler.
+#
+# ${BF_GIT_REVISION} est exporte par scripts/publish-image.sh, qui refuse par
+# ailleurs de publier depuis un arbre sale ou en retard.
+#
+# ⚠️ BlueBuild resout ces valeurs avec shellexpand SANS erreur sur variable
+# absente : un build lance a la main, sans la variable, publie le litteral
+# « ${BF_GIT_REVISION} » comme revision. L'etape 7 du script relit donc
+# l'etiquette publiee au lieu de se fier a l'export.
+labels:
+  org.opencontainers.image.revision: "${BF_GIT_REVISION}"
+
 modules:
 
   - type: rpm-ostree

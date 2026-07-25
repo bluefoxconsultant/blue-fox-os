@@ -8,6 +8,11 @@ description: Blue Fox OS - tenant factice (validation whitelabel templating, ne 
 base-image: ghcr.io/ublue-os/kinoite-main
 image-version: latest
 
+# Provenance de l'image (#23810) — voir recipes/bf.yml pour le rationale et le
+# piege du shellexpand sur variable absente.
+labels:
+  org.opencontainers.image.revision: "${BF_GIT_REVISION}"
+
 modules:
 
   - type: rpm-ostree
