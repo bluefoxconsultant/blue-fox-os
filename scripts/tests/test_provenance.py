@@ -19,6 +19,8 @@ PUBLISH = REPO_ROOT / "scripts" / "publish-image.sh"
 
 REVISION_LABEL = "org.opencontainers.image.revision"
 EXPECTED_VALUE = '"${BF_GIT_REVISION}"'
+SOURCE_LABEL = "org.opencontainers.image.source"
+EXPECTED_SOURCE = '"https://github.com/bluefoxconsultant/blue-fox-os"'
 
 
 def _recipes() -> list[Path]:
@@ -44,6 +46,21 @@ def test_revision_label_is_injected_not_hardcoded():
         assert m.group(1).strip() == EXPECTED_VALUE, (
             f"{recipe.name} : la revision doit venir de l'environnement "
             f"({EXPECTED_VALUE}), pas d'une valeur figee"
+        )
+
+
+def test_every_recipe_pins_the_source_repo():
+    """⚠️ BlueBuild pose bien `source`, mais il le derive des variables
+    d'environnement de la CI : hors CI il vaut la CHAINE VIDE. Constate sur
+    l'image construite le 2026-07-25 (`LABEL org.opencontainers.image.source=""`).
+    Depuis que tous les builds sont locaux, l'etiquette etait donc toujours vide,
+    et une revision sans depot ne designe rien — un sha n'a de sens que rattache
+    a un remote."""
+    for recipe in _recipes():
+        m = re.search(rf"^\s*{re.escape(SOURCE_LABEL)}:\s*(.+)$", recipe.read_text(), re.MULTILINE)
+        assert m, f"{recipe.name} ne fixe pas {SOURCE_LABEL}"
+        assert m.group(1).strip() == EXPECTED_SOURCE, (
+            f"{recipe.name} : source attendu {EXPECTED_SOURCE}, trouve {m.group(1).strip()}"
         )
 
 

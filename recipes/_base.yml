@@ -14,6 +14,9 @@ image-version: latest
 # vérifie pour toutes les recipes.
 labels:
   org.opencontainers.image.revision: "${BF_GIT_REVISION}"
+  # ⚠️ `source` aussi : BlueBuild le derive de la CI et le laisse VIDE en
+  # local (cf. recipes/bf.yml). Une revision sans depot ne designe rien.
+  org.opencontainers.image.source: "https://github.com/bluefoxconsultant/blue-fox-os"
 
 # Modules communs à appliquer en plus du branding tenant-specific.
 # Les tenants doivent dupliquer cette liste avant d'ajouter leurs overrides.

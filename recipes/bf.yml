@@ -22,6 +22,14 @@ image-version: latest
 # l'etiquette publiee au lieu de se fier a l'export.
 labels:
   org.opencontainers.image.revision: "${BF_GIT_REVISION}"
+  # ⚠️ BlueBuild pose bien `source` de lui-meme, mais il le derive des variables
+  # d'environnement de la CI : hors CI il vaut la CHAINE VIDE. Constate sur
+  # l'image construite le 2026-07-25 (`LABEL org.opencontainers.image.source=""`).
+  # Depuis que tous les builds sont locaux, l'etiquette etait donc toujours vide —
+  # et une revision sans depot ne designe rien : un sha n'a de sens que rattache
+  # a un remote. On la fixe ici, ou les labels personnalises l'emportent sur les
+  # defauts du CLI.
+  org.opencontainers.image.source: "https://github.com/bluefoxconsultant/blue-fox-os"
 
 modules:
 
