@@ -82,10 +82,11 @@ def test_pinned_fingerprint_is_the_verified_one():
     assert _shell_var("KEY_FPR") == EXPECTED_FPR
 
 
-def test_short_key_id_derives_from_fingerprint():
-    # rpm nomme le gpg-pubkey d'apres les 8 derniers hex, en minuscules : c'est
-    # ce qui rend le controle post-import du script valide.
-    assert _shell_var("KEY_ID_SHORT") == EXPECTED_FPR[-8:].lower()
+def test_legacy_key_id_is_derived_not_hardcoded():
+    """L'ancien format d'identifiant (8 hex, rpm 4/5) doit etre DERIVE de
+    l'empreinte, pas ecrit en dur : une constante figee se desynchronise de
+    KEY_FPR sans que rien ne le signale."""
+    assert 'KEY_ID_LEGACY="${KEY_FPR_LOWER: -8}"' in _setup_code()
 
 
 def _written_repo_file() -> str:
@@ -130,3 +131,46 @@ def test_script_module_runs_before_rpm_ostree():
 
 def test_setup_script_is_referenced_by_the_recipe():
     assert "setup-surface-repo.sh" in RECIPE.read_text()
+
+
+def _setup_code() -> str:
+    """Le script sans ses commentaires — ils citent volontairement les motifs
+    fautifs pour expliquer les pieges."""
+    return "\n".join(
+        line for line in SETUP_SCRIPT.read_text().splitlines()
+        if not line.lstrip().startswith("#")
+    )
+
+
+def test_gpg_runs_with_a_throwaway_gnupghome():
+    """⚠️ Dans un container de build bootc, /root est un lien vers var/roothome
+    et /var est VIDE : gpg meurt sur « can't create directory '/root/.gnupg' »
+    avec un code 2. Meme famille que le piege dracut `--tmpdir /var/tmp`.
+    Vecu le 2026-07-25 sur le premier build reel."""
+    assert "GNUPGHOME=" in _setup_code(), (
+        "sans GNUPGHOME jetable, la verification d'empreinte meurt dans l'image de build"
+    )
+
+
+def test_gpg_stderr_is_never_swallowed():
+    """⚠️ `gpg … 2>/dev/null` + `set -euo pipefail` = mort SILENCIEUSE du script :
+    trace vide, code 2, aucune piste. C'est ce qui a rendu la panne du
+    2026-07-25 illisible pendant plusieurs essais."""
+    for line in _setup_code().splitlines():
+        if "gpg --show-keys" in line:
+            assert "2>/dev/null" not in line, (
+                "l'erreur de gpg doit etre capturee et affichee, pas jetee"
+            )
+
+
+def test_rpm_key_assertion_accepts_the_rpm6_naming():
+    """⚠️ rpm 6 nomme le gpg-pubkey d'apres l'empreinte COMPLETE en minuscules ;
+    rpm 4/5 d'apres ses 8 derniers hex. Une assertion `grep -qx <8 hex>` echoue
+    donc sur un import parfaitement reussi — panne exacte du premier build."""
+    code = _setup_code()
+    assert "KEY_FPR_LOWER" in code
+    assert 'grep -qx "$KEY_ID_SHORT"' not in code, "assertion figee sur le format rpm 4/5"
+    m = re.search(r"grep -qiE \"\^\((.+?)\)", code)
+    assert m and "KEY_FPR_LOWER" in m.group(1), (
+        "l'assertion doit accepter l'empreinte complete (rpm 6)"
+    )

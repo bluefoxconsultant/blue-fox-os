@@ -52,9 +52,17 @@ BASEURL_TMPL='https://pkg.surfacelinux.com/fedora/f$releasever/'
 # rotation amont. Les deux se re-verifient ensemble ou pas du tout.
 KEY_FPR="87DEFA4AB94A99A4C8C3112556C464BAAC421453"
 KEY_SHA256="ad86d878a07fa0f11e0d7aa89bc9763c05fc8c341f87ba92c9bc10a7ea26a9a9"
-# rpm nomme le paquet gpg-pubkey d'apres les 8 derniers hex de l'empreinte, en
-# minuscules : c'est ce qui permet de verifier que l'import a bien pris.
-KEY_ID_SHORT="ac421453"
+
+# Comment rpm nomme la cle importee, pour verifier que l'import a pris.
+#
+# ⚠️ rpm 6 la nomme d'apres l'empreinte COMPLETE en minuscules
+# (`gpg-pubkey-87defa4a…c421453-<hex>`) ; rpm 4 et 5 n'en gardaient que les 8
+# derniers hex. Verifie dans ghcr.io/ublue-os/kinoite-main:43 (rpm 6.0.1) le
+# 2026-07-25 : c'est cette difference qui a fait echouer le premier build reel —
+# la cle etait bien importee, l'assertion demandait l'ancien format. On accepte
+# donc les deux formes.
+KEY_FPR_LOWER="$(printf '%s' "$KEY_FPR" | tr 'A-Z' 'a-z')"
+KEY_ID_LEGACY="${KEY_FPR_LOWER: -8}"
 
 log() { echo "[surface-repo] $*"; }
 die() { echo "[surface-repo] ERREUR: $*" >&2; exit 1; }
@@ -70,14 +78,38 @@ ACTUAL_SHA="$(sha256sum "$KEY_SRC" | cut -d' ' -f1)"
 Si linux-surface a tourne sa cle, recouper l'empreinte sur au moins deux
 sources independantes AVANT de mettre a jour KEY_SHA256/KEY_FPR ici."
 
-# Verification d'empreinte quand gpg est la — sinon on s'en passe, le digest
-# ci-dessus couvrant deja l'integrite du fichier commite.
+# Verification d'empreinte quand gpg est la — en complement du digest, qui
+# couvre deja l'integrite du fichier commite.
+#
+# ⚠️ DEUX pieges ici, les deux vecus le 2026-07-25 sur le premier build reel.
+#
+#   1. `gpg` MEURT dans un container de build bootc : /root y est un lien
+#      symbolique vers var/roothome, et /var est VIDE a la construction — d'ou
+#      « gpg: Fatal: can't create directory '/root/.gnupg' » et un code 2. Meme
+#      famille que le piege dracut `--tmpdir /var/tmp` des recipes. Corrige par
+#      un GNUPGHOME jetable, qui rend le controle deterministe partout.
+#
+#   2. La version precedente faisait `gpg … 2>/dev/null` : avec
+#      `set -euo pipefail`, l'echec de gpg tuait le script AVANT le moindre
+#      message — trace vide, code 2, aucune piste. Ne jamais avaler stderr sur
+#      une commande dont l'echec doit etre diagnostiquable.
+#
+# Un echec d'ENVIRONNEMENT de gpg n'est pas fatal (le digest tient l'integrite) ;
+# une empreinte qui NE CORRESPOND PAS, si.
 if command -v gpg >/dev/null 2>&1; then
-    GPG_FPR="$(gpg --show-keys --with-colons "$KEY_SRC" 2>/dev/null \
-        | awk -F: '/^fpr:/ {print $10; exit}')"
-    [ "$GPG_FPR" = "$KEY_FPR" ] || die \
-        "empreinte de la cle inattendue (attendu ${KEY_FPR}, obtenu ${GPG_FPR:-vide})"
-    log "empreinte verifiee : ${KEY_FPR}"
+    GPG_HOME="$(mktemp -d)"
+    GPG_ERR="$(mktemp)"
+    if GPG_FPR="$(GNUPGHOME="$GPG_HOME" gpg --show-keys --with-colons "$KEY_SRC" \
+            2>"$GPG_ERR" | awk -F: '/^fpr:/ {print $10; exit}')" \
+       && [ -n "$GPG_FPR" ]; then
+        [ "$GPG_FPR" = "$KEY_FPR" ] || die \
+            "empreinte de la cle inattendue (attendu ${KEY_FPR}, obtenu ${GPG_FPR})"
+        log "empreinte verifiee : ${KEY_FPR}"
+    else
+        log "⚠️ gpg n'a pas pu lire la cle ; verification limitee au digest sha256 :"
+        sed 's/^/    gpg: /' "$GPG_ERR" >&2
+    fi
+    rm -rf "$GPG_HOME" "$GPG_ERR"
 else
     log "gpg absent ; verification limitee au digest sha256"
 fi
@@ -86,9 +118,13 @@ fi
 install -D -m 0644 "$KEY_SRC" "$KEY_DST"
 rpm --import "$KEY_DST"
 
-rpm -q gpg-pubkey --qf '%{VERSION}\n' 2>/dev/null | grep -qx "$KEY_ID_SHORT" \
-    || die "la cle ${KEY_ID_SHORT} n'apparait pas dans le trousseau rpm apres import"
-log "cle importee dans le trousseau rpm (gpg-pubkey-${KEY_ID_SHORT})"
+# Pas de `2>/dev/null` : une erreur de rpm doit se voir, pas se transformer en
+# « cle absente ». C'est ce qui rend ce genre de panne illisible.
+rpm -q gpg-pubkey --qf '%{VERSION}\n' | grep -qiE "^(${KEY_FPR_LOWER}|${KEY_ID_LEGACY})\$" \
+    || die "la cle ${KEY_FPR_LOWER} n'apparait pas dans le trousseau rpm apres import.
+Trousseau actuel :
+$(rpm -q gpg-pubkey --qf '  %{VERSION}\n' || true)"
+log "cle importee dans le trousseau rpm (gpg-pubkey-${KEY_FPR_LOWER})"
 
 # --- 3. depot durci -------------------------------------------------------
 # Heredoc en quotes simples : $releasever doit rester LITTERAL dans le fichier

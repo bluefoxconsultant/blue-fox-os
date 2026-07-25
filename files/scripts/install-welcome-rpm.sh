@@ -36,13 +36,18 @@ Ce build echoue a dessein plutot que d'installer un paquet non verifie (#23811).
 install -D -m 0644 "$KEY_SRC" "$KEY_DST"
 rpm --import "$KEY_DST"
 
-# L'identifiant court de NOTRE cle, tel que rpm vient de l'enregistrer. Sert a
+# L'identifiant de NOTRE cle, tel que rpm vient de l'enregistrer. Sert a
 # distinguer une signature Blue Fox d'une signature Fedora : la base contient
 # aussi les cles de la distribution, et un `: OK` generique ne dirait pas
 # laquelle a valide.
-KEY_ID_SHORT="$(rpm -q gpg-pubkey --qf '%{VERSION} %{SUMMARY}\n' 2>/dev/null \
+#
+# ⚠️ On le LIT au lieu de le coder en dur : rpm 6 nomme la cle d'apres
+# l'empreinte COMPLETE en minuscules, rpm 4/5 d'apres ses 8 derniers hex. Une
+# constante en dur casse au changement de format — c'est ce qui a fait echouer
+# le premier build reel du 2026-07-25 dans setup-surface-repo.sh.
+KEY_RPM_ID="$(rpm -q gpg-pubkey --qf '%{VERSION} %{SUMMARY}\n' \
     | grep -i 'blue fox' | awk '{print $1}' | head -1)"
-[ -n "$KEY_ID_SHORT" ] || die "la cle Blue Fox n'apparait pas dans la base rpm apres import"
+[ -n "$KEY_RPM_ID" ] || die "la cle Blue Fox n'apparait pas dans la base rpm apres import"
 
 # Deux controles, et il faut les deux.
 #
@@ -65,7 +70,7 @@ esac
 # NOTRE cle suivi de « : OK ».
 KOUT="$(rpm -Kv "$RPM" 2>&1)" || die "rpm -Kv a echoue :
 ${KOUT}"
-echo "$KOUT" | grep -Eqi "signature.*${KEY_ID_SHORT}.*: OK" || die \
+echo "$KOUT" | grep -Eqi "signature.*${KEY_RPM_ID}.*: OK" || die \
     "signature non verifiable contre la cle Blue Fox :
 ${KOUT}
 Un NOKEY signale un RPM signe par une AUTRE cle que celle commitee dans
