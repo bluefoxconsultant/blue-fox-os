@@ -9,9 +9,41 @@
 # systemd-rpm-macros). Sur un hote qui ne les a pas — Garuda/Arch, Debian,
 # macOS... — le script rebondit tout seul dans un container fedora:43 via
 # podman et s'y rejoue. Mettre BLUEFOX_RPM_NO_CONTAINER=1 pour l'interdire.
+#
+# SIGNATURE (#23811). Si BLUEFOX_RPM_GPG_NAME est definie, le RPM est signe a la
+# fin — TOUJOURS sur l'hote, jamais dans le container : la cle privee ne franchit
+# pas cette frontiere. Sinon le script le dit fort et continue : la CI et les
+# builds de dev n'ont pas de cle, mais scripts/publish-image.sh, lui, EXIGE la
+# variable. C'est la chaine de publication qui ne peut pas produire un paquet non
+# signe, pas chaque rpmbuild.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+WELCOME_DIR="$REPO_ROOT/welcome"
+SPEC="$WELCOME_DIR/welcome.spec"
+OUT_DIR="${1:-$WELCOME_DIR/build/RPMS/noarch}"
+NAME="bluefox-welcome"
+
+# Extrait Version: depuis le spec (single source of truth).
+VERSION=$(awk '/^Version:/ {print $2}' "$SPEC")
+if [[ -z "$VERSION" ]]; then
+    echo "build-welcome-rpm: impossible d'extraire Version: depuis $SPEC" >&2
+    exit 1
+fi
+
+# Signature (ou refus explicite de signer), appelee depuis les DEUX chemins :
+# build natif et retour du container.
+sign_or_warn() {
+    local rpms=("$OUT_DIR/${NAME}-${VERSION}"-*.noarch.rpm)
+    if [ -n "${BLUEFOX_RPM_GPG_NAME:-}" ]; then
+        "$REPO_ROOT/scripts/sign-welcome-rpm.sh" "${rpms[@]}"
+    else
+        echo "==> ⚠️  RPM NON SIGNE : BLUEFOX_RPM_GPG_NAME n'est pas definie." >&2
+        echo "==>     Acceptable pour un build de dev ou la CI de validation." >&2
+        echo "==>     Interdit pour une publication — publish-image.sh refusera." >&2
+        echo "==>     Creation de la cle : ./scripts/generate-rpm-signing-key.sh" >&2
+    fi
+}
 
 # --- bascule container ------------------------------------------------------
 # Le .spec s'appuie sur %pyproject_wheel & co, fournis par pyproject-rpm-macros.
@@ -38,7 +70,11 @@ if [ "${BLUEFOX_RPM_IN_CONTAINER:-0}" != "1" ] && ! native_rpm_stack; then
     # fedora:43 = ce que faisait le job build-rpm de la CI. La liste de paquets
     # est la meme, volontairement : c'est la seule chose qui garantit que le RPM
     # local est bit-pour-bit celui que la CI produisait.
-    exec podman run --rm \
+    #
+    # ⚠️ Plus de `exec` ici (change le 2026-07-24, #23811) : le script doit
+    # reprendre la main apres le container pour signer le RPM sur l'HOTE. La cle
+    # privee GPG n'entre pas dans le container — ni par montage, ni par variable.
+    podman run --rm \
         -v "${REPO_ROOT}:/src:z" \
         -w /src \
         -e BLUEFOX_RPM_IN_CONTAINER=1 \
@@ -49,19 +85,8 @@ if [ "${BLUEFOX_RPM_IN_CONTAINER:-0}" != "1" ] && ! native_rpm_stack; then
                 systemd-rpm-macros python3-setuptools python3-wheel python3-pip
             exec scripts/build-welcome-rpm.sh "$@"
         ' _ "$@"
-fi
-
-WELCOME_DIR="$REPO_ROOT/welcome"
-SPEC="$WELCOME_DIR/welcome.spec"
-OUT_DIR="${1:-$WELCOME_DIR/build/RPMS/noarch}"
-
-# Extrait Version: depuis le spec (single source of truth).
-VERSION=$(awk '/^Version:/ {print $2}' "$SPEC")
-NAME="bluefox-welcome"
-
-if [[ -z "$VERSION" ]]; then
-    echo "build-welcome-rpm: impossible d'extraire Version: depuis $SPEC" >&2
-    exit 1
+    sign_or_warn
+    exit 0
 fi
 
 echo "==> Build $NAME-$VERSION"
@@ -100,3 +125,11 @@ fi
 
 echo "==> RPM(s) dans $OUT_DIR :"
 ls -la "$OUT_DIR/${NAME}-${VERSION}"-*.noarch.rpm
+
+# Dans le container, on ne signe pas : c'est l'hote qui reprend la main juste
+# apres le `podman run` (voir sign_or_warn et le commentaire du rebond).
+if [ "${BLUEFOX_RPM_IN_CONTAINER:-0}" = "1" ]; then
+    echo "==> signature deleguee a l'hote (la cle privee n'entre pas dans le container)"
+else
+    sign_or_warn
+fi

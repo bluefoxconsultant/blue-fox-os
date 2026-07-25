@@ -54,7 +54,9 @@ modules:
   # Installe le RPM bluefox-welcome stage par la CI (cf. recipes/bf.yml).
   - type: script
     snippets:
-      - rpm-ostree install /usr/share/bluefox/rpm-staging/bluefox-welcome.noarch.rpm && rm -rf /usr/share/bluefox/rpm-staging
+      # bluefox-welcome : signature verifiee avant installation (#23811) — cf.
+      # recipes/bf.yml pour le rationale et la resolution a deux racines.
+      - for D in "${CONFIG_DIRECTORY}/scripts" "${CONFIG_DIRECTORY}/files/scripts"; do [ -f "$D/install-welcome-rpm.sh" ] && exec bash "$D/install-welcome-rpm.sh"; done; echo "ERREUR - install-welcome-rpm.sh introuvable sous ${CONFIG_DIRECTORY}" >&2; exit 1
       # Refresh fontconfig cache pour Lexend hand-baked (cf bf.yml).
       - fc-cache -f /usr/share/fonts/lexend/
       # Les tables MIME de Fedora designent firefox pour http/https/text-html,

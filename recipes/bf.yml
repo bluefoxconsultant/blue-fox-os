@@ -92,7 +92,18 @@ modules:
   # que le theme est bien DANS l'initramfs et echoue sinon.
   - type: script
     snippets:
-      - rpm-ostree install /usr/share/bluefox/rpm-staging/bluefox-welcome.noarch.rpm && rm -rf /usr/share/bluefox/rpm-staging
+      # bluefox-welcome : signature VERIFIEE avant installation (#23811).
+      # `rpm-ostree install <chemin>` ne verifie rien sur un fichier local, et
+      # c'etait le seul paquet superpose non signe de l'image — le notre, celui
+      # qui porte le provisionnement OIDC. Le detail est dans l'entete de
+      # files/scripts/install-welcome-rpm.sh.
+      #
+      # La resolution a deux racines vient du module `script` v1 : il cherche
+      # ses `scripts:` sous $CONFIG_DIRECTORY/scripts, or CONFIG_DIRECTORY vaut
+      # /tmp/config (config complet monte) OU /tmp/files (seul files/ monte)
+      # selon la version de BlueBuild. Les deux candidats designent le meme
+      # dossier in-repo : files/scripts/.
+      - for D in "${CONFIG_DIRECTORY}/scripts" "${CONFIG_DIRECTORY}/files/scripts"; do [ -f "$D/install-welcome-rpm.sh" ] && exec bash "$D/install-welcome-rpm.sh"; done; echo "ERREUR - install-welcome-rpm.sh introuvable sous ${CONFIG_DIRECTORY}" >&2; exit 1
       - fc-cache -f /usr/share/fonts/lexend/
       # Les tables MIME de Fedora designent firefox pour http/https/text-html,
       # or la recette le RETIRE de l'image. Un gestionnaire fantome fait

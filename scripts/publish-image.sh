@@ -113,6 +113,16 @@ done
 
 if [ "$DRY_RUN" = "0" ]; then
     [ -n "${COSIGN_PRIVATE_KEY:-}" ] || die "COSIGN_PRIVATE_KEY vide. Exporter le CONTENU de cosign.key, pas son chemin."
+
+    # Le RPM du welcome agent etait le seul paquet superpose non signe de
+    # l'image (#23811). C'est la chaine de PUBLICATION qui l'interdit, pas
+    # chaque rpmbuild : la CI de validation et les builds de dev n'ont pas de
+    # cle, et n'en ont pas besoin.
+    [ -n "${BLUEFOX_RPM_GPG_NAME:-}" ] || die \
+        "BLUEFOX_RPM_GPG_NAME vide : le RPM bluefox-welcome serait non signe.
+Creer la cle une fois avec ./scripts/generate-rpm-signing-key.sh, puis exporter
+son uid. Les recipes verifient la signature avant rpm-ostree install, donc un
+build sans cle echouerait de toute facon — autant echouer ici, avant 9 GB."
     podman login --get-login ghcr.io >/dev/null 2>&1 \
         || die "pas authentifie sur ghcr.io. Voir les prerequis en tete de script."
 

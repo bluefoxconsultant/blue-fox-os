@@ -13,7 +13,7 @@ TAG ?= dev
 REGISTRY ?= ghcr.io/bluefoxconsultant
 IMAGE = $(REGISTRY)/blue-fox-os-$(SLUG):$(TAG)
 
-.PHONY: help image publish iso verify clean lint test welcome-rpm bib-config brand-iso zerotouch-render zerotouch-sync bootstrap-garuda
+.PHONY: help image publish iso verify clean lint test welcome-rpm rpm-signing-key bib-config brand-iso zerotouch-render zerotouch-sync bootstrap-garuda
 
 help:
 	@echo "Cibles disponibles :"
@@ -27,6 +27,7 @@ help:
 	@echo "  make brand-iso ISO=path/to.iso Brande l'ISO (boot menu, GRUB theme, splash)"
 	@echo "  make verify SLUG=bf TAG=v26.07 Vérifie la signature cosign de l'image distante"
 	@echo "  make welcome-rpm              Build le RPM du welcome agent"
+	@echo "  make rpm-signing-key          Crée la clé GPG de signature des RPM (une fois, machine de build)"
 	@echo "  make lint                     Lint des recipes YAML + Kickstart"
 	@echo "  make test                     Tests unitaires welcome agent"
 	@echo "  make clean                    Nettoie les artefacts locaux"
@@ -58,6 +59,11 @@ verify:
 welcome-rpm:
 	./scripts/build-welcome-rpm.sh
 
+# Une seule fois, sur la machine de build. La clé privée n'a pas à vivre
+# ailleurs (#23815) ; la publique est commitée et vérifiée dans l'image.
+rpm-signing-key:
+	./scripts/generate-rpm-signing-key.sh
+
 bib-config:
 	python3 scripts/render_bib_config.py
 
@@ -78,8 +84,12 @@ lint:
 	@command -v ksvalidator >/dev/null && ksvalidator install/bf-os.ks || echo "ksvalidator non installé, skip"
 	@python3 scripts/render_bib_config.py >/dev/null && git diff --quiet install/bib-config.toml && echo "bib-config.toml OK" || { echo "bib-config.toml stale ; run make bib-config"; exit 1; }
 
+# Les tests de scripts/tests/ ne sont PAS en `|| true` : ils gardent les
+# correctifs d'audit (provenance, dépôt surface durci, source du manifeste) et
+# un échec doit se voir.
 test:
 	cd welcome && python3 -m pytest -q || true
+	python3 -m pytest -q scripts/tests
 
 clean:
 	rm -rf build/ dist/ output/ welcome/build/ welcome/dist/
