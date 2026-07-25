@@ -174,3 +174,139 @@ def test_main_chmods_staged_file(tmp_path, monkeypatch):
         monkeypatch.delenv(var, raising=False)
     assert bp.main([]) == 0
     assert oct(staged.stat().st_mode)[-3:] == "600"
+
+
+# ------------------------------------------------------------------ enrolment
+POLICY = {"schema": "bf-policy/v2", "install": {"hostname": "bf-olivier"},
+          "user": {"login": "olivier"}}
+ENROLL_URL = "https://example.com/api/v1/policy/enroll"
+
+
+def _enrol_ok(url, payload, token, timeout=30):
+    assert url == ENROLL_URL
+    assert token == "TOK"
+    assert payload["hostname"] == "bf-olivier"
+    return 200, json.dumps({
+        "machine_id": 7, "machine_uuid": payload["machine_uuid"],
+        "token": "SECRET", "endpoint": "https://example.com/api/v1/policy/machine",
+        "hostname": payload["hostname"], "user": "olivier"})
+
+
+def test_enroll_url_derived_from_policy_url():
+    assert bp.enroll_url_from(POLICY_URL) == ENROLL_URL
+    assert bp.enroll_url_from(POLICY_URL + "/") == ENROLL_URL
+    # Anything that isn't the /me route yields "" so the caller skips enrolment
+    # rather than posting the operator's bearer at a guessed URL.
+    assert bp.enroll_url_from("https://example.com/api/v1/policy") == ""
+    assert bp.enroll_url_from("") == ""
+
+
+def test_image_version_reads_os_release(tmp_path):
+    p = tmp_path / "os-release"
+    p.write_text('NAME="Blue Fox OS"\nVERSION_ID=43\nBUILD_ID="20260725"\n')
+    assert bp.image_version(str(p)) == "43 (20260725)"
+    p.write_text("VERSION_ID=43\n")
+    assert bp.image_version(str(p)) == "43"
+    assert bp.image_version(str(tmp_path / "absent")) == ""
+
+
+def test_enrol_machine_happy_path():
+    machine = bp.enrol_machine(ENROLL_URL, "TOK", POLICY, post=_enrol_ok,
+                               new_uuid=lambda: "uuid-1234-5678", os_version="43")
+    assert machine["token"] == "SECRET"
+    assert machine["machine_uuid"] == "uuid-1234-5678"
+    assert machine["endpoint"].endswith("/api/v1/policy/machine")
+    assert machine["schema"] == "bf-machine/v1"
+    assert machine["hostname"] == "bf-olivier"
+
+
+def test_enrol_machine_draws_a_fresh_uuid_each_time():
+    seen = set()
+    for _ in range(3):
+        seen.add(bp.enrol_machine(ENROLL_URL, "TOK", POLICY, post=_enrol_ok,
+                                  os_version="")["machine_uuid"])
+    assert len(seen) == 3
+
+
+@pytest.mark.parametrize("status,body", [
+    (403, '{"error":"machine revoked"}'),
+    (500, "boom"),
+])
+def test_enrol_machine_non200_raises(status, body):
+    with pytest.raises(bp.ProvisionError):
+        bp.enrol_machine(ENROLL_URL, "TOK", POLICY,
+                         post=lambda *a, **k: (status, body), os_version="")
+
+
+@pytest.mark.parametrize("body", [
+    "pas du json",
+    '{"endpoint":"https://x/machine"}',   # jeton manquant
+    '{"token":"SECRET"}',                  # endpoint manquant
+])
+def test_enrol_machine_rejects_bad_response(body):
+    with pytest.raises(bp.ProvisionError):
+        bp.enrol_machine(ENROLL_URL, "TOK", POLICY,
+                         post=lambda *a, **k: (200, body), os_version="")
+
+
+def test_stage_enrolment_writes_0600(tmp_path):
+    path = tmp_path / "machine.json"
+    env = {"BFOS_POLICY_URL": POLICY_URL}
+    machine = bp.stage_enrolment("TOK", POLICY, env=env, post=_enrol_ok,
+                                 path=str(path))
+    assert machine and machine["token"] == "SECRET"
+    assert oct(path.stat().st_mode)[-3:] == "600"
+    assert json.loads(path.read_text())["endpoint"].endswith("/policy/machine")
+
+
+def test_stage_enrolment_skips_without_endpoint(tmp_path):
+    path = tmp_path / "machine.json"
+    said = []
+    assert bp.stage_enrolment("TOK", POLICY, env={}, out=said.append,
+                              post=_enrol_ok, path=str(path)) is None
+    assert not path.exists()
+    assert any("policy changes" in m for m in said)
+
+
+def test_stage_enrolment_failure_leaves_no_file(tmp_path):
+    path = tmp_path / "machine.json"
+    def boom(*a, **k):
+        raise OSError("réseau coupé")
+    assert bp.stage_enrolment("TOK", POLICY, env={"BFOS_ENROLL_URL": ENROLL_URL},
+                              post=boom, path=str(path)) is None
+    assert not path.exists()
+
+
+def test_run_hands_the_token_to_after_policy():
+    def post(url, data=None, timeout=30):
+        if url == DEVICE_URL:
+            return 200, json.dumps({"device_code": "DC", "user_code": "WX",
+                                    "verification_uri": "https://auth/device",
+                                    "interval": 1, "expires_in": 300})
+        return 200, json.dumps({"access_token": "TOK"})
+
+    def get(url, token, timeout=30):
+        return 200, json.dumps(POLICY)
+
+    seen = {}
+    env = {"BFOS_OIDC_DEVICE_URL": DEVICE_URL, "BFOS_OIDC_TOKEN_URL": TOKEN_URL,
+           "BFOS_OIDC_CLIENT_ID": "blue-fox-os", "BFOS_POLICY_URL": POLICY_URL}
+    policy = bp.run(env=env, post=post, get=get, sleep=lambda s: None,
+                    out=lambda m: None,
+                    after_policy=lambda tok, pol: seen.update(tok=tok, pol=pol))
+    # L'enrolement ne peut avoir lieu qu'apres le fetch : c'est la politique qui
+    # porte le nom d'hote, et le porteur est encore valide a ce moment-la.
+    assert seen["tok"] == "TOK"
+    assert seen["pol"] == policy
+
+
+def test_main_does_not_enrol_when_provisioning_failed(tmp_path, monkeypatch):
+    monkeypatch.setattr(bp, "STAGED_JSON", str(tmp_path / "p.json"))
+    monkeypatch.setattr(bp, "MACHINE_JSON", str(tmp_path / "machine.json"))
+    for var in ("BFOS_OIDC_DEVICE_URL", "BFOS_OIDC_TOKEN_URL",
+                "BFOS_OIDC_CLIENT_ID", "BFOS_POLICY_URL"):
+        monkeypatch.delenv(var, raising=False)
+    assert bp.main([]) == 0
+    # Sans device flow il n'y a aucun porteur : rien a enroler, et surtout pas
+    # de fichier de secret vide qui ferait croire le contraire au service.
+    assert not (tmp_path / "machine.json").exists()

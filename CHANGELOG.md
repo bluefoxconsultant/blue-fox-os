@@ -4,6 +4,17 @@ Format : [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning Ca
 
 ## [Unreleased]
 
+### Added
+
+**Re-synchronisation de la politique sur les machines déjà installées** (#23909) :
+- Une machine reçoit désormais une identité à elle. Pendant le `%pre`, tant que le porteur OIDC de l'opérateur est en main, `bfos_provision.py` appelle `POST /api/v1/policy/enroll` et met le secret rendu dans `/etc/bluefox/machine.json` (0600, root). Odoo n'en conserve que le sha256.
+- `bluefox-policy-sync.timer` (au démarrage + une fois par jour, étalée sur une heure) re-tire la politique depuis `GET /api/v1/policy/machine` et réécrit `provisioning.json` puis les deux listes Flatpak. Une politique modifiée dans Odoo atteint donc les postes en service, plus seulement les installations neuves.
+- L'auto-déverrouillage TPM2 suit gratuitement : `bluefox-tpm-enroll.service` relit déjà `provisioning.json` à chaque démarrage.
+- ⚠️ `system-flatpak-setup.timer` est en `OnBootSec=30` — elle ne repasse jamais sur une machine allumée. Quand les listes changent, le service déclenche donc lui-même `system-flatpak-setup.service` ; quand rien ne change, il ne réveille rien.
+- Frontière assumée : le reste du bloc `install` (nom d'hôte, locale, clavier, mode de connexion) n'est pas ré-appliqué à chaud — ces réglages demandent `hostnamectl`/`localectl`/sssd et se testent en VM à part.
+- Tolérance aux pannes : poste hors ligne, serveur muet ou machine révoquée → la dernière politique connue reste en place et le service sort en succès. Seules les pannes locales (écriture impossible, `bfos_apply.py` absent de l'image) sortent en échec.
+- Côté Odoo : `bf_policy` 18.0.2.4.0 — modèle `bf.policy.machine`, endpoints `/api/v1/policy/enroll` et `/api/v1/policy/machine`, écran Policy > Machines avec bouton Révoquer. Une machine révoquée ne peut pas se ré-enrôler sous la même identité.
+
 ## [v0.1.0-rc.1] - 2026-05-22
 
 Premier release candidate. Valide la chaîne install end-to-end (2 menuentries GRUB, zero-touch typed-domain + built-in defaults), le branding system-wide piloté par `tenant.json`, et le supply chain cosign + SBOM SPDX.

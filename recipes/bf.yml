@@ -160,6 +160,10 @@ modules:
         # sans effet sur les machines existantes. Doit rester une unite ROOT :
         # systemd-cryptenroll ne tourne pas en tant qu'utilisateur.
         - bluefox-tpm-enroll.service
+        # Re-synchronisation de la politique (#23909) : sans elle, une machine
+        # garde a vie la politique du jour de son installation. Conditionnee a
+        # /etc/bluefox/machine.json, donc inerte sur un poste non enrole.
+        - bluefox-policy-sync.timer
       masked:
         - tailscaled.service       # user doit `systemctl enable --now tailscaled` consciemment
 

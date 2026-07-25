@@ -71,6 +71,11 @@ files/etc/plymouth/
 files/usr/share/bluefox/branding/
 files/usr/share/bluefox/tenant.json
 
+# Copie de install/bfos_apply.py stagee par publish-image.sh pour que
+# bluefox-policy-sync reutilise son rendu des listes Flatpak. Non commitee :
+# une deuxieme copie en depot finirait par deriver de l'originale.
+files/usr/lib/bluefox/
+
 # Editor
 .vscode/
 .idea/

@@ -148,6 +148,7 @@ modules:
         - bluefox-rebase.service
         - firstboot.service
         - bluefox-tpm-enroll.service   # auto-deverrouillage LUKS TPM2, pilote par la policy
+        - bluefox-policy-sync.timer    # re-tirage quotidien de la politique (#23909)
         # iptsd ship une unite templated `iptsd@.service` lancee par udev
         # quand le device IPTS apparait au boot. Pas besoin de l'enable
         # explicitement.

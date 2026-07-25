@@ -230,6 +230,21 @@ RPM_SRC="$(find "${WORKDIR}/welcome/build/RPMS/noarch" -name 'bluefox-welcome-*.
 cp "$RPM_SRC" "${RPM_STAGING}/bluefox-welcome.noarch.rpm"
 log "    $(basename "$RPM_SRC") -> bluefox-welcome.noarch.rpm"
 
+# --- 2b. stage de bfos_apply.py --------------------------------------------
+# bluefox-policy-sync reutilise le rendu des listes Flatpak de
+# install/bfos_apply.py plutot que d'en garder sa propre copie : le fichier
+# ecrit a l'installation et celui reecrit par la synchronisation ne peuvent
+# alors pas diverger. On le STAGE au build (comme le RPM) au lieu de commiter
+# un doublon dans files/ — un doublon commite finirait par deriver en silence.
+log "2b/7 stage de install/bfos_apply.py dans files/usr/lib/bluefox/"
+APPLY_STAGING="${WORKDIR}/files/usr/lib/bluefox"
+mkdir -p "$APPLY_STAGING"
+cp "${WORKDIR}/install/bfos_apply.py" "${APPLY_STAGING}/bfos_apply.py"
+# files/ est copie TEL QUEL dans l'image : un __pycache__ laisse par un import
+# local (les tests chargent files/usr/libexec/bluefox-policy-sync par chemin)
+# partirait avec. On nettoie plutot que d'esperer que personne n'en depose.
+find "${WORKDIR}/files" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+
 # --- 3. branding + stack KDE ----------------------------------------------
 # BUILD=0 : on veut seulement materialiser files/ + tenant.json + le theme KDE.
 # Le build lui-meme est lance a l'etape 4 (avec --push, ce que ce script-la
