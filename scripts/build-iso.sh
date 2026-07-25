@@ -26,6 +26,32 @@ REGISTRY="${REGISTRY:-ghcr.io/bluefoxconsultant}"
 IMAGE="${REGISTRY}/blue-fox-os-${SLUG}:${TAG}"
 BIB_IMAGE="${BIB_IMAGE:-quay.io/centos-bootc/bootc-image-builder:latest}"
 
+# --- reseau du container BIB -----------------------------------------------
+# ⚠️ BIB a besoin de DNS : il depsolve l'environnement Anaconda depuis les
+# depots Fedora, PLUS les depots portes par l'image (dont, depuis #23812, notre
+# linux-surface.repo en skip_if_unavailable=0 — un depot injoignable fait donc
+# echouer la construction de l'ISO, a dessein).
+#
+# Panne vecue le 2026-07-25 sur charizard : « Could not resolve host:
+# mirrors.fedoraproject.org » apres ~4 min de pull. Cause : le seul resolveur de
+# l'hote est **Tailscale MagicDNS** (100.100.100.100). tailscaled sert cette
+# adresse aux processus LOCAUX ; les paquets qui arrivent d'un pont podman
+# ROOTFUL n'y accedent pas. Le build d'image, lui, est rootless et passe par le
+# namespace reseau de l'hote — d'ou un build OCI qui marche et une ISO qui
+# echoue, sur la meme machine.
+#
+# --network=host place BIB dans le namespace de l'hote : la resolution emprunte
+# exactement le chemin qui fonctionne deja. BIB tourne de toute facon en
+# --privileged avec le stockage de l'hote monte, donc ca n'ouvre rien de plus.
+# BIB_DNS=1.1.1.1 (ou plusieurs, separes par des virgules) reste disponible si
+# un jour l'hote a un resolveur atteignable depuis un pont.
+BIB_NETWORK="${BIB_NETWORK:-host}"
+DNS_ARGS=()
+if [ -n "${BIB_DNS:-}" ]; then
+    IFS=',' read -r -a _dns <<< "$BIB_DNS"
+    for d in "${_dns[@]}"; do DNS_ARGS+=(--dns="$d"); done
+fi
+
 WORKDIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUTPUT="${WORKDIR}/output"
 
@@ -173,9 +199,33 @@ fi
 # --rootfs btrfs matches Kinoite default.
 # --use-librepo=true matches CI for repo metadata fetching.
 # --security-opt label=type:unconfined_t matches CI on SELinux hosts.
+# Controle DNS AVANT de lancer 20 minutes de build : la panne du 2026-07-25 ne
+# s'est manifestee qu'apres le pull de BIB et le debut du depsolve. Meme mode
+# reseau que le run reel, sinon le controle ne prouve rien.
+echo "[build-iso] preflight DNS dans le container (reseau=${BIB_NETWORK})"
+if ! "${ENGINE}" run --rm --network="${BIB_NETWORK}" ${DNS_ARGS[@]+"${DNS_ARGS[@]}"} \
+        --entrypoint /bin/sh "${BIB_IMAGE}" \
+        -c 'getent hosts mirrors.fedoraproject.org >/dev/null 2>&1'; then
+    cat >&2 <<EOF
+[build-iso] FAIL: pas de DNS dans le container BIB (reseau=${BIB_NETWORK}).
+
+BIB depsolve l'environnement Anaconda depuis les depots Fedora : sans
+resolution, il echoue apres plusieurs minutes de pull.
+
+Si l'hote resout via Tailscale MagicDNS (100.100.100.100), un pont podman
+ROOTFUL n'y a pas acces — c'est la panne du 2026-07-25. Contournements :
+    sudo BIB_NETWORK=host  SKIP_PULL=1 $0 ${SLUG}     # defaut
+    sudo BIB_DNS=1.1.1.1   SKIP_PULL=1 $0 ${SLUG}     # resolveur explicite
+EOF
+    exit 1
+fi
+echo "[build-iso]   DNS OK"
+
 "${ENGINE}" run \
     --rm \
     --privileged \
+    --network="${BIB_NETWORK}" \
+    ${DNS_ARGS[@]+"${DNS_ARGS[@]}"} \
     --pull=newer \
     --security-opt label=type:unconfined_t \
     -v "${AUTH_FILE}:/root/.docker/config.json:ro" \
