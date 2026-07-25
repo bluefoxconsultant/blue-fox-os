@@ -92,6 +92,12 @@ jobs:
           pytest -q
       - name: Install-time provisioning scripts (stdlib-only)
         run: pytest -q install/tests
+      - name: Recipes + chaine de build (stdlib-only)
+        # Garde-fous sur ce que les recipes declarent — depot linux-surface
+        # durci, ordre des modules, provenance de la publication. Cible
+        # scripts/tests/ et pas scripts/ : test_generate_kde_theme.py porte 3
+        # echecs connus (symlink vs copie) qui rendraient la lane rouge.
+        run: pytest -q scripts/tests
 
   test-wizard-ui:
     # PyQt6 QWizard tests via the offscreen platform plugin (no X server, so

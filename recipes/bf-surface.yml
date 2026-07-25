@@ -4,8 +4,11 @@
 # Surface.
 #
 # Source : https://github.com/linux-surface/linux-surface
-# Repo Fedora : https://pkg.surfacelinux.com/fedora/linux-surface.repo
-#   (auto-detect $releasever, donc suit la base Kinoite-main sans bumper)
+# Repo Fedora : NOTRE .repo, ecrit par files/scripts/setup-surface-repo.sh, et
+#   non plus celui servi par pkg.surfacelinux.com — qui porte
+#   skip_if_unavailable=1 et une gpgkey sur une branche mutable
+#   (audit P5.2 2026-07-22, #23812).
+#   Il garde $releasever, donc suit la base Kinoite-main sans bumper.
 #
 # Le kernel-surface est build avec Provides/Obsoletes qui remplacent le
 # kernel stock de Kinoite quand `rpm-ostree install` resout les deps.
@@ -23,18 +26,38 @@ base-image: ghcr.io/ublue-os/kinoite-main
 #   - kinoite-main:43 actif et maintenu (build 43.20260506.1, kernel 6.19.14-200.fc43)
 #   - linux-surface F43 actif : kernel-surface 6.19.8-2.surface.fc43, derniers commits 2026-04-30
 #   - linux-surface F44 : repo 404 + issue upstream #2092 ouverte 2026-04-30, pas mergee
-# Prochain gate : 2026-06-05 (4 semaines). Watch pkg.surfacelinux.com/fedora/f44/.
+# Re-eval 2026-07-24 (#23812) — pin maintenu.
+#   - https://pkg.surfacelinux.com/fedora/f44/ repond toujours 404 ; f43 = 200.
+#   - Le gate n'a plus de date : il est rattache a #23812, rejoue a chaque
+#     passage sur cette recipe. Une date de re-eval echue depuis 7 semaines
+#     sans que personne ne la rejoue ne protege rien.
+#   - setup-surface-repo.sh nomme desormais ce cas explicitement quand il
+#     tombe : le 404 du tree f<N> ressort comme tel, pas en echec de depsolve.
 image-version: "43"
 
 modules:
 
+  # Depot linux-surface durci, AVANT le module rpm-ostree qui en depend
+  # (#23812). Voir l'entete de files/scripts/setup-surface-repo.sh pour le
+  # detail des trois faiblesses du .repo amont.
+  - type: script
+    snippets:
+      # Le module `script` v1 cherche ses `scripts:` sous
+      # $CONFIG_DIRECTORY/scripts, or CONFIG_DIRECTORY vaut /tmp/config
+      # (config complet monte) OU /tmp/files (seul files/ monte) selon la
+      # version de BlueBuild — les deux conventions coexistent encore dans les
+      # modules amont, cf. modules/files/files.sh. On resout donc nous-memes,
+      # avec les deux racines candidates : elles pointent le meme dossier
+      # in-repo, files/scripts/.
+      - for D in "${CONFIG_DIRECTORY}/scripts" "${CONFIG_DIRECTORY}/files/scripts"; do [ -f "$D/setup-surface-repo.sh" ] && exec bash "$D/setup-surface-repo.sh"; done; echo "ERREUR - setup-surface-repo.sh introuvable sous ${CONFIG_DIRECTORY}" >&2; exit 1
+
   - type: rpm-ostree
     repos:
       - https://pkgs.tailscale.com/stable/fedora/tailscale.repo
-      # Repo officiel linux-surface (utilise $releasever, pas besoin de pin
-      # de version Fedora). GPG key signee par l'equipe linux-surface,
-      # check active dans la .repo.
-      - https://pkg.surfacelinux.com/fedora/linux-surface.repo
+      # ⚠️ PAS d'entree linux-surface ici : son .repo est ecrit par le module
+      # `script` ci-dessus. Le module rpm-ostree curl un .repo et enchaine le
+      # depsolve dans la meme etape — il n'y a aucun point d'accroche pour en
+      # corriger le contenu, d'ou le pre-module.
     install:
       - tailscale
       - rclone

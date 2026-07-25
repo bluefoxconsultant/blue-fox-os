@@ -17,6 +17,12 @@ dist/
 # BlueBuild local builds
 output/
 
+# SBOM genere par scripts/publish-image.sh a la racine (sbom-<slug>.spdx.json).
+# Non commite : c'est l'attestation cosign qui le rend verifiable, pas le repo.
+# Et un artefact laisse en place ferait echouer le controle d'arbre propre du
+# publish suivant.
+sbom-*.spdx.json
+
 # Cosign : ONLY exclude private key. cosign.pub MUST be committed
 # (BlueBuild + clients use it for `cosign verify`).
 cosign.key
@@ -24,6 +30,12 @@ cosign.key
 # GPG keys (NEVER commit)
 *.gpg
 *.asc
+# ⚠️ Exception : la cle PUBLIQUE linux-surface est epinglee a dessein (#23812).
+# La regle ci-dessus vise les cles PRIVEES ; une ancre de confiance, elle, doit
+# vivre en depot et se relire dans l'historique. Sans cette negation, `git add`
+# la SAUTE en silence quand on ajoute le dossier — le build passe en local et
+# casse au premier clone frais.
+!files/scripts/keys/linux-surface.asc
 
 # Tenant configs : vivent cote serveur, pas dans le repo.
 # Exceptions : schema, exemple, et bf.json (BF est le tenant lead du projet
