@@ -106,10 +106,59 @@ def test_installer_checks_signature_two_ways():
     body = INSTALL_RPM.read_text()
     # Un paquet non signe ne fait PAS echouer `rpm -K` : il n'affiche aucune
     # ligne Signature. Les deux controles sont donc necessaires.
-    assert "%{SIGPGP:pgpsig}" in body, "presence de signature dans l'entete non verifiee"
+    assert "%{OPENPGP}" in body, "presence de signature dans l'entete non verifiee"
     assert "rpm -Kv" in body, "validite de la signature non verifiee"
-    assert "Signature, key ID" in body
     assert "rpm --import" in body
+
+
+def test_no_script_relies_on_the_legacy_rpm_signature_tags():
+    """⚠️ RPM 6 laisse `%{SIGPGP}` / `%{SIGGPG}` VIDES sur un paquet signe.
+
+    Verifie le 2026-07-25 sur rpm 6.0.1, cote Arch comme cote fedora:43 : la
+    signature vit dans `%{OPENPGP}`, et `rpm -qpi` affiche un champ
+    « Signature : » vide. Un controle qui interroge l'ancien tag conclut donc
+    « paquet non signe » sur un paquet parfaitement signe — c'est ce qui a
+    fait echouer la premiere validation de bout en bout.
+    """
+    for path in (SIGN_RPM, INSTALL_RPM):
+        body = path.read_text()
+        code = "\n".join(
+            l for l in body.splitlines() if not l.lstrip().startswith("#")
+        )
+        for legacy in ("%{SIGPGP", "%{SIGGPG"):
+            assert legacy not in code, (
+                f"{path.name} interroge {legacy}…}}, vide sous RPM 6 — utiliser %{{OPENPGP}}"
+            )
+
+
+def test_verification_pattern_survives_both_rpm6_wordings():
+    """rpm 6 dit « key fingerprint: <40 hex>: OK » si la cle est importee, et
+    « key ID <16 hex>: NOKEY » sinon. Un motif qui exige le libelle « Signature,
+    key ID » (majuscule, ancien format) ne matche NI l'un NI l'autre."""
+    for path in (SIGN_RPM, INSTALL_RPM):
+        body = path.read_text()
+        assert "Signature, key ID" not in body, (
+            f"{path.name} attend l'ancien libelle de rpm 4/5"
+        )
+        assert re.search(r'grep -Eqi "signature', body), (
+            f"{path.name} doit matcher « signature » sans presumer de la casse "
+            "ni du libelle (fingerprint vs ID)"
+        )
+
+
+def test_sign_script_uses_a_throwaway_rpmdb():
+    """Sur Arch, `rpm` n'est pas le gestionnaire de paquets : /var/lib/rpm
+    n'existe pas et TOUTE commande rpm sort en « can't create transaction lock ».
+    Sans base jetable, la verification lit une chaine vide et declare le paquet
+    non signe."""
+    body = SIGN_RPM.read_text()
+    assert "--dbpath" in body and "--initdb" in body
+    # Sur le CODE seulement : les commentaires citent volontairement le motif
+    # fautif pour expliquer le piege.
+    code = "\n".join(l for l in body.splitlines() if not l.lstrip().startswith("#"))
+    assert "2>/dev/null || true" not in code, (
+        "avaler stderr sur une commande rpm cache exactement cette panne"
+    )
 
 
 def test_sign_script_refuses_without_arguments():
