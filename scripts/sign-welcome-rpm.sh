@@ -16,6 +16,12 @@
 # la main apres le build pour signer ici.
 #
 # La cle est cree une fois par scripts/generate-rpm-signing-key.sh.
+#
+# Bruit connu, sans consequence : hors terminal (ssh non interactif, CI, cron),
+# rpmsign affiche « warning: Could not set GPG_TTY to stdin: Inappropriate ioctl
+# for device ». La cle etant sans passphrase, aucune saisie n'est requise et la
+# signature est bien posee — la verification qui suit le prouve. Ne pas chercher
+# a « corriger » ce message.
 set -euo pipefail
 
 GPG_NAME="${BLUEFOX_RPM_GPG_NAME:-}"
