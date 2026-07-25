@@ -16,6 +16,11 @@ dist/
 
 # BlueBuild local builds
 output/
+# Dossiers de scripts temporaires que bluebuild depose a la racine du depot
+# pendant un build. ⚠️ Sans cette regle, un dossier laisse par un build
+# precedent rend l'arbre sale et fait REFUSER la publication suivante par le
+# controle d'arbre de publish-image.sh (#23810).
+/.bluebuild-scripts_*
 
 # SBOM genere par scripts/publish-image.sh a la racine (sbom-<slug>.spdx.json).
 # Non commite : c'est l'attestation cosign qui le rend verifiable, pas le repo.
