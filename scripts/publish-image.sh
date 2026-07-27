@@ -19,7 +19,7 @@
 # une image plus ancienne, sans erreur visible. En pratique : ne pas y toucher.
 #
 # Prerequis :
-#   - bluebuild, cosign, syft, podman
+#   - bluebuild, cosign, syft, skopeo, podman
 #     Sur Garuda/Arch : ./scripts/bootstrap-garuda.sh les installe (ni bluebuild
 #     ni syft ne sont packages pour Arch — ils passent par leurs installeurs
 #     upstream). Sur Fedora, tout est dans dnf.
@@ -30,7 +30,10 @@
 #     pour bluebuild, qui ne sait pas lire la session podman. Contournement si
 #     `gh` est absent : exporter BB_USERNAME et BB_PASSWORD soi-meme.
 #   - COSIGN_PRIVATE_KEY = contenu de cosign.key (PAS le chemin)
-#   - ~20 GB libres : l'image Kinoite fait ~9 GB
+#   - ~30 GB libres : l'image Kinoite fait ~9 GB, et l'etape 5 en tire une copie
+#     de plus dans le stockage podman (retiree en fin d'etape).
+#     ⚠️ Sur Garuda /tmp est un tmpfs, donc de la RAM : ne jamais y pointer
+#     SYFT_TMPDIR (defaut /var/tmp, sur le disque).
 #   - un arbre git propre, pousse, a jour sur son remote de suivi. Refus de
 #     publier sinon (#23810) — voir la section « provenance » plus bas.
 #     PUBLISH_ALLOW_UNCLEAN=1 passe outre, en le disant, et etiquette alors la
@@ -45,7 +48,8 @@
 #   2. stage du RPM       <- files/usr/share/bluefox/rpm-staging/
 #   3. branding + KDE     <- scripts/build_branded_iso.sh (BUILD=0)
 #   4. build + push + sig <- bluebuild
-#   5. SBOM SPDX          <- syft
+#   5. SBOM SPDX          <- scripts/generate-sbom.sh (skopeo + syft, sous
+#                            podman unshare : scan du rootfs monte)
 #   6. attestation        <- cosign attest
 #   7. verification       <- cosign verify + verify-attestation + provenance
 
@@ -55,6 +59,9 @@ SLUG="${1:-${SLUG:-bf}}"
 TAG="${TAG:-latest}"
 REGISTRY="${REGISTRY:-ghcr.io/bluefoxconsultant}"
 IMAGE="${REGISTRY}/blue-fox-os-${SLUG}:${TAG}"
+# Sans le tag : l'etape 5 tire l'image PAR DIGEST, un tag ne designant pas un
+# artefact stable (bluebuild ecrase :latest a chaque push).
+IMAGE_REPO="${REGISTRY}/blue-fox-os-${SLUG}"
 WORKDIR="$(cd "$(dirname "$0")/.." && pwd)"
 DRY_RUN="${DRY_RUN:-0}"
 
@@ -73,9 +80,10 @@ die() {
 # une image DEJA en ligne. Un echec de syft, de cosign attest ou du controle de
 # provenance laisse donc une image publiee et signee, sans SBOM — l'etat exact
 # du registre pendant deux mois. On ne peut pas inverser l'ordre sans attester un
-# artefact local suppose identique au publie (cf. le choix de `registry:` a
-# l'etape 5) ; ce qu'on peut faire, c'est ne jamais sortir en silence sur cette
-# fenetre.
+# artefact local suppose identique au publie — or il ne l'est pas : bluebuild
+# transforme l'image au push, et le digest local differe du digest publie
+# (verifie le 2026-07-20). L'etape 5 retire donc du registre, par digest. Ce
+# qu'on peut faire, c'est ne jamais sortir en silence sur cette fenetre.
 post_push_notice() {
     echo "[publish] ---" >&2
     echo "[publish] ⚠️  ${IMAGE} est EN LIGNE et signee, mais la chaine n'est" >&2
@@ -99,10 +107,12 @@ post_push_notice() {
 export COSIGN_PASSWORD="${COSIGN_PASSWORD-}"
 
 # --- preflight -------------------------------------------------------------
-# podman sert au build ET au rebond fedora:43 de l'etape 1. cosign/syft ne
-# servent qu'aux etapes 5-7 : inutile de les exiger pour un DRY_RUN.
+# podman sert au build ET au rebond fedora:43 de l'etape 1. cosign/syft/skopeo
+# ne servent qu'aux etapes 5-7 : inutile de les exiger pour un DRY_RUN.
+# ⚠️ skopeo n'est plus optionnel depuis que l'etape 5 tire l'image par digest
+# (il l'etait quand il ne servait qu'au repli de lecture d'etiquette, etape 7).
 REQUIRED_TOOLS=(bluebuild podman)
-[ "$DRY_RUN" = "0" ] && REQUIRED_TOOLS+=(cosign syft)
+[ "$DRY_RUN" = "0" ] && REQUIRED_TOOLS+=(cosign syft skopeo)
 
 for tool in "${REQUIRED_TOOLS[@]}"; do
     command -v "$tool" >/dev/null 2>&1 \
@@ -283,32 +293,75 @@ trap 'rc=$?; post_push_notice; exit $rc' ERR
 # qui tuait le runner GitHub (~7 GB de RAM) — d'ou son rapatriement ici.
 SBOM="${WORKDIR}/sbom-${SLUG}.spdx.json"
 log "5/7 generation du SBOM SPDX -> $(basename "$SBOM")"
-# ⚠️ syft s'est fait OOM-killer ici le 2026-07-20 : 13,1 Go de RSS sur une
-# machine de 31 Go, `make publish` sortant en Error 137 (SIGKILL) avec un SBOM
-# a 0 octet. Le meme scan tuait deja les runners GitHub (~7 Go) — la note
-# « en local, contrainte absente » etait fausse.
+# ⚠️ Cette etape a echoue QUATRE fois, de quatre facons differentes. Les trois
+# premieres tenaient a scanner l'IMAGE ; la quatrieme a montre que c'etait la
+# mauvaise question. Mesures du 2026-07-26 sur charizard (~10 Go d'image) :
 #
-# DEUX reglages, et ils vont ensemble — corriger l'un seul deplace la panne :
+#   1. `syft scan registry:`, sans reglage        -> OOM a 13,1 Go de RSS
+#   2. + GOMEMLIMIT=8GiB                          -> cache de couches dans /tmp
+#                                                    (un tmpfs, donc de la RAM)
+#                                                    -> no space left on device
+#   3. + TMPDIR=/var/tmp                          -> mort reseau a ~35 min,
+#                                                    « stream error ...
+#                                                    PROTOCOL_ERROR »
+#   4. skopeo copy + `syft scan oci-archive:`     -> transfert OK (33 min), mais
+#                                                    18,7 Go de RSS et toujours
+#                                                    en croissance a 38 min
 #
-#   GOMEMLIMIT : syft est ecrit en Go ; c'est une limite SOUPLE qui augmente la
-#   pression du ramasse-miettes en approche du seuil, au prix du temps CPU.
+# GOMEMLIMIT ne pouvait pas sauver les cas 1 et 4 : limite SOUPLE, elle
+# augmente la pression du ramasse-miettes sans plafonner un tas qui a vraiment
+# besoin de la place. Depassee de 2,3x au cas 4.
 #
-#   TMPDIR : ⚠️ sur Garuda/Arch, /tmp est un **tmpfs de 15,6 Go, donc en RAM**.
-#   Avec le seul GOMEMLIMIT, syft cesse de tout garder en tas et deverse son
-#   cache de couches (~9,5 Go pour cette image) dans /tmp — c'est-a-dire
-#   toujours en RAM, mais sous un autre nom. L'OOM (Error 137) se change alors
-#   en « no space left on device » sans avoir rien resolu. Vecu les deux fois
-#   le 2026-07-20. /var/tmp est sur le btrfs (716 Go libres) : c'est le seul
-#   des deux qui soit un vrai disque.
+# La cause commune est stereoscope, la couche « image » de syft : elle
+# decompresse chaque couche, en cache le contenu sur disque, et batit un arbre
+# de fichiers PAR COUCHE avant d'aplatir. Scanner le ROOTFS MONTE la
+# court-circuite entierement — meme image, meme catalogue, sans la machinerie :
 #
-# Portee limitee a syft : ni podman ni bluebuild n'ont ce probleme, et leur
-# imposer /var/tmp changerait leur comportement sans raison.
+#   dir: (rootfs monte)  ->  3,4 Go de RSS, 4 min 21 s, 0 de cache, 13 240 paquets
 #
-# On garde `registry:` a dessein — un inventaire doit decrire ce qui est
-# PUBLIE, pas un artefact local suppose identique.
-GOMEMLIMIT="${GOMEMLIMIT:-8GiB}" TMPDIR="${SYFT_TMPDIR:-/var/tmp}" \
-    syft scan "registry:${IMAGE}" --scope squashed -o "spdx-json=${SBOM}"
-log "    $(du -h "$SBOM" | cut -f1)"
+# D'ou scripts/generate-sbom.sh, qui doit tourner sous `podman unshare` (le
+# montage rootless l'exige). Il tire l'image PAR DIGEST depuis le registre —
+# jamais l'artefact local, dont le digest differe — et etiquette le document
+# SPDX avec la reference publiee, pour qu'un SBOM atteste ne s'identifie pas
+# par le chemin overlay de son point de montage.
+log "    resolution du digest publie"
+SBOM_MANIFEST_DIGEST="$(skopeo inspect --raw "docker://${IMAGE}" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+# Index OCI (ce que bluebuild pousse) : descendre a linux/amd64, la seule
+# variante que nous construisons et la seule qui tourne sur les postes.
+# Manifeste simple : skopeo --raw ne porte pas son propre digest, on le
+# resout alors par le chemin non-raw plus bas.
+for m in doc.get("manifests", []):
+    p = m.get("platform", {})
+    if p.get("architecture") == "amd64" and p.get("os") == "linux":
+        print(m["digest"])
+        break
+')"
+if [ -z "$SBOM_MANIFEST_DIGEST" ]; then
+    SBOM_MANIFEST_DIGEST="$(skopeo inspect "docker://${IMAGE}" \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin).get("Digest",""))')"
+fi
+[ -n "$SBOM_MANIFEST_DIGEST" ] \
+    || die "digest publie de ${IMAGE} illisible : impossible de garantir que le SBOM decrit l'image attestee."
+log "    digest ${SBOM_MANIFEST_DIGEST}"
+
+# Le tirage, le montage, le scan et leur menage vivent dans generate-sbom.sh :
+# il doit s'executer sous `podman unshare`, ce que le reste de ce script n'a pas
+# a subir. SYFT_TMPDIR lui est transmis par l'environnement.
+log "    scan du rootfs monte (via podman unshare)"
+SYFT_TMPDIR="${SYFT_TMPDIR:-/var/tmp}" podman unshare \
+    "${WORKDIR}/scripts/generate-sbom.sh" \
+    "$IMAGE_REPO" "$SBOM_MANIFEST_DIGEST" "$SBOM"
+
+# Deuxieme controle, de ce cote-ci de podman unshare : generate-sbom.sh verifie
+# deja, mais un SBOM vide qui atteindrait cosign attest donnerait une
+# attestation verte decrivant le neant. Le cout du doublon est nul.
+[ -s "$SBOM" ] || die "SBOM vide apres generate-sbom.sh."
+SBOM_PACKAGES="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("packages",[])))' "$SBOM")"
+[ "$SBOM_PACKAGES" -gt 0 ] \
+    || die "SBOM sans aucun paquet : le scan a produit un document valide mais vide."
+log "    $(du -h "$SBOM" | cut -f1), ${SBOM_PACKAGES} paquets"
 
 # --- 6. attestation --------------------------------------------------------
 log "6/7 attestation du SBOM via cosign"
