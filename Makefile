@@ -13,7 +13,7 @@ TAG ?= dev
 REGISTRY ?= ghcr.io/bluefoxconsultant
 IMAGE = $(REGISTRY)/blue-fox-os-$(SLUG):$(TAG)
 
-.PHONY: help image publish iso verify clean lint test welcome-rpm rpm-signing-key bib-config brand-iso zerotouch-render zerotouch-sync bootstrap-garuda
+.PHONY: help image publish iso verify verify-all clean lint test welcome-rpm rpm-signing-key bib-config brand-iso zerotouch-render zerotouch-sync bootstrap-garuda
 
 help:
 	@echo "Cibles disponibles :"
@@ -25,7 +25,8 @@ help:
 	@echo "  make zerotouch-render SLUG=bf Rend le KS zero-touch pour validation"
 	@echo "  make zerotouch-sync           Sync install/blue-fox-install.ks.template -> bf_zerotouch_install addon"
 	@echo "  make brand-iso ISO=path/to.iso Brande l'ISO (boot menu, GRUB theme, splash)"
-	@echo "  make verify SLUG=bf TAG=v26.07 Vérifie la signature cosign de l'image distante"
+	@echo "  make verify SLUG=bf TAG=v26.07 5 contrôles sur l'image publiée (signature, attestation, SBOM, provenance, source)"
+	@echo "  make verify-all               Les mêmes 5 contrôles sur les 3 tenants"
 	@echo "  make welcome-rpm              Build le RPM du welcome agent"
 	@echo "  make rpm-signing-key          Crée la clé GPG de signature des RPM (une fois, machine de build)"
 	@echo "  make lint                     Lint des recipes YAML + Kickstart"
@@ -53,8 +54,15 @@ iso:
 	@which bootc-image-builder >/dev/null 2>&1 || { echo "Installer bootc-image-builder : https://github.com/osbuild/bootc-image-builder"; exit 1; }
 	bootc-image-builder build --type iso $(IMAGE)
 
+# ⚠️ Ne faisait qu'un `cosign verify` jusqu'au 2026-07-26. Les 3 images de
+# l'audit P5.2 passaient ce contrôle en étant pourtant sans attestation SBOM et
+# sans lien vers leur commit source. Vérifier un seul des trois liens de la
+# chaîne donne un feu vert qui ne vaut rien (#21873).
 verify:
-	cosign verify --key cosign.pub $(IMAGE)
+	./scripts/verify-image.sh $(or $(SLUG),bf)
+
+verify-all:
+	./scripts/verify-image.sh --all
 
 welcome-rpm:
 	./scripts/build-welcome-rpm.sh
