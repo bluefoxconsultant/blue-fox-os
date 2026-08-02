@@ -24,8 +24,19 @@ rendered template:
     BFOS_FALLBACK_LANG / BFOS_FALLBACK_KEYMAP / BFOS_FALLBACK_TIMEZONE
                            org defaults used if the flow fails
 
-Output: /tmp/bfos-provision.json (the policy, or a minimal fallback) and, when
-the enrolment succeeded, /tmp/bfos-machine.json (endpoint + machine secret).
+Disk passphrase escrow (#23940): when the org asks for it AND its server says it
+can store it, we draw the LUKS passphrase here rather than making someone type
+one nobody records, deposit it in the same authenticated call as the enrolment,
+and only then write it into the autopart line Anaconda includes. Odoo says no,
+or never gets asked, and that include file keeps the prompting form the %pre
+wrote before any of this ran. See stage_enrolment for why that order is the
+whole safety argument.
+
+Output: /tmp/bfos-provision.json (the policy, or a minimal fallback), when the
+enrolment succeeded /tmp/bfos-machine.json (endpoint + machine secret, no disk
+key), and /tmp/bfos-autopart.ks (the autopart line, with or without a generated
+passphrase). The passphrase itself is never written anywhere else and never
+reaches the installed system.
 
 This NEVER aborts the install: any failure writes the fallback and exits 0, so
 Anaconda proceeds with org defaults and the user can finish at firstboot. A
@@ -41,6 +52,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import sys
 import time
 import urllib.error
@@ -53,6 +65,26 @@ MACHINE_JSON = "/tmp/bfos-machine.json"
 SCOPE = "openid profile email"
 CONSOLE = "/dev/console"
 _MAX_WAIT = 900  # cap the device-flow wait at 15 min regardless of expires_in
+
+# --- Disk passphrase escrow (#23940) ---------------------------------------
+# The kickstart %include Anaconda reads its autopart line from. The %pre writes
+# the prompting version FIRST, before anything can fail; we only ever overwrite
+# it once Odoo has confirmed it holds the passphrase. Getting that order wrong
+# is the one way to produce the failure that matters: a disk sealed with a
+# passphrase nobody on earth possesses.
+AUTOPART_INCLUDE = "/tmp/bfos-autopart.ks"
+AUTOPART_BASE = "autopart --type=btrfs --encrypted --nohome"
+# Crockford's base32 alphabet: digits and uppercase letters minus I, L, O and U.
+# The first three are the shapes people mistype reading a key off a screen
+# (I/1, L/1, O/0); U goes because excluding it is what keeps a random string
+# from spelling something someone has to read out loud. 30 symbols, 25 of them
+# = ~122 bits.
+# Layout-safe on purpose: A-Z, 0-9 and the hyphen sit identically on the
+# Canadian CSA layout we ship and on US QWERTY, so the passphrase is typeable
+# at the LUKS prompt whatever keymap the policy set.
+_PASSPHRASE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
+_PASSPHRASE_GROUPS = 5
+_PASSPHRASE_GROUP_LEN = 5
 
 
 class ProvisionError(Exception):
@@ -223,8 +255,69 @@ def image_version(path="/etc/os-release") -> str:
     return f"{version} ({build})".strip() if build else version
 
 
+def generate_disk_passphrase(rng=None):
+    """Draw the LUKS passphrase this machine will be sealed with.
+
+    Grouped like a recovery key rather than run together: the one moment this
+    string is read out loud or copied off a screen is a bad moment, and groups
+    of five are what make that survivable.
+    """
+    choice = (rng or secrets.choice)
+    groups = [
+        "".join(choice(_PASSPHRASE_ALPHABET)
+                for _ in range(_PASSPHRASE_GROUP_LEN))
+        for _ in range(_PASSPHRASE_GROUPS)
+    ]
+    return "-".join(groups)
+
+
+def escrow_requested(policy) -> bool:
+    """True when the org wants the installer to draw and deposit the passphrase.
+
+    Two conditions, both from the server: the org turned escrow on, AND that
+    server can actually store it (a key is configured). Without the second we
+    must not draw a passphrase at all — asking Odoo to keep something it has no
+    way to keep is exactly how a disk ends up sealed against everyone.
+
+    Every level is type-checked rather than assumed. `_valid_policy` gates
+    `schema`, `install` and `user` — it never looks at `policies`, so a server
+    that answers with a list or a string there reaches this function intact,
+    and `.get` on a non-mapping raises. Answering False to a malformed policy
+    is the safe reading: no passphrase drawn, Anaconda prompts.
+    """
+    if not isinstance(policy, dict):
+        return False
+    policies = policy.get("policies")
+    if not isinstance(policies, dict):
+        return False
+    block = policies.get("disk_escrow")
+    if not isinstance(block, dict):
+        return False
+    return bool(block.get("enabled")) and bool(block.get("available"))
+
+
+def write_autopart(passphrase=None, path=None):
+    """Write the autopart line Anaconda includes, and lock it down.
+
+    No passphrase: the prompting form, byte-identical to what the template
+    carried before this existed. With one: the same line plus --passphrase.
+    0600 because for the length of the install that file IS the disk key.
+    """
+    path = path or AUTOPART_INCLUDE
+    line = AUTOPART_BASE
+    if passphrase:
+        line = f"{AUTOPART_BASE} --passphrase={passphrase}"
+    with open(path, "w") as fh:
+        fh.write(line + "\n")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return path
+
+
 def enrol_machine(enroll_url, token, policy, post=_post_json,
-                  new_uuid=None, os_version=None):
+                  new_uuid=None, os_version=None, disk_passphrase=""):
     """Register this machine and return the staged dict, or raise ProvisionError.
 
     The UUID is drawn here, not by the server: it is the machine's own handle on
@@ -240,6 +333,8 @@ def enrol_machine(enroll_url, token, policy, post=_post_json,
         "hostname": hostname,
         "os_version": image_version() if os_version is None else os_version,
     }
+    if disk_passphrase:
+        payload["disk_passphrase"] = disk_passphrase
     try:
         status, raw = post(enroll_url, payload, token)
     except Exception as exc:  # noqa: BLE001
@@ -263,6 +358,12 @@ def enrol_machine(enroll_url, token, policy, post=_post_json,
         "hostname": d.get("hostname") or hostname,
         "user": d.get("user", ""),
         "enrolled_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        # Odoo's answer to "do you hold this passphrase?". ⚠️ The flag, never
+        # the passphrase: this dict is what gets written to /etc/bluefox/
+        # machine.json on the installed system, and the disk key has no
+        # business surviving the install.
+        "disk_escrowed": bool(d.get("disk_escrowed")),
+        "disk_escrow_error": str(d.get("disk_escrow_error") or "")[:200],
     }
 
 
@@ -338,13 +439,47 @@ def run(env=None, post=_post_form, get=_get, sleep=time.sleep, out=None,
 
 
 def stage_enrolment(token, policy, env=None, out=None, post=_post_json,
-                    path=None):
-    """Enrol this machine and stage the secret. Best-effort by construction.
+                    path=None, autopart_path=None, gen=None):
+    """Enrol this machine, stage the secret, and settle the disk passphrase.
+
+    ⚠️ This is the `after_policy` seam, and `run()` documents that it must not
+    raise. Before #23940 that held by construction: every statement lived under
+    a try. The escrow added three bare calls, and any of them raising would
+    have travelled up through `run()` to `main()`, which treats one exception
+    as total failure and throws away a policy that was already in hand — the
+    machine would then install on org fallbacks, with no enrolment, over a
+    successful fetch. The guard below restores the contract rather than trusting
+    each new statement to be safe.
 
     Returns the staged dict, or None when enrolment was skipped or failed. A
     machine that fails to enrol installs exactly as before — it just won't
     follow later policy changes on its own, which is a degradation, not a
     breakage, and the console says so.
+
+    The disk passphrase rides the same authenticated window (#23940), and the
+    ORDER here is the whole safety argument: we draw a passphrase, we ask Odoo
+    to keep it, and we only tell Anaconda to use it once Odoo has said yes.
+    Every other outcome — escrow off, no key on the server, enrolment failed,
+    deposit refused — leaves the include file exactly as the %pre wrote it, so
+    Anaconda prompts and a human ends up holding the key, which is where we
+    started. There is no path that seals a disk against everyone.
+    """
+    out = out or (lambda msg: None)
+    try:
+        return _stage_enrolment(token, policy, env=env, out=out, post=post,
+                                path=path, autopart_path=autopart_path,
+                                gen=gen)
+    except Exception as exc:  # noqa: BLE001 — the contract is: never raise
+        out(f"[bfos] the enrolment step failed ({exc}); the policy already "
+            "fetched is kept and the install goes on. Anaconda will ask for "
+            "a disk passphrase.\n")
+        return None
+
+
+def _stage_enrolment(token, policy, env=None, out=None, post=_post_json,
+                     path=None, autopart_path=None, gen=None):
+    """The body of stage_enrolment. Kept apart so the guard above is the only
+    way in, and so nothing added here can quietly break the no-raise contract.
     """
     env = env if env is not None else os.environ
     out = out or (lambda msg: None)
@@ -355,12 +490,40 @@ def stage_enrolment(token, policy, env=None, out=None, post=_post_json,
         out("[bfos] no enrolment endpoint; this machine will not follow later "
             "policy changes\n")
         return None
+
+    passphrase = ""
+    if escrow_requested(policy):
+        passphrase = generate_disk_passphrase(rng=gen)
+
     try:
-        machine = enrol_machine(url, token, policy, post=post)
+        machine = enrol_machine(url, token, policy, post=post,
+                                disk_passphrase=passphrase)
     except Exception as exc:  # noqa: BLE001 — never abort the install
         out(f"[bfos] enrolment failed ({exc}); this machine will not follow "
             "later policy changes\n")
+        if passphrase:
+            # ⚠️ Do NOT claim the deposit failed. We know we got no answer; we
+            # do not know what the server did. Odoo commits the escrow before
+            # it replies, so a lost return leg leaves a record saying this
+            # machine is escrowed while the operator is about to seal the disk
+            # with a passphrase of their own. The person reading this screen is
+            # the only one placed to notice, and telling them "NOT deposited"
+            # is precisely what would stop them looking.
+            out("[bfos] no answer on the disk passphrase deposit: it may or "
+                "may not have been recorded. Anaconda will ask for one, and "
+                "that typed passphrase is the real one. If Odoo lists this "
+                "machine as escrowed, that record is wrong — clear it.\n")
         return None
+
+    if passphrase:
+        if machine.get("disk_escrowed"):
+            write_autopart(passphrase, path=autopart_path)
+            out("[bfos] disk passphrase drawn and deposited in Odoo; this "
+                "install will not ask for one\n")
+        else:
+            reason = machine.get("disk_escrow_error") or "reason unknown"
+            out(f"[bfos] disk passphrase NOT deposited ({reason}); Anaconda "
+                "will ask for one\n")
     try:
         with open(path, "w") as fh:
             json.dump(machine, fh)

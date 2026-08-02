@@ -30,10 +30,23 @@ network --bootproto=dhcp --activate
 # ou, en mode 'enabled', le laisser tel quel. Jamais de credentials hardcoded.
 rootpw --lock
 
-# Disque : btrfs sur LUKS, passphrase saisie au wizard Anaconda.
+# Disque : btrfs sur LUKS.
+#
+# La ligne autopart n'est PAS ecrite ici : elle vient d'un fichier que le %pre
+# depose (#23940). Deux formes possibles, et une seule difference entre elles :
+#   - sans sequestre, la forme historique, et Anaconda demande la phrase ;
+#   - avec sequestre, la meme ligne plus --passphrase, une phrase tiree par la
+#     machine et deja deposee dans Odoo au moment de l'enrolement.
+#
+# ⚠️ Le %pre ecrit la forme SANS phrase en tout premier, avant de tenter quoi
+# que ce soit. Il ne la remplace qu'une fois qu'Odoo a CONFIRME detenir la
+# phrase. Toute panne — reseau, authentification, sequestre non configure,
+# depot refuse — laisse donc le fichier tel quel et fait retomber l'install sur
+# la saisie manuelle. C'est ce qui garantit qu'aucun disque ne se ferme sur une
+# phrase que personne ne possede.
 zerombr
 clearpart --all --initlabel
-autopart --type=btrfs --encrypted --nohome
+%include /tmp/bfos-autopart.ks
 
 # Bootloader : EFI vs BIOS auto-detect.
 # `rhgb quiet splash` : sans ces kargs, Plymouth ne demarre PAS le splash de
@@ -66,6 +79,12 @@ export BFOS_POLICY_URL="{{POLICY_URL}}"
 export BFOS_FALLBACK_LANG="{{LANG}}"
 export BFOS_FALLBACK_KEYMAP="{{KEYBOARD_VC}}"
 export BFOS_FALLBACK_TIMEZONE="{{TIMEZONE}}"
+# La ligne autopart par defaut, AVANT tout le reste : c'est le filet. Si la
+# suite de ce bloc meurt pour n'importe quelle raison, Anaconda lit ce
+# fichier-ci et demande la phrase de passe comme il l'a toujours fait.
+# bfos_provision.py ne le reecrit qu'apres confirmation d'Odoo (#23940).
+printf '%s\n' 'autopart --type=btrfs --encrypted --nohome' > /tmp/bfos-autopart.ks
+chmod 600 /tmp/bfos-autopart.ks
 cat > /tmp/bfos_provision.py <<'BFOSPROVISIONEOF'
 {{PROVISION_SCRIPT}}
 BFOSPROVISIONEOF
