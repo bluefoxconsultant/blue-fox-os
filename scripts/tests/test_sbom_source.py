@@ -43,6 +43,16 @@ def _gensbom() -> str:
     return GENSBOM.read_text()
 
 
+def _strip_comments(body: str) -> str:
+    """Les commentaires de ces scripts CITENT les formes fautives pour dire
+    pourquoi on ne les emploie pas. Une recherche naive les prend pour du code
+    et echoue sur la documentation elle-meme."""
+    return "\n".join(
+        line for line in body.splitlines()
+        if not line.lstrip().startswith("#")
+    )
+
+
 def test_the_sbom_helper_exists_and_is_executable():
     assert GENSBOM.is_file(), "scripts/generate-sbom.sh manquant"
     assert GENSBOM.stat().st_mode & 0o111, "generate-sbom.sh doit etre executable"
@@ -135,6 +145,94 @@ def test_publish_delegates_under_podman_unshare():
     body = _publish()
     assert re.search(r"podman unshare \\?\s*\n?\s*\"\$\{WORKDIR\}/scripts/generate-sbom\.sh\"", body), (
         "l'etape 5 doit deleguer a generate-sbom.sh sous podman unshare"
+    )
+
+
+def test_the_sbom_is_package_level_not_file_level():
+    """Arbitrage tranche le 2026-08-08.
+
+    Le defaut de syft (file.metadata.selection = owned-by-package) catalogue
+    157 018 fichiers pour les MEMES 8514 paquets : 121 Mo au lieu de 12,2. Et
+    121 Mo ne passent pas — Rekor refuse le predicat par un 502 qui ne dit pas
+    pourquoi (2026-08-03, puis deux fois le 2026-08-08 a 136 Mo).
+    """
+    body = _gensbom()
+    assert 'SYFT_FILE_METADATA_SELECTION="${SYFT_FILE_METADATA_SELECTION:-none}"' in body, (
+        "le SBOM doit rester au niveau paquet par defaut"
+    )
+    assert "file.metadata.selection = ${SYFT_FILE_METADATA_SELECTION}" in body, (
+        "la valeur effective doit etre journalisee : un retour a "
+        "owned-by-package fait echouer l'attestation 40 min plus tard, sur un "
+        "502 muet"
+    )
+
+
+def test_an_oversized_predicate_fails_before_the_attestation():
+    """Un predicat trop gros ne produit pas d'erreur lisible : cosign rend
+    « status 502: Bad Gateway », qui ressemble a une panne de Rekor. Cinq jours
+    de diagnostic. On echoue donc avant, avec la vraie raison."""
+    body = _gensbom()
+    assert "SBOM_MAX_MB" in body, "aucun garde-fou de taille avant l'attestation"
+    tail = body[body.index("SBOM_MAX_MB"):]
+    assert "SYFT_FILE_METADATA_SELECTION" in tail, (
+        "le message d'echec doit pointer le reglage en cause, pas seulement la "
+        "taille"
+    )
+
+
+def test_the_stale_scope_comment_is_gone():
+    """Le commentaire a decrit `--scope squashed` jusqu'au 2026-08-08 alors que
+    la source n'etait plus une image mais un repertoire depuis 04eb45e. Un
+    commentaire qui survit a son code envoie chercher au mauvais endroit — ici
+    il a masque six jours durant le reglage qui comptait."""
+    body = _publish()
+    scope_claims = [
+        line for line in body.splitlines()
+        if "--scope squashed" in line and not line.lstrip().startswith("#")
+    ]
+    assert not scope_claims, "--scope n'est pas passe au scan : le code ment"
+    assert "un repertoire n'a pas de\n# couches" in body or "n'a pas de couches" in body, (
+        "expliquer pourquoi --scope ne veut plus rien dire ici"
+    )
+
+
+def test_attestation_targets_the_index_digest_not_the_tag():
+    """Trois cibles possibles, une seule juste.
+
+    - le TAG : bluebuild reecrit :latest a chaque push, donc il peut bouger
+      entre la resolution et l'attestation (cosign l'avertit lui-meme) ;
+    - l'ENFANT amd64 : c'est ce que le SBOM scanne, mais une attestation posee
+      la devient introuvable pour `cosign verify-attestation <tag>` ;
+    - l'INDEX : ce que `:latest` resout, ce que l'etape 7 et verify-image.sh
+      verifient. C'est celui-la.
+
+    Mesure sur bf : index dd79faa9..., enfant amd64 5ece13b1... Deux objets.
+    """
+    attest = _strip_comments(
+        _publish().split("--- 6. attestation")[1].split("--- 7.")[0]
+    )
+    assert '"${IMAGE_REPO}@${IMAGE_INDEX_DIGEST}"' in attest, (
+        "l'attestation doit viser l'index publie"
+    )
+    assert '\n    "$IMAGE"' not in attest, (
+        "attester le tag : cosign avertit que ca peut signer une autre image"
+    )
+    assert "SBOM_MANIFEST_DIGEST" not in attest, (
+        "attester l'enfant amd64 rendrait l'attestation introuvable depuis le tag"
+    )
+
+
+def test_both_digests_come_from_a_single_registry_read():
+    """Relire le registre deux fois ouvre une fenetre pendant laquelle le tag
+    peut bouger : on attesterait alors un index que le SBOM ne decrit pas."""
+    body = _publish()
+    block = body.split("resolution des digests publies")[1].split("--- 6.")[0]
+    assert block.count("skopeo inspect") == 1, (
+        "une seule lecture du registre doit servir les deux digests"
+    )
+    assert 'IMAGE_INDEX_DIGEST="sha256:$(sha256sum' in block, (
+        "le digest d'un manifeste est le sha256 de ses octets canoniques : le "
+        "calculer localement evite un second appel"
     )
 
 

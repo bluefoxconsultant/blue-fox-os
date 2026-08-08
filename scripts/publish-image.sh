@@ -287,10 +287,16 @@ PUSHED=1
 trap 'rc=$?; post_push_notice; exit $rc' ERR
 
 # --- 5. SBOM ---------------------------------------------------------------
-# --scope squashed : un seul SBOM sur l'image aplatie plutot que par layer.
-# C'est ce que les utilisateurs exploitent au runtime, et c'est nettement
-# moins gourmand que le defaut all-layers. Ce scan est precisement l'etape
-# qui tuait le runner GitHub (~7 GB de RAM) — d'ou son rapatriement ici.
+# ⚠️ Ce commentaire a decrit `--scope squashed` jusqu'au 2026-08-08, alors que
+# le code ne passait plus rien de tel depuis 04eb45e : la source n'est plus une
+# IMAGE mais un REPERTOIRE (le rootfs monte), et un repertoire n'a pas de
+# couches — `--scope` n'y veut plus rien dire. Un commentaire qui survit au code
+# qu'il decrit envoie le prochain lecteur chercher au mauvais endroit ; celui-ci
+# a masque six jours durant le reglage qui compte vraiment, la selection des
+# fichiers (voir generate-sbom.sh).
+#
+# Ce scan est l'etape qui tuait le runner GitHub (~7 Go de RAM) — d'ou son
+# rapatriement ici.
 SBOM="${WORKDIR}/sbom-${SLUG}.spdx.json"
 log "5/7 generation du SBOM SPDX -> $(basename "$SBOM")"
 # ⚠️ Cette etape a echoue QUATRE fois, de quatre facons differentes. Les trois
@@ -324,27 +330,51 @@ log "5/7 generation du SBOM SPDX -> $(basename "$SBOM")"
 # jamais l'artefact local, dont le digest differe — et etiquette le document
 # SPDX avec la reference publiee, pour qu'un SBOM atteste ne s'identifie pas
 # par le chemin overlay de son point de montage.
-log "    resolution du digest publie"
-SBOM_MANIFEST_DIGEST="$(skopeo inspect --raw "docker://${IMAGE}" | python3 -c '
+# ⚠️ DEUX digests, et les confondre casse la chaine dans un sens ou dans l'autre.
+#
+#   INDEX  (ce que `:latest` resout)  <- sujet de l'attestation, et ce que
+#                                        l'etape 7 et verify-image.sh verifient
+#   ENFANT linux/amd64                <- ou vit le rootfs, donc ce que le SBOM
+#                                        doit scanner
+#
+# Mesure sur bf le 2026-08-08 : index dd79faa9..., enfant amd64 5ece13b1... Ce
+# sont deux objets distincts. Attester l'enfant rendrait l'attestation
+# introuvable pour `cosign verify-attestation <tag>` ; scanner l'index ne donne
+# aucun rootfs.
+#
+# UNE SEULE lecture du registre sert les deux : la relire deux fois ouvrirait
+# une fenetre pendant laquelle le tag peut bouger — bluebuild reecrit :latest a
+# chaque push — et on attesterait alors un index que le SBOM ne decrit pas.
+#
+# Le digest d'un manifeste EST le sha256 de ses octets canoniques : on le calcule
+# donc localement sur la reponse brute, plutot que de refaire un appel.
+log "    resolution des digests publies (une seule lecture)"
+RAW_MANIFEST="$(mktemp "${TMPDIR:-/tmp}/.bf-manifest.XXXXXX")"
+skopeo inspect --raw "docker://${IMAGE}" > "$RAW_MANIFEST" \
+    || die "manifeste de ${IMAGE} illisible sur le registre."
+
+IMAGE_INDEX_DIGEST="sha256:$(sha256sum "$RAW_MANIFEST" | cut -d' ' -f1)"
+SBOM_MANIFEST_DIGEST="$(python3 -c '
 import json, sys
-doc = json.load(sys.stdin)
+doc = json.load(open(sys.argv[1]))
 # Index OCI (ce que bluebuild pousse) : descendre a linux/amd64, la seule
 # variante que nous construisons et la seule qui tourne sur les postes.
-# Manifeste simple : skopeo --raw ne porte pas son propre digest, on le
-# resout alors par le chemin non-raw plus bas.
 for m in doc.get("manifests", []):
     p = m.get("platform", {})
     if p.get("architecture") == "amd64" and p.get("os") == "linux":
         print(m["digest"])
         break
-')"
-if [ -z "$SBOM_MANIFEST_DIGEST" ]; then
-    SBOM_MANIFEST_DIGEST="$(skopeo inspect "docker://${IMAGE}" \
-        | python3 -c 'import json,sys; print(json.load(sys.stdin).get("Digest",""))')"
-fi
-[ -n "$SBOM_MANIFEST_DIGEST" ] \
+' "$RAW_MANIFEST")"
+rm -f "$RAW_MANIFEST"
+
+# Manifeste simple (pas un index) : les deux digests se confondent alors, et
+# c'est le seul cas ou ils ont le droit de le faire.
+[ -n "$SBOM_MANIFEST_DIGEST" ] || SBOM_MANIFEST_DIGEST="$IMAGE_INDEX_DIGEST"
+
+[ -n "$IMAGE_INDEX_DIGEST" ] && [ -n "$SBOM_MANIFEST_DIGEST" ] \
     || die "digest publie de ${IMAGE} illisible : impossible de garantir que le SBOM decrit l'image attestee."
-log "    digest ${SBOM_MANIFEST_DIGEST}"
+log "    index   ${IMAGE_INDEX_DIGEST}"
+log "    amd64   ${SBOM_MANIFEST_DIGEST}"
 
 # Le tirage, le montage, le scan et leur menage vivent dans generate-sbom.sh :
 # il doit s'executer sous `podman unshare`, ce que le reste de ce script n'a pas
@@ -364,12 +394,31 @@ SBOM_PACKAGES="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[
 log "    $(du -h "$SBOM" | cut -f1), ${SBOM_PACKAGES} paquets"
 
 # --- 6. attestation --------------------------------------------------------
-log "6/7 attestation du SBOM via cosign"
+# ⚠️ On atteste le DIGEST DE L'INDEX, pas le tag. L'etape 5 vient de le resoudre
+# avec soin pour que le SBOM decrive ce qui est publie ; passer "$IMAGE" ici
+# rendait ce soin inutile un cran plus bas.
+#
+# cosign le disait lui-meme a chaque passage, et personne ne l'a lu :
+#
+#   WARNING: Image reference ...:latest uses a tag, not a digest, to identify
+#   the image to sign. This can lead you to sign a different image than the
+#   intended one.
+#
+# bluebuild reecrit :latest a chaque push : entre la resolution de l'etape 5 et
+# cette ligne, le tag peut designer une autre image, et on attacherait alors un
+# SBOM a un artefact qu'il ne decrit pas. Le journal du 2026-08-03 porte cet
+# avertissement noir sur blanc.
+#
+# ⚠️ INDEX, pas SBOM_MANIFEST_DIGEST. Le SBOM scanne le rootfs de l'enfant
+# amd64, mais l'attestation doit se rattacher a ce que `:latest` resout, sinon
+# `cosign verify-attestation` sur le tag — donc l'etape 7 et verify-image.sh —
+# ne la trouve jamais.
+log "6/7 attestation du SBOM via cosign (sur l'index ${IMAGE_INDEX_DIGEST})"
 cosign attest --yes \
     --predicate "$SBOM" \
     --type spdx \
     --key env://COSIGN_PRIVATE_KEY \
-    "$IMAGE"
+    "${IMAGE_REPO}@${IMAGE_INDEX_DIGEST}"
 
 # --- 7. verification -------------------------------------------------------
 log "7/7 verification signature + attestation + provenance"

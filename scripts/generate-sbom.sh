@@ -96,6 +96,34 @@ log "   ${MNT}"
     || die "aucune base RPM dans le rootfs monte : le SBOM serait vide de paquets systeme."
 
 log "scan syft du rootfs"
+# ⚠️ INVENTAIRE DE PAQUETS, PAS DE FICHIERS (arbitrage tranche le 2026-08-08).
+#
+# Le defaut de syft est file.metadata.selection = "owned-by-package" : il
+# catalogue chaque fichier possede par un paquet, avec ses empreintes. Mesure
+# sur nos images :
+#
+#     selection            paquets   fichiers   poids du document
+#     owned-by-package      8 514    157 018      121 Mo
+#     none                  8 514          0       12,2 Mo
+#
+# Meme inventaire de paquets, facteur dix. Et 121 Mo ne passent PAS : Rekor a
+# refuse le predicat par un 502 le 2026-08-03 et deux fois le 2026-08-08 (136 Mo
+# pour bf-surface). L'attestation de bf, qui verifie, pesait 12,2 Mo.
+#
+# Le niveau fichier n'apporterait rien ici que l'image ne donne deja : elle est
+# UN digest signe, donc chaque fichier y est deja verifie de bout en bout.
+# L'inventaire de fichiers gagne sa place sur un systeme mutable, pas sur du
+# rpm-ostree. Le seul contenu hors RPM (les 56 fichiers du module `files:`) est
+# rattache au commit par org.opencontainers.image.revision, que le controle 4/5
+# verifie.
+#
+# Surchargeable pour un scan medico-legal ponctuel, mais JAMAIS en silence :
+# la valeur effective est journalisee, parce qu'un retour a "owned-by-package"
+# fait echouer l'attestation 40 minutes plus tard, sur un 502 qui ne dit pas
+# pourquoi.
+export SYFT_FILE_METADATA_SELECTION="${SYFT_FILE_METADATA_SELECTION:-none}"
+log "   file.metadata.selection = ${SYFT_FILE_METADATA_SELECTION}"
+
 # --source-name / --source-version : le document doit s'identifier par la
 # reference PUBLIEE, pas par le chemin overlay du montage.
 syft scan "dir:${MNT}" \
@@ -106,5 +134,18 @@ syft scan "dir:${MNT}" \
 [ -s "$OUT" ] || die "SBOM vide apres le scan."
 PKGS="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("packages",[])))' "$OUT")"
 [ "$PKGS" -gt 0 ] || die "SBOM sans aucun paquet : document valide mais creux."
+
+# ⚠️ Garde-fou de taille. Un predicat trop gros ne produit PAS une erreur
+# lisible : cosign attest rend « status 502: Bad Gateway », qui ressemble a une
+# panne de Rekor et a coute cinq jours de diagnostic. Mieux vaut echouer ici,
+# avant le push de l'attestation, avec la vraie raison.
+# Le seuil n'est pas une specification : 12,2 Mo passent, 136 Mo non. 64 Mo est
+# posé entre les deux, franchement au-dessus de ce qui marche.
+SBOM_MAX_MB="${SBOM_MAX_MB:-64}"
+SBOM_MB="$(( $(stat -c %s "$OUT") / 1048576 ))"
+[ "$SBOM_MB" -le "$SBOM_MAX_MB" ] || die \
+    "SBOM de ${SBOM_MB} Mo : au-dela de ${SBOM_MAX_MB} Mo, Rekor refuse le predicat
+et cosign attest rend un 502 qui n'en dit pas la cause. Verifier
+SYFT_FILE_METADATA_SELECTION (attendu « none », vu « ${SYFT_FILE_METADATA_SELECTION} »)."
 
 log "OK — $(du -h "$OUT" | cut -f1), ${PKGS} paquets, sujet ${IMAGE_REPO}@${DIGEST}"
