@@ -73,22 +73,42 @@ verify_one() {
         failures=$((failures + 1))
     fi
 
-    # 3. contenu du SBOM -----------------------------------------------------
+    # 3. contenu ET COHERENCE des attestations -------------------------------
     # Un SPDX sans aucun paquet est un document parfaitement valide. L'OOM de
     # syft du 2026-07-20 produisait exactement ca — attester ce fichier aurait
     # donne une attestation verte decrivant le vide.
+    #
+    # ⚠️ Mais une image peut porter PLUSIEURS attestations, et
+    # `cosign verify-attestation` reussit des qu'UNE SEULE verifie. Constate le
+    # 2026-08-08 sur bf, qui portait deux documents SPDX signes de notre cle et
+    # rattaches au meme digest :
+    #
+    #     ghcr.io/bluefoxconsultant/blue-fox-os-bf   8514 paquets
+    #     /etc                                          1 paquet
+    #
+    # Le second etait un `syft scan` de /etc atteste contre l'image. La version
+    # precedente de ce controle prenait le MAX du nombre de paquets : elle
+    # annoncait « 8514 paquets ✅ » et masquait ainsi tres exactement le
+    # document creux qu'elle avait pour mission d'attraper. Un consommateur qui
+    # itere les attestations, ou qui prend la premiere, lit « cette image
+    # contient un paquet ».
+    #
+    # On lit donc TOUTES les enveloppes, chacune doit decrire CETTE image, et
+    # une seule incoherente suffit a faire echouer. Le nom attendu est celui que
+    # generate-sbom.sh passe en --source-name.
     if [ -n "$att" ]; then
-        local pkgs
-        # ⚠️ Distinguer « SBOM vide » de « je n'ai pas su lire » : les deux
-        # meritent un echec, mais pas le meme geste. Confondre les deux ferait
-        # relancer une publication de 9 Go pour un parseur a corriger.
-        pkgs="$(printf '%s' "$att" | python3 -c '
-import base64, json, sys
+        local report rc
+        # ⚠️ `local report rc` sur sa propre ligne : `local report="$(...)"`
+        # ecraserait $? par le code de retour de `local` lui-meme, et toute
+        # detection d'echec deviendrait muette.
+        report="$(printf '%s' "$att" | BF_EXPECTED_NAME="${REGISTRY}/blue-fox-os-${slug}" python3 -c '
+import base64, json, os, sys
 
 # cosign rend une enveloppe DSSE par ligne ; le predicat est en base64.
 # Selon la version et le --type, le document SPDX est soit le predicat
 # lui-meme (spdxjson), soit une chaine sous predicate.Data (spdx).
-best = None
+expected = os.environ["BF_EXPECTED_NAME"]
+docs = []
 for line in sys.stdin:
     line = line.strip()
     if not line:
@@ -104,17 +124,44 @@ for line in sys.stdin:
         except Exception:
             pass
     if isinstance(pred, dict) and "packages" in pred:
-        best = max(best or 0, len(pred["packages"]))
+        docs.append((pred.get("name") or "(sans nom)", len(pred["packages"])))
 
-print("PARSE_FAIL" if best is None else best)
-' 2>/dev/null || echo PARSE_FAIL)"
-        if [ "$pkgs" = "PARSE_FAIL" ]; then
-            bad "3/5 predicat SPDX illisible dans l'attestation — verifier le --type de cosign attest, PAS republier"
+if not docs:
+    sys.exit(2)
+
+bad_docs = 0
+for name, n in docs:
+    unit = "paquet" if n == 1 else "paquets"
+    if name == expected and n > 0:
+        print("OK\t%s\t%d %s\t-" % (name, n, unit))
+    else:
+        bad_docs += 1
+        why = "ne decrit pas cette image" if name != expected else "aucun paquet"
+        print("BAD\t%s\t%d %s\t%s" % (name, n, unit, why))
+sys.exit(3 if bad_docs else 0)
+' 2>/dev/null)"
+        rc=$?
+        # ⚠️ Trois issues distinctes, trois gestes distincts. Confondre
+        # « illisible » et « incoherent » ferait relancer une publication de
+        # 9 Go pour un parseur a corriger.
+        if [ "$rc" -eq 0 ]; then
+            ok "3/5 SBOM non vide, $(printf '%s\n' "$report" | grep -c . ) document(s) coherent(s)"
+            printf '%s\n' "$report" | while IFS=$'\t' read -r _ name n _; do
+                [ -n "$name" ] && echo "[verify]        ${name} : ${n}"
+            done
+        elif [ "$rc" -eq 3 ]; then
+            bad "3/5 attestations INCOHERENTES : une image ne doit porter que des SBOM qui la decrivent"
+            printf '%s\n' "$report" | while IFS=$'\t' read -r st name n why; do
+                [ -n "$name" ] || continue
+                if [ "$st" = "BAD" ]; then
+                    bad "      ${name} : ${n} — ${why}"
+                else
+                    ok "      ${name} : ${n}"
+                fi
+            done
             failures=$((failures + 1))
-        elif [ "$pkgs" -gt 0 ]; then
-            ok "3/5 SBOM non vide (${pkgs} paquets)"
         else
-            bad "3/5 SBOM VIDE : l'attestation est signee mais ne decrit rien"
+            bad "3/5 predicat SPDX illisible dans l'attestation — verifier le --type de cosign attest, PAS republier"
             failures=$((failures + 1))
         fi
     else
@@ -181,7 +228,11 @@ echo
 if [ "$TOTAL" -eq 0 ]; then
     log "OK — tout est verifie."
 else
-    log "⚠️  ${TOTAL} controle(s) en echec. Une image qui echoue 2/5 ou 3/5 est"
-    log "    publiee et signee mais sans inventaire : relancer make publish."
+    log "⚠️  ${TOTAL} controle(s) en echec."
+    log "    2/5 ou « SBOM vide » : l'image est publiee et signee mais sans"
+    log "    inventaire — relancer make publish."
+    log "    « attestations INCOHERENTES » : republier n'y changera RIEN. Une"
+    log "    attestation de trop se RETIRE (cosign clean / suppression du"
+    log "    referent OCI) ; l'entree Rekor, elle, est definitive."
 fi
 exit "$([ "$TOTAL" -eq 0 ] && echo 0 || echo 1)"
