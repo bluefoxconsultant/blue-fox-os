@@ -149,28 +149,38 @@ def test_publish_delegates_under_podman_unshare():
 
 
 def test_the_sbom_is_package_level_not_file_level():
-    """Arbitrage tranche le 2026-08-08.
+    """Arbitrage tranche avec Olivier le 2026-08-08.
 
-    Le defaut de syft (file.metadata.selection = owned-by-package) catalogue
-    157 018 fichiers pour les MEMES 8514 paquets : 121 Mo au lieu de 12,2. Et
-    121 Mo ne passent pas — Rekor refuse le predicat par un 502 qui ne dit pas
-    pourquoi (2026-08-03, puis deux fois le 2026-08-08 a 136 Mo).
+    Le defaut de syft catalogue 157 018 fichiers pour les MEMES 13 239 paquets :
+    136 Mo au lieu de 18. Meme reponse aux CVE, facteur sept sur l'artefact que
+    le registre sert a chaque verification.
+
+    ⚠️ Ce docstring a d'abord justifie la mesure par un refus de Rekor. C'ETAIT
+    FAUX : ce que cosign depose dans Rekor est un hashedrekord de 652 octets,
+    quelle que soit la taille du document (verifie sur le bundle de bf le
+    2026-08-08). La taille est une question de COUT, pas d'acceptation.
     """
     body = _gensbom()
     assert 'SYFT_FILE_METADATA_SELECTION="${SYFT_FILE_METADATA_SELECTION:-none}"' in body, (
         "le SBOM doit rester au niveau paquet par defaut"
     )
-    assert "file.metadata.selection = ${SYFT_FILE_METADATA_SELECTION}" in body, (
-        "la valeur effective doit etre journalisee : un retour a "
-        "owned-by-package fait echouer l'attestation 40 min plus tard, sur un "
-        "502 muet"
+    assert ('SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP='
+            '"${SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP:-false}"') in body, (
+        "les DEUX reglages sont necessaires : selection=none seul laisse "
+        "154 978 fichiers et 112 Mo. C'est package-file-ownership qui decide "
+        "si syft LISTE les fichiers, selection s'il calcule leurs empreintes"
     )
+    for probe in ("file.metadata.selection", "package-file-ownership"):
+        assert f"log \"   {probe}" in body, (
+            f"{probe} doit etre journalise : une surcharge silencieuse "
+            "renvoie le document a 112 Mo sans que rien ne le dise"
+        )
 
 
 def test_an_oversized_predicate_fails_before_the_attestation():
-    """Un predicat trop gros ne produit pas d'erreur lisible : cosign rend
-    « status 502: Bad Gateway », qui ressemble a une panne de Rekor. Cinq jours
-    de diagnostic. On echoue donc avant, avec la vraie raison."""
+    """Le plafond garde le COUT de l'artefact pousse au registre, pas une
+    quelconque limite de Rekor — voir generate-sbom.sh. Il attrape surtout une
+    surcharge d'environnement qui renverrait le document a 136 Mo en silence."""
     body = _gensbom()
     assert "SBOM_MAX_MB" in body, "aucun garde-fou de taille avant l'attestation"
     tail = body[body.index("SBOM_MAX_MB"):]
