@@ -13,13 +13,13 @@ credentials. Documented in commit message.
 """
 import base64
 import logging
-import os
 import re
 import shutil
 import subprocess
 import urllib.parse
 from pathlib import Path
 
+from ..secure_file import write_private
 from ..tenant import get_service_url
 
 LOG = logging.getLogger("bluefox-welcome.apply.rclone_mount")
@@ -124,9 +124,8 @@ def apply_rclone_mount(
         mount_point.mkdir(parents=True, exist_ok=True)
 
         obscured = _obscure_password(password)
-        (rclone_dir / "rclone.conf").write_text(
-            _render_rclone_conf(nc_url, user, obscured))
-        os.chmod(rclone_dir / "rclone.conf", 0o600)
+        write_private(rclone_dir / "rclone.conf",
+                      _render_rclone_conf(nc_url, user, obscured))
 
         unit_path = systemd_user_dir / "rclone-nc.service"
         unit_path.write_text(_render_systemd_unit(str(mount_point)))
@@ -210,9 +209,8 @@ def apply_session_mounts(
         systemd_user_dir.mkdir(parents=True, exist_ok=True)
 
         obscured = _obscure_password(password)
-        (rclone_dir / "rclone.conf").write_text(
-            _render_rclone_conf(nc_url, user, obscured))
-        os.chmod(rclone_dir / "rclone.conf", 0o600)
+        write_private(rclone_dir / "rclone.conf",
+                      _render_rclone_conf(nc_url, user, obscured))
 
         units: list[str] = []
         applied: list[str] = []

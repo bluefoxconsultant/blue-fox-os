@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from bluefox_welcome.apply.rclone_mount import (
@@ -22,6 +23,88 @@ def test_apply_rclone_mount_writes_config(tmp_home: Path, tenant_data: dict):
     assert "vendor = nextcloud" in text
     assert "olivier%40bluefoxconsultant.com" in text  # url-encoded user in webdav path
     assert oct(conf.stat().st_mode)[-3:] == "600"
+
+
+def _espionne_os_open(monkeypatch):
+    """Enregistre le mode de chaque creation. `write_text` passe par le open du
+    module _io en C et ne touche PAS os.open : sur l'ancien code la liste reste
+    donc VIDE, et c'est ce qui fait mordre l'assertion."""
+    vus = []
+    vrai_open = os.open
+
+    def espion(p, flags, mode=0o777, **kw):
+        vus.append((str(p), mode))
+        return vrai_open(p, flags, mode, **kw)
+
+    monkeypatch.setattr(os, "open", espion)
+    return vus
+
+
+def test_w1_le_mot_de_passe_ne_transite_pas_par_un_fichier_lisible(
+        tmp_home: Path, tenant_data: dict, monkeypatch):
+    """W1. L'assertion de mode ci-dessus lit l'etat FINAL, et elle etait verte
+    sur du code qui creait rclone.conf en 0664 — avec le mot de passe
+    d'application Nextcloud dedans — avant de le ramener a 600. Ce qu'on garde
+    ici, c'est le mode que le noyau applique A LA CREATION."""
+    vus = _espionne_os_open(monkeypatch)
+
+    ok, msg = apply_rclone_mount(
+        tenant_data,
+        user="olivier@bluefoxconsultant.com",
+        password="hunter2",
+        home=tmp_home,
+        run_systemctl=False,
+    )
+    assert ok, msg
+
+    crees = [m for p, m in vus if p.endswith("rclone.conf")]
+    assert crees, "rclone.conf n'est pas cree par os.open — mode pose apres coup ?"
+    assert crees[-1] == 0o600
+
+
+def test_w1_meme_garde_sur_les_montages_de_session(tmp_home: Path,
+                                                   tenant_data: dict,
+                                                   monkeypatch):
+    """Deux sites ecrivaient ce fichier ; corriger un seul ne vaut rien."""
+    vus = _espionne_os_open(monkeypatch)
+
+    apply_session_mounts(
+        tenant_data,
+        user="olivier@bluefoxconsultant.com",
+        password="hunter2",
+        mounts=[{"name": "Documents", "mount_point": "~/Documents"}],
+        home=tmp_home,
+        run_systemctl=False,
+    )
+
+    crees = [m for p, m in vus if p.endswith("rclone.conf")]
+    assert crees, "rclone.conf n'est pas cree par os.open — mode pose apres coup ?"
+    assert crees[-1] == 0o600
+
+
+def test_rclone_conf_deja_la_en_0644_est_ramene_a_600(tmp_home: Path,
+                                                      tenant_data: dict):
+    """Une machine ayant tourne avec la version fautive porte encore un
+    rclone.conf lisible : O_CREAT ignore son mode, O_TRUNC ne le remet pas, il
+    faut le fchmod. Ce test garde ce fchmod-la."""
+    conf_dir = tmp_home / ".config" / "rclone"
+    conf_dir.mkdir(parents=True, exist_ok=True)
+    conf = conf_dir / "rclone.conf"
+    conf.write_text("vieux\n")
+    os.chmod(conf, 0o644)
+
+    ok, msg = apply_rclone_mount(
+        tenant_data,
+        user="olivier@bluefoxconsultant.com",
+        password="hunter2",
+        home=tmp_home,
+        run_systemctl=False,
+    )
+
+    assert ok, msg
+    assert oct(conf.stat().st_mode)[-3:] == "600"
+    assert "hunter2" not in conf.read_text()  # obscurci, pas en clair
+    assert "[bf-nc]" in conf.read_text()
 
 
 def test_apply_rclone_mount_writes_systemd_unit(tmp_home: Path, tenant_data: dict):

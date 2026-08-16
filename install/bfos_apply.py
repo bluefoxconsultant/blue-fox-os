@@ -292,10 +292,24 @@ def _default_writer(root):
     def write(path, content, mode=None):
         full = os.path.join(root, path.lstrip("/"))
         os.makedirs(os.path.dirname(full), exist_ok=True)
-        with open(full, "w") as fh:
+        if mode is None:
+            with open(full, "w") as fh:
+                fh.write(content)
+            return
+        # `mode` n'est passe que pour restreindre — /etc/sssd/sssd.conf et ses
+        # identifiants de liaison. Ecrire puis chmoder laissait le fichier
+        # lisible par tous entre les deux instructions ; c'est le noyau qui
+        # applique le mode a la creation. Le fchmod ne couvre que le fichier
+        # deja present, dont O_CREAT ignore le mode.
+        fd = os.open(full, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+        try:
+            os.fchmod(fd, mode)
+            fh = os.fdopen(fd, "w")
+        except BaseException:
+            os.close(fd)
+            raise
+        with fh:
             fh.write(content)
-        if mode is not None:
-            os.chmod(full, mode)
     return write
 
 

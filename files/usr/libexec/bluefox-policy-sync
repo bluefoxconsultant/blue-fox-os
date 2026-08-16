@@ -148,13 +148,25 @@ def fetch_policy(endpoint, token, opener=None):
 def atomic_write(path, content, mode=0o644):
     """Ecriture atomique : fichier temporaire puis os.replace. Une coupure de
     courant au mauvais moment laisse l'ancien fichier intact plutot qu'un JSON
-    tronque, que plus rien ne saurait relire."""
+    tronque, que plus rien ne saurait relire.
+
+    Le mode est pose A LA CREATION du temporaire, pas apres. L'atomicite du
+    rename ne dit rien des permissions : avec un chmod posterieur, le fichier
+    appele avec mode=0o600 — la politique, qui porte le login de l'operateur —
+    existait d'abord en 0644 sous un nom previsible, dans le repertoire de
+    destination. Le rename n'y changeait rien, il arrivait apres."""
     directory = os.path.dirname(path)
     os.makedirs(directory, exist_ok=True)
     tmp = os.path.join(directory, f".{os.path.basename(path)}.tmp")
-    with open(tmp, "w") as fh:
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        os.fchmod(fd, mode)  # temporaire deja present : O_CREAT ignore le mode
+        fh = os.fdopen(fd, "w")
+    except BaseException:
+        os.close(fd)
+        raise
+    with fh:
         fh.write(content)
-    os.chmod(tmp, mode)
     os.replace(tmp, path)
 
 

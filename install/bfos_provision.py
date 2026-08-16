@@ -60,6 +60,31 @@ import urllib.parse
 import urllib.request
 import uuid
 
+MODE_PRIVATE = 0o600
+
+
+def write_private(path, content):
+    """Écrire un secret, propriétaire seul, dès le premier octet.
+
+    `open(path, "w")` puis `os.chmod(path, 0o600)` laisse le fichier lisible
+    par tout le monde entre les deux instructions — au umask standard 0022,
+    0644. Ici ça vise la ligne autopart, qui porte la passphrase LUKS : elle
+    n'a pas à transiter par un mode qu'on corrige ensuite. `os.open` fait
+    appliquer le mode par le noyau à la création ; le fchmod ne couvre que le
+    fichier déjà présent, dont O_CREAT ignore le mode et dont O_TRUNC ne
+    remet pas les permissions.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, MODE_PRIVATE)
+    try:
+        os.fchmod(fd, MODE_PRIVATE)
+        fh = os.fdopen(fd, "w")
+    except BaseException:
+        os.close(fd)
+        raise
+    with fh:
+        fh.write(content)
+
+
 STAGED_JSON = "/tmp/bfos-provision.json"
 MACHINE_JSON = "/tmp/bfos-machine.json"
 SCOPE = "openid profile email"
@@ -307,12 +332,9 @@ def write_autopart(passphrase=None, path=None):
     line = AUTOPART_BASE
     if passphrase:
         line = f"{AUTOPART_BASE} --passphrase={passphrase}"
-    with open(path, "w") as fh:
-        fh.write(line + "\n")
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+    # Pas de `except OSError: pass` ici : un chmod avalé en silence laissait la
+    # clé du disque en 0644 sans que rien ne le dise.
+    write_private(path, line + "\n")
     return path
 
 
@@ -525,10 +547,10 @@ def _stage_enrolment(token, policy, env=None, out=None, post=_post_json,
             out(f"[bfos] disk passphrase NOT deposited ({reason}); Anaconda "
                 "will ask for one\n")
     try:
-        with open(path, "w") as fh:
-            json.dump(machine, fh)
-        # Le secret de la machine. 0600 AVANT tout, et jamais journalise.
-        os.chmod(path, 0o600)
+        # Le secret de la machine. 0600 AVANT tout, et jamais journalise —
+        # ce que le commentaire promettait deja, mais que le chmod POSTERIEUR
+        # ne rendait pas.
+        write_private(path, json.dumps(machine))
     except OSError as exc:
         out(f"[bfos] could not stage the machine secret ({exc})\n")
         return None
@@ -548,14 +570,9 @@ def main(argv=None):
     except Exception as exc:  # noqa: BLE001 — never abort the install
         out(f"[bfos] provisioning failed ({exc}); using org fallback defaults\n")
         policy = fallback_policy()
-    with open(STAGED_JSON, "w") as fh:
-        json.dump(policy, fh)
     # The staged policy carries the operator login + LDAP endpoints (no token),
     # so keep it owner-only rather than the installer's default umask (0o644).
-    try:
-        os.chmod(STAGED_JSON, 0o600)
-    except OSError:
-        pass
+    write_private(STAGED_JSON, json.dumps(policy))
     return 0
 
 

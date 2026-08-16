@@ -305,3 +305,35 @@ def test_auth_header_carries_the_machine_prefix(tmp_path, machine):
     sync_mod.sync(machine_path=str(machine), opener=open_url, run=_Runs(),
                   **_paths(tmp_path))
     assert seen["auth"] == "Bearer bfos-machine SECRET"
+
+
+def test_le_temporaire_nait_deja_au_bon_mode(tmp_path, monkeypatch):
+    """atomic_write etait cite comme le bon exemple du depot ; il portait le
+    meme defaut. L'atomicite du rename ne dit RIEN des permissions : appele en
+    0o600, il creait d'abord le temporaire au umask (0644), sous un nom
+    previsible et dans le repertoire de destination, et ne le restreignait
+    qu'ensuite. Ce test garde le mode de l'appel systeme de creation, pas
+    l'etat final."""
+    import os
+
+    vus = []
+    vrai_open = os.open
+
+    def espion(p, flags, mode=0o777, **kw):
+        vus.append(mode)
+        return vrai_open(p, flags, mode, **kw)
+
+    monkeypatch.setattr(os, "open", espion)
+    cible = tmp_path / "sous" / "politique.json"
+    sync_mod.atomic_write(str(cible), '{"a": 1}\n', mode=0o600)
+
+    assert vus and vus[-1] == 0o600
+    assert oct(cible.stat().st_mode)[-3:] == "600"
+
+
+def test_atomic_write_garde_son_contrat_de_base(tmp_path):
+    cible = tmp_path / "politique.json"
+    sync_mod.atomic_write(str(cible), '{"a": 1}\n')
+    assert cible.read_text() == '{"a": 1}\n'
+    assert oct(cible.stat().st_mode)[-3:] == "644"
+    assert not list(tmp_path.glob(".*.tmp"))  # le temporaire a bien ete renomme

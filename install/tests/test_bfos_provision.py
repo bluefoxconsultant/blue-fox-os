@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import urllib.error
 
 import pytest
@@ -387,6 +388,39 @@ def test_write_autopart_forms_and_mode(tmp_path):
     assert line.startswith(bp.AUTOPART_BASE)
     assert line.endswith("--passphrase=ABCDE-FGHJK-MNPQR-STUVW-XYZ23")
     assert oct(path.stat().st_mode)[-3:] == "600"
+
+
+def test_la_cle_du_disque_ne_transite_jamais_par_un_fichier_lisible(tmp_path,
+                                                                   monkeypatch):
+    """L'assertion ci-dessus lit le mode FINAL, et elle etait verte sur du code
+    qui creait le fichier au umask (0644) avant de le restreindre. Ici on garde
+    le mode que le noyau applique A LA CREATION : pour la duree de l'install,
+    ce fichier EST la cle du disque."""
+    vus = []
+    vrai_open = os.open
+
+    def espion(p, flags, mode=0o777, **kw):
+        vus.append(mode)
+        return vrai_open(p, flags, mode, **kw)
+
+    monkeypatch.setattr(os, "open", espion)
+    path = tmp_path / "autopart.ks"
+    bp.write_autopart("ABCDE-FGHJK-MNPQR-STUVW-XYZ23", path=str(path))
+
+    assert vus and vus[-1] == 0o600
+
+
+def test_un_autopart_deja_la_en_0644_est_ramene_a_600(tmp_path):
+    """Le %pre reecrit un include que la version fautive a pu laisser en 0644 :
+    O_CREAT ignore le mode sur un fichier existant, O_TRUNC ne le remet pas."""
+    path = tmp_path / "autopart.ks"
+    path.write_text("vieux\n")
+    os.chmod(path, 0o644)
+
+    bp.write_autopart("ABCDE-FGHJK-MNPQR-STUVW-XYZ23", path=str(path))
+
+    assert oct(path.stat().st_mode)[-3:] == "600"
+    assert "--passphrase=" in path.read_text()
 
 
 def test_enrol_machine_omits_the_field_when_there_is_no_passphrase():

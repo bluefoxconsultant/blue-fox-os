@@ -41,6 +41,7 @@ from .provisioning import (
     session_pwas,
     user_login,
 )
+from .secure_file import write_private
 from .tenant import get_service_url, get_slug, load_tenant
 
 LOG = logging.getLogger("bluefox-welcome")
@@ -615,8 +616,7 @@ def _finalize_and_apply(
         LOG.warning("cannot write %s as user ; firstboot.service should mkdir at /var/lib", STATE_DIR)
     USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     email_file = USER_CONFIG_DIR / "user_email"
-    email_file.write_text(user_email + "\n")
-    email_file.chmod(0o600)
+    write_private(email_file, user_email + "\n")
     LOG.info("wizard finished ; flagged done at %s", DONE_FLAG)
 
 
