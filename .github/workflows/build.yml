@@ -6,33 +6,48 @@ name: Validate Blue Fox OS
 # local, sur la machine de build, via `make publish SLUG=<tenant>`
 # (scripts/publish-image.sh) — au meme endroit que l'assemblage de l'ISO.
 # Ce qui reste ici est de la validation pure : lint kickstart, schema des
-# manifests tenant, tests du welcome agent, build du RPM, plus un controle
-# quotidien de la chaine de confiance sur les images deja publiees.
+# manifests tenant, tests du welcome agent, build du RPM, plus un controle de
+# la chaine de confiance sur les images publiees, a la demande seulement.
 #
 # Consequence assumee du retrait du rebuild quotidien : les mises a jour
 # upstream de Fedora n'atterrissent plus dans :latest toutes seules. C'est
 # `make publish` qui les ramasse, quand il est lance.
+#
+# LE CRON A ETE RETIRE (2026-08-29), ET PAS SEULEMENT POUR LE COUT
+# ----------------------------------------------------------------
+# Ce depot est PRIVE : chaque minute d'Actions est facturee. Le cron quotidien
+# tournait 3 jobs de matrice tous les matins pour un seul `cosign verify`, soit
+# ~100 min par mois, en pure perte.
+#
+# Et ce controle etait le plus faible des cinq. Les 3 images ont passe deux mois
+# a le reussir tout en etant sans attestation SBOM et sans lien vers leur commit
+# source : `cosign verify` seul dit « signee », jamais « signee, attestee, et
+# batie depuis un commit qu'on peut relire ». `scripts/verify-image.sh --all`
+# joue les 5 controles, et il tourne sur la machine de build — gratuitement,
+# appele une fois par jour depuis l'hote tentaclaude.
+#
+# Ce qui reste ici ne coute donc que sur les evenements rares : une fusion vers
+# main, une PR, ou un declenchement a la main.
+#   push:main         les 5 lanes de validation
+#   pull_request      les 5 lanes de validation
+#   workflow_dispatch tout, verify-published compris
 
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
-  schedule:
-    # Ne reconstruit rien : seul verify-published tourne sur ce cron, pour
-    # detecter qu'une image publiee perd sa signature (cle rotee, push non
-    # signe). Les lanes de validation se rejouent sur push/PR, pas ici.
-    - cron: '0 4 * * *'
 
 env:
   REGISTRY: ghcr.io
   REGISTRY_USER: ${{ github.actor }}
 
 jobs:
-  # Les 4 lanes de validation ne tournent pas sur le cron : le commit n'a pas
-  # bouge depuis le dernier push, les rejouer chaque nuit ne prouve rien.
+  # Les lanes de validation tournent sur push:main, sur PR et a la demande.
+  # Le garde `event_name != schedule` qu'elles portaient est retire avec le
+  # cron : une condition qui ne peut plus se realiser est exactement le motif
+  # qui a laisse `attest-sbom` skippe pendant deux mois sans que rien ne le dise.
   validate-kickstart:
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -77,7 +92,6 @@ jobs:
           '
 
   test-wizard:
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -141,7 +155,6 @@ jobs:
     # c'est un test de non-regression du .spec (le depsolve Fedora casse a bas
     # bruit) et l'artefact reste telechargeable pour depannage. Le RPM qui finit
     # reellement dans l'image est rebuild en local par scripts/publish-image.sh.
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     container: fedora:43
@@ -162,7 +175,6 @@ jobs:
           if-no-files-found: error
 
   validate-config:
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -195,14 +207,17 @@ jobs:
   # non signe, ou une image ecrasee hors pipeline — les 3 facons dont la chaine
   # de confiance peut casser maintenant que la publication est manuelle.
   #
-  # Tourne sur le cron quotidien + a la demande, PAS sur push/PR : le commit ne
-  # dit plus rien de l'image publiee.
+  # Ne tourne plus qu'A LA DEMANDE, PAS sur push/PR : le commit ne dit rien de
+  # l'image publiee. Le controle quotidien vit desormais hors GitHub, sur la
+  # machine de build, et il joue les 5 controles au lieu de celui-ci seul
+  # (voir l'en-tete du fichier). Ce job reste ici pour le jour ou la machine de
+  # build est indisponible et qu'on veut un avis depuis l'exterieur.
   #
   # TODO : y ajouter `cosign verify-attestation --type spdx` une fois que
   # scripts/publish-image.sh aura attache un premier SBOM aux 3 tenants. Avant
   # ca, le check echouerait tous les jours pour une raison connue (P5.2 F7).
   verify-published:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
