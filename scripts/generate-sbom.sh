@@ -131,10 +131,27 @@ log "scan syft du rootfs"
 # la valeur effective est journalisee, parce qu'un retour a "owned-by-package"
 # fait echouer l'attestation 40 minutes plus tard, sur un 502 qui ne dit pas
 # pourquoi.
+# ⚠️ TROISIEME reglage, trouve le 2026-08-29 : il en manquait un, et son absence
+# a produit un document de 23,2 Mio pour 8 534 paquets — plus LOURD que celui de
+# bf-surface a 13 239 paquets (18,2 Mio). Un SBOM qui grossit quand l'inventaire
+# retrecit est le signe qu'on ne mesure plus des paquets.
+#
+#     relationships.package-file-ownership-overlap   defaut = TRUE
+#
+# Il fait deduire des paquets les uns des autres a partir des fichiers qu'ils se
+# disputent. C'est ce qui produisait les 14 653 relations « OTHER » et les 5 045
+# entrees de `files` du document du 2026-08-29 — 11,8 Mio a lui seul.
+#
+# ⚠️ Le document de 18,2 Mio du 2026-08-08 qui, lui, EST passe, ne portait NI
+# fichiers NI relations : c'etait une minimisation faite a la main, jamais
+# entree dans ce script. Le garde-fou plus bas decrivait donc son resultat comme
+# s'il etait celui du script. Il ne l'etait pas.
 export SYFT_FILE_METADATA_SELECTION="${SYFT_FILE_METADATA_SELECTION:-none}"
 export SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP="${SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP:-false}"
+export SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP_OVERLAP="${SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP_OVERLAP:-false}"
 log "   file.metadata.selection      = ${SYFT_FILE_METADATA_SELECTION}"
 log "   package-file-ownership       = ${SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP}"
+log "   package-file-ownership-overlap = ${SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP_OVERLAP}"
 
 # --source-name / --source-version : le document doit s'identifier par la
 # reference PUBLIEE, pas par le chemin overlay du montage.
@@ -147,28 +164,45 @@ syft scan "dir:${MNT}" \
 PKGS="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("packages",[])))' "$OUT")"
 [ "$PKGS" -gt 0 ] || die "SBOM sans aucun paquet : document valide mais creux."
 
-# Garde-fou de taille — sur le COUT, pas sur Rekor.
+# Garde-fou de taille — et il garde bien Rekor, contrairement a ce qui etait
+# ecrit ici.
 #
-# ⚠️ CE COMMENTAIRE A DIT AUTRE CHOSE PENDANT UNE HEURE, ET C'ETAIT FAUX. Il
-# attribuait les 502 de cosign attest a un predicat trop gros. Verification
-# faite le 2026-08-08 sur le bundle de bf : ce que cosign depose dans Rekor est
-# un `hashedrekord` de 652 OCTETS — une empreinte SHA-256 et une signature. Le
-# document, lui, va au REGISTRE. La requete vers Rekor pese le meme demi-kilo
-# que le SBOM fasse 12 Mo ou 136. Confirme par l'echec identique, en deux
-# secondes, a 136 Mo, 36,4 Mo et 18,2 Mo.
+# ⚠️ CE COMMENTAIRE A AFFIRME LE CONTRAIRE PENDANT TROIS SEMAINES. Il disait que
+# la requete vers Rekor pese 652 octets quelle que soit la taille du SBOM, donc
+# que la taille n'avait rien a voir avec les 502. C'etait tire de la lecture d'un
+# bundle `hashedrekord` — l'artefact que produit `cosign sign`, PAS `cosign
+# attest`. On avait mesure l'artefact voisin.
 #
-# La cause des 502 reste OUVERTE (voir #21873). Ne pas la chercher ici.
+# Ce qui a ete MESURE le 2026-08-29, en sondant l'API avec des corps
+# volontairement invalides (rien n'est jamais ecrit dans le journal) :
 #
-# Ce seuil garde ce qu'il peut reellement garder : le poids de l'artefact qu'on
-# pousse au registre et qu'on fera tirer a chaque verification. 136 Mo de
-# hachages de fichiers pour un systeme dont l'image entiere est deja UN digest
-# signe, c'est du transfert sans contrepartie.
-SBOM_MAX_MB="${SBOM_MAX_MB:-64}"
+#     corps POST /api/v1/log/entries    reponse
+#     20,00 Mio                         422   (rejete par l'application)
+#     23,00 Mio                         422
+#     24,00 Mio                         422
+#     25,00 Mio                         502   (mort a la bordure)
+#     28 / 30 / 31 / 32 Mio             502
+#
+# Reproductible, depuis deux machines et deux reseaux, deux fois chaque palier.
+# Le plafond de la bordure Rekor est donc entre 24 et 25 Mio de corps.
+#
+# Et le corps que cosign envoie n'est pas un demi-kilo : le trafic sortant
+# mesure pendant un cycle de reessai est de 8,2 Mio. L'enveloppe DSSE porte le
+# predicat encode en base64, soit environ 4/3 de sa taille sur disque — et
+# l'envoi est interrompu des que la bordure repond.
+#
+# D'ou le seuil : le predicat doit rester sous ~18 Mio pour que son encodage
+# tienne sous les 24 Mio du plafond. Un SBOM plus gros ne fait pas echouer
+# l'attestation « parfois » : il ne peut PAS passer.
+SBOM_MAX_MB="${SBOM_MAX_MB:-17}"
 SBOM_MB="$(( $(stat -c %s "$OUT") / 1048576 ))"
 [ "$SBOM_MB" -le "$SBOM_MAX_MB" ] || die \
-    "SBOM de ${SBOM_MB} Mo, au-dela du plafond de ${SBOM_MAX_MB} Mo.
-Attendu au niveau paquet : ~18 Mo pour 13 000 paquets. Verifier
-SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP (attendu « false ») et
-SYFT_FILE_METADATA_SELECTION (attendu « none », vu « ${SYFT_FILE_METADATA_SELECTION} »)."
+    "SBOM de ${SBOM_MB} Mio : son enveloppe base64 fera ~$(( SBOM_MB * 4 / 3 )) Mio,
+au-dela du plafond de la bordure Rekor (entre 24 et 25 Mio, mesure 2026-08-29).
+cosign attest rendra un 502 a tous les coups, apres le push de l'image.
+Plafond local : ${SBOM_MAX_MB} Mio. A verifier, dans cet ordre :
+  SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP_OVERLAP (attendu « false », vu « ${SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP_OVERLAP} »)
+  SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP        (attendu « false », vu « ${SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP} »)
+  SYFT_FILE_METADATA_SELECTION                     (attendu « none », vu « ${SYFT_FILE_METADATA_SELECTION} »)"
 
 log "OK — $(du -h "$OUT" | cut -f1), ${PKGS} paquets, sujet ${IMAGE_REPO}@${DIGEST}"
