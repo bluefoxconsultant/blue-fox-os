@@ -131,27 +131,17 @@ log "scan syft du rootfs"
 # la valeur effective est journalisee, parce qu'un retour a "owned-by-package"
 # fait echouer l'attestation 40 minutes plus tard, sur un 502 qui ne dit pas
 # pourquoi.
-# ⚠️ TROISIEME reglage, trouve le 2026-08-29 : il en manquait un, et son absence
-# a produit un document de 23,2 Mio pour 8 534 paquets — plus LOURD que celui de
-# bf-surface a 13 239 paquets (18,2 Mio). Un SBOM qui grossit quand l'inventaire
-# retrecit est le signe qu'on ne mesure plus des paquets.
-#
-#     relationships.package-file-ownership-overlap   defaut = TRUE
-#
-# Il fait deduire des paquets les uns des autres a partir des fichiers qu'ils se
-# disputent. C'est ce qui produisait les 14 653 relations « OTHER » et les 5 045
-# entrees de `files` du document du 2026-08-29 — 11,8 Mio a lui seul.
-#
-# ⚠️ Le document de 18,2 Mio du 2026-08-08 qui, lui, EST passe, ne portait NI
-# fichiers NI relations : c'etait une minimisation faite a la main, jamais
-# entree dans ce script. Le garde-fou plus bas decrivait donc son resultat comme
-# s'il etait celui du script. Il ne l'etait pas.
+# ⚠️ NE PAS COUPER `relationships.package-file-ownership-overlap`. Essaye le
+# 2026-08-29, mesure a l'appui : le document passe de 23,2 a 30,8 Mio. syft
+# refuse ce reglage seul (« cannot enable exclude-binary-overlap-by-ownership
+# without enabling package-file-ownership-overlap »), et le couper AUSSI fait
+# garder tous les paquets binaires synthetiques que la deduplication retirait —
+# 8 534 paquets deviennent 9 564, et 5 045 fichiers deviennent 17 851. Le
+# reglage qui semblait alleger est celui qui alourdit.
 export SYFT_FILE_METADATA_SELECTION="${SYFT_FILE_METADATA_SELECTION:-none}"
 export SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP="${SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP:-false}"
-export SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP_OVERLAP="${SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP_OVERLAP:-false}"
 log "   file.metadata.selection      = ${SYFT_FILE_METADATA_SELECTION}"
 log "   package-file-ownership       = ${SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP}"
-log "   package-file-ownership-overlap = ${SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP_OVERLAP}"
 
 # --source-name / --source-version : le document doit s'identifier par la
 # reference PUBLIEE, pas par le chemin overlay du montage.
@@ -161,6 +151,43 @@ syft scan "dir:${MNT}" \
     -o "spdx-json=${OUT}"
 
 [ -s "$OUT" ] || die "SBOM vide apres le scan."
+
+# --- projection au niveau paquet -------------------------------------------
+# Le document atteste est un INVENTAIRE DE PAQUETS, et c'est une decision, pas
+# un accident de taille. Sur du rpm-ostree, l'image est UN digest signe : chaque
+# fichier y est deja verifie de bout en bout, et une liste de fichiers dans le
+# SBOM ne prouve rien de plus. L'inventaire de fichiers gagne sa place sur un
+# systeme mutable.
+#
+# Ce que ca retire, mesure sur bf le 2026-08-29 :
+#
+#     document syft complet                       23,2 Mio  -> enveloppe 30,9 Mio  502
+#     sans fichiers, relations paquets gardees    19,8 Mio  -> enveloppe 26,4 Mio  502
+#     inventaire de paquets seul                  12,3 Mio  -> enveloppe 16,4 Mio  OK
+#
+# Seule la troisieme forme passe sous le plafond de la bordure Rekor, et c'est
+# exactement la forme du document du 2026-08-08 qui, lui, avait ete atteste.
+#
+# ⚠️ La perte reelle est le graphe de dependances (DEPENDENCY_OF). Elle est
+# assumee : chaque paquet garde son nom, sa version, sa licence et son purl,
+# donc tout ce dont un rapprochement CVE a besoin. La relation DESCRIBES est
+# conservee — c'est elle qui dit ce que le document decrit.
+python3 - "$OUT" <<'PY'
+import json, sys
+
+chemin = sys.argv[1]
+doc = json.load(open(chemin))
+avant = len(doc.get("files", [])), len(doc.get("relationships", []))
+doc.pop("files", None)
+doc["relationships"] = [r for r in doc.get("relationships", [])
+                        if r.get("relationshipType") == "DESCRIBES"]
+with open(chemin, "w") as fh:
+    json.dump(doc, fh, separators=(",", ":"))
+print(f"[sbom]    projection : {avant[0]} fichiers et "
+      f"{avant[1] - len(doc['relationships'])} relations retires "
+      f"({len(doc['relationships'])} DESCRIBES gardee(s))")
+PY
+
 PKGS="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("packages",[])))' "$OUT")"
 [ "$PKGS" -gt 0 ] || die "SBOM sans aucun paquet : document valide mais creux."
 
@@ -194,15 +221,16 @@ PKGS="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get(
 # D'ou le seuil : le predicat doit rester sous ~18 Mio pour que son encodage
 # tienne sous les 24 Mio du plafond. Un SBOM plus gros ne fait pas echouer
 # l'attestation « parfois » : il ne peut PAS passer.
-SBOM_MAX_MB="${SBOM_MAX_MB:-17}"
+SBOM_MAX_MB="${SBOM_MAX_MB:-18}"
 SBOM_MB="$(( $(stat -c %s "$OUT") / 1048576 ))"
 [ "$SBOM_MB" -le "$SBOM_MAX_MB" ] || die \
     "SBOM de ${SBOM_MB} Mio : son enveloppe base64 fera ~$(( SBOM_MB * 4 / 3 )) Mio,
 au-dela du plafond de la bordure Rekor (entre 24 et 25 Mio, mesure 2026-08-29).
 cosign attest rendra un 502 a tous les coups, apres le push de l'image.
 Plafond local : ${SBOM_MAX_MB} Mio. A verifier, dans cet ordre :
-  SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP_OVERLAP (attendu « false », vu « ${SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP_OVERLAP} »)
-  SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP        (attendu « false », vu « ${SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP} »)
-  SYFT_FILE_METADATA_SELECTION                     (attendu « none », vu « ${SYFT_FILE_METADATA_SELECTION} »)"
+  la projection au niveau paquet a-t-elle bien tourne (elle se journalise) ?
+  SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP (attendu « false », vu « ${SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP} »)
+  SYFT_FILE_METADATA_SELECTION              (attendu « none », vu « ${SYFT_FILE_METADATA_SELECTION} »)
+⚠️ NE PAS couper package-file-ownership-overlap : mesure faite, ca ALOURDIT."
 
 log "OK — $(du -h "$OUT" | cut -f1), ${PKGS} paquets, sujet ${IMAGE_REPO}@${DIGEST}"
