@@ -66,7 +66,7 @@ verify_one() {
     # ⚠️ C'est le controle qui manquait : les 3 images ont passe deux mois
     # signees et jamais attestees, sans qu'aucune commande ne le dise.
     local att=""
-    if att="$(cosign verify-attestation --key "$PUBKEY" --type spdx "$image" 2>/dev/null)"; then
+    if att="$(cosign verify-attestation --key "$PUBKEY" --type spdxjson "$image" 2>/dev/null)"; then
         ok "2/5 attestation SBOM SPDX presente et signee"
     else
         bad "2/5 attestation SBOM SPDX ABSENTE (blocage B1 de l'audit P5.2)"

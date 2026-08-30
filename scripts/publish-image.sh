@@ -414,16 +414,23 @@ log "    $(du -h "$SBOM" | cut -f1), ${SBOM_PACKAGES} paquets"
 # `cosign verify-attestation` sur le tag — donc l'etape 7 et verify-image.sh —
 # ne la trouve jamais.
 log "6/7 attestation du SBOM via cosign (sur l'index ${IMAGE_INDEX_DIGEST})"
+# ⚠️ spdxjson, PAS spdx. `--type spdx` attend le format tag-value ; avec un
+# document JSON, cosign 3 refuse a la validation :
+#   « failed to fetch envelope statement: validation error: invalid
+#     attestation: decoding json »
+# L'erreur ne nomme ni le type ni le fichier, et elle arrive APRES le push de
+# l'image — donc au meme endroit qu'un 502 de Rekor, ce qui les rend faciles a
+# confondre. Mesure 2026-08-29 : le meme document passe en spdxjson.
 cosign attest --yes \
     --predicate "$SBOM" \
-    --type spdx \
+    --type spdxjson \
     --key env://COSIGN_PRIVATE_KEY \
     "${IMAGE_REPO}@${IMAGE_INDEX_DIGEST}"
 
 # --- 7. verification -------------------------------------------------------
 log "7/7 verification signature + attestation + provenance"
 cosign verify --key cosign.pub "$IMAGE" > /dev/null
-cosign verify-attestation --key cosign.pub --type spdx "$IMAGE" > /dev/null
+cosign verify-attestation --key cosign.pub --type spdxjson "$IMAGE" > /dev/null
 
 # Provenance : relire l'etiquette telle que PUBLIEE, pas telle qu'on croit
 # l'avoir passee. Une variable non exportee, une recipe ou le bloc `labels:`
