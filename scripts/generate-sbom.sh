@@ -159,32 +159,75 @@ syft scan "dir:${MNT}" \
 # SBOM ne prouve rien de plus. L'inventaire de fichiers gagne sa place sur un
 # systeme mutable.
 #
-# Ce que ca retire, mesure sur bf le 2026-08-29 :
+# DEUX RETRAITS, ET LE SECOND PESE PLUS QUE LE PREMIER
 #
-#     document syft complet                       23,2 Mio  -> enveloppe 30,9 Mio  502
-#     sans fichiers, relations paquets gardees    19,8 Mio  -> enveloppe 26,4 Mio  502
-#     inventaire de paquets seul                  12,3 Mio  -> enveloppe 16,4 Mio  OK
+# Mesures sur bf le 2026-08-29, `cosign attest-blob` contre le vrai Rekor
+# (attest-blob ne touche aucun registre : rien a nettoyer si ca rate) :
 #
-# Seule la troisieme forme passe sous le plafond de la bordure Rekor, et c'est
-# exactement la forme du document du 2026-08-08 qui, lui, avait ete atteste.
+#     document syft complet                       23,2 Mio   502
+#     sans fichiers, relations paquets gardees    19,8 Mio   502
+#     sans fichiers ni relations                  11,8 Mio   502
+#     ... et en plus sans les CPE devines          5,3 Mio   OK
 #
-# ⚠️ La perte reelle est le graphe de dependances (DEPENDENCY_OF). Elle est
-# assumee : chaque paquet garde son nom, sa version, sa licence et son purl,
-# donc tout ce dont un rapprochement CVE a besoin. La relation DESCRIBES est
-# conservee — c'est elle qui dit ce que le document decrit.
+# Bissection du seuil d'acceptation, meme jour, meme commande :
+#     0,1 / 2,5 / 5,0 / 7,0 / 9,4 Mio  -> acceptes
+#     11,8 Mio                          -> 502
+#
+# ⚠️ Ce seuil-la (entre 9,4 et 11,8 Mio) est celui d'une entree VALIDE. Il est
+# BIEN PLUS BAS que le plafond de 24 Mio que rend une sonde a corps invalide :
+# un corps invalide est rejete a l'analyse, il n'atteint jamais le traitement.
+# Mesurer avec des corps invalides donne donc un plafond trop genereux — c'est
+# l'erreur que la version precedente de ce commentaire a faite.
+#
+# CE QUI SORT DU DOCUMENT, ET POURQUOI
+#
+# 1. Les fichiers et les relations. Sur du rpm-ostree l'image est UN digest
+#    signe : chaque fichier y est deja verifie de bout en bout, une liste de
+#    fichiers dans le SBOM ne prouve rien de plus. La perte reelle est le graphe
+#    de dependances ; elle est assumee. La relation DESCRIBES reste, c'est elle
+#    qui dit ce que le document decrit.
+#
+# 2. Les references CPE. C'est le gros morceau : 7,77 Mio des 11,8, soit les
+#    deux tiers du document. syft en devine 48 691 pour 8 533 purls — pres de
+#    six par paquet. Le purl, lui, est canonique : pour un RPM il porte le nom,
+#    la version, l'architecture et la distribution. Les CPE sont des hypotheses
+#    que les outils de rapprochement (grype, trivy) refont eux-memes a partir du
+#    purl. On garde donc l'identifiant, pas les hypotheses.
+#
+# Chaque paquet conserve nom, version, licences, fournisseur, empreintes et
+# purl. Aucun paquet n'est retire : 8 534 avant, 8 534 apres.
 python3 - "$OUT" <<'PY'
 import json, sys
 
 chemin = sys.argv[1]
 doc = json.load(open(chemin))
-avant = len(doc.get("files", [])), len(doc.get("relationships", []))
+n_fichiers = len(doc.get("files", []))
+n_relations = len(doc.get("relationships", []))
+
 doc.pop("files", None)
 doc["relationships"] = [r for r in doc.get("relationships", [])
                         if r.get("relationshipType") == "DESCRIBES"]
+
+n_cpe = 0
+for paquet in doc.get("packages", []):
+    refs = paquet.get("externalRefs")
+    if not refs:
+        continue
+    purls = [r for r in refs if r.get("referenceType") == "purl"]
+    n_cpe += len(refs) - len(purls)
+    if purls:
+        paquet["externalRefs"] = purls
+    else:
+        # Pas de purl : on ne laisse pas le paquet sans identifiant, les CPE
+        # restent alors sa seule prise.
+        pass
+
 with open(chemin, "w") as fh:
     json.dump(doc, fh, separators=(",", ":"))
-print(f"[sbom]    projection : {avant[0]} fichiers et "
-      f"{avant[1] - len(doc['relationships'])} relations retires "
+
+print(f"[sbom]    projection : {n_fichiers} fichiers, "
+      f"{n_relations - len(doc['relationships'])} relations et "
+      f"{n_cpe} references CPE retirees "
       f"({len(doc['relationships'])} DESCRIBES gardee(s))")
 PY
 
@@ -200,32 +243,32 @@ PKGS="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get(
 # bundle `hashedrekord` — l'artefact que produit `cosign sign`, PAS `cosign
 # attest`. On avait mesure l'artefact voisin.
 #
-# Ce qui a ete MESURE le 2026-08-29, en sondant l'API avec des corps
-# volontairement invalides (rien n'est jamais ecrit dans le journal) :
+# ⚠️ ET IL Y A DEUX PLAFONDS, PAS UN. Les confondre donne un seuil trois fois
+# trop genereux, ce qui est arrive en cours de route le 2026-08-29 :
 #
-#     corps POST /api/v1/log/entries    reponse
-#     20,00 Mio                         422   (rejete par l'application)
-#     23,00 Mio                         422
-#     24,00 Mio                         422
-#     25,00 Mio                         502   (mort a la bordure)
-#     28 / 30 / 31 / 32 Mio             502
+#   1. Le plafond de l'ANALYSE, mesure avec des corps volontairement invalides
+#      (rien n'est jamais ecrit dans le journal) : 20 / 23 / 24 Mio -> 422,
+#      25 / 28 / 30 / 31 / 32 Mio -> 502. Reproductible depuis deux machines et
+#      deux reseaux. Mais un corps invalide est rejete AVANT tout traitement :
+#      ce plafond ne dit rien de ce qu'une vraie entree peut faire passer.
 #
-# Reproductible, depuis deux machines et deux reseaux, deux fois chaque palier.
-# Le plafond de la bordure Rekor est donc entre 24 et 25 Mio de corps.
+#   2. Le plafond des entrees VALIDES, mesure avec `cosign attest-blob` contre
+#      le vrai Rekor : 0,1 / 2,5 / 5,0 / 7,0 / 9,4 Mio -> acceptes ;
+#      11,8 Mio -> 502. C'est CELUI-LA qui compte, et il est bien plus bas.
 #
-# Et le corps que cosign envoie n'est pas un demi-kilo : le trafic sortant
-# mesure pendant un cycle de reessai est de 8,2 Mio. L'enveloppe DSSE porte le
-# predicat encode en base64, soit environ 4/3 de sa taille sur disque — et
-# l'envoi est interrompu des que la bordure repond.
+# Le corps que cosign envoie n'est pas un demi-kilo, contrairement a ce qui
+# etait ecrit ici : le trafic sortant mesure pendant un cycle de reessai est de
+# 8,2 Mio. L'enveloppe DSSE porte bien le predicat.
 #
-# D'ou le seuil : le predicat doit rester sous ~18 Mio pour que son encodage
-# tienne sous les 24 Mio du plafond. Un SBOM plus gros ne fait pas echouer
-# l'attestation « parfois » : il ne peut PAS passer.
-SBOM_MAX_MB="${SBOM_MAX_MB:-18}"
+# D'ou le seuil de 9 Mio, sous le premier refus observe (11,8) avec une marge.
+# Apres la projection ci-dessus, bf sort a 5,3 Mio : la marge est confortable,
+# et elle doit le rester — un SBOM au-dela ne fait pas echouer l'attestation
+# « parfois », il ne peut PAS passer.
+SBOM_MAX_MB="${SBOM_MAX_MB:-9}"
 SBOM_MB="$(( $(stat -c %s "$OUT") / 1048576 ))"
 [ "$SBOM_MB" -le "$SBOM_MAX_MB" ] || die \
-    "SBOM de ${SBOM_MB} Mio : son enveloppe base64 fera ~$(( SBOM_MB * 4 / 3 )) Mio,
-au-dela du plafond de la bordure Rekor (entre 24 et 25 Mio, mesure 2026-08-29).
+    "SBOM de ${SBOM_MB} Mio, au-dela du plafond des entrees valides de Rekor
+(premier refus observe a 11,8 Mio, dernier succes a 9,4 — mesure 2026-08-29).
 cosign attest rendra un 502 a tous les coups, apres le push de l'image.
 Plafond local : ${SBOM_MAX_MB} Mio. A verifier, dans cet ordre :
   la projection au niveau paquet a-t-elle bien tourne (elle se journalise) ?
