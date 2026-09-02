@@ -112,6 +112,52 @@ for ROOT in /mnt/sysroot /mnt/sysimage; do
       # 0600 root : c'est un secret. Le poser avant tout autre traitement.
       chmod 600 "$ROOT/etc/bluefox/machine.json" 2>/dev/null || true
     fi
+
+    # --- BFOSL4 : l'etat de l'installateur, grave dans le systeme installe ---
+    # ⚠️ CES LECTURES NE SE FONT QU'ICI. Le %pre a tourne, le systeme n'a pas
+    # encore redemarre : c'est le seul instant ou le swap de l'installateur et
+    # les droits de /tmp/bfos-autopart.ks sont observables. Elles exigeaient
+    # jusqu'ici d'attraper Ctrl-Alt-F2 a la main avant le redemarrage — une
+    # fenetre unique, ratee le 2026-09-01, et dont l'oubli coute une
+    # reinstallation complete pour la seule raison qu'on n'etait pas devant
+    # l'ecran au bon moment. On la grave donc, et elle se relit a froid.
+    #
+    # ⚠️ AUCUN SECRET ICI. On note la PRESENCE du motif --passphrase=, jamais
+    # sa valeur : ce fichier atterrit dans /var/log/anaconda, qui n'est pas
+    # protege, et il est fait pour etre recopie tel quel dans un chatter.
+    BFL4="$ROOT/var/log/anaconda/bfosl4-installateur.log"
+    mkdir -p "$ROOT/var/log/anaconda" 2>/dev/null || true
+    {
+      echo "=== BFOSL4 / lu pendant l'installation (tache BF #23940) ==="
+      echo "date : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      echo
+      echo "--- surface 5 : swap actif pendant le %pre ---"
+      echo "\$ swapon --show"
+      swapon --show 2>&1 || echo "(swapon indisponible)"
+      echo "  [aucune ligne ci-dessus = aucun swap = surface 5 FERMEE]"
+      echo "\$ cat /proc/swaps"
+      cat /proc/swaps 2>&1 || true
+      echo "  [en-tete seule = aucun swap]"
+      echo
+      echo "--- surface 3 : droits de /tmp/bfos-autopart.ks ---"
+      ls -l /tmp/bfos-autopart.ks 2>&1 || echo "(absent)"
+      echo "  [attendu : -rw------- root root, cree en 0600 par os.open]"
+      if [ -f /tmp/bfos-autopart.ks ]; then
+        if grep -q -- '--passphrase=' /tmp/bfos-autopart.ks 2>/dev/null; then
+          echo "  la ligne autopart PORTE une phrase : le sequestre a fourni une valeur"
+        else
+          echo "  la ligne autopart NE PORTE PAS de phrase : c'est le repli, donc"
+          echo "  Anaconda a demande la phrase a l'ecran et le sequestre n'a pas joue."
+        fi
+      fi
+      echo
+      echo "--- surface 2 : phrase en argument de commande ---"
+      ps auxww 2>/dev/null | grep -i cryptsetup | grep -v grep \
+        || echo "  (aucun cryptsetup dans ps : conforme, blivet passe par la librairie)"
+      echo
+      echo "=== fin ==="
+    } > "$BFL4" 2>&1 || true
+    chmod 644 "$BFL4" 2>/dev/null || true
   fi
 done
 %end
