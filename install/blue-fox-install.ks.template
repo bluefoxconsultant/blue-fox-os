@@ -181,6 +181,29 @@ for ROOT in /mnt/sysroot /mnt/sysimage; do
       cp /tmp/bfos-provision-pre.log \
          "$ROOT/boot/efi/bfosl4-provision-pre.log" 2>/dev/null || true
     fi
+
+    # --- vconsole.keymap= VIDE dans l'entree BLS (2026-09-02) ----------------
+    # Constate sur l'installation du 2026-09-02, lue a froid sur /boot :
+    #
+    #   options ... rhgb quiet root=UUID=... vconsole.keymap= rootflags=...
+    #
+    # Le kickstart pose pourtant `keyboard --vckeymap={{KEYBOARD_VC}}`. Anaconda
+    # ecrit quand meme la cle vide, et l'initramfs ne porte AUCUN
+    # /etc/vconsole.conf (verifie par lsinitrd) : la console demarre donc sur la
+    # table US integree au noyau, pas sur le clavier de l'organisation. Ca vaut
+    # pour l'invite LUKS et pour le shell d'urgence, c'est-a-dire exactement les
+    # deux moments ou on ne peut pas se rattraper autrement.
+    #
+    # ⚠️ On corrige l'ENTREE, pas `bootloader --append`. Dans l'entree observee,
+    # les arguments d'Anaconda arrivent APRES ceux de --append : sa cle vide
+    # gagnerait, puisque systemd retient la derniere occurrence.
+    for BLS in "$ROOT"/boot/loader/entries/*.conf; do
+      [ -f "$BLS" ] || continue
+      sed -i -E 's/(^|[[:space:]])vconsole\.keymap=([[:space:]]|$)/\1vconsole.keymap={{KEYBOARD_VC}}\2/g' "$BLS" 2>/dev/null || true
+      # Copie a froid : les kargs d'une installation se relisent alors sans
+      # ouvrir le disque, comme la gravure ci-dessus.
+      cp "$BLS" "$ROOT/boot/efi/bfosl4-bls-$(basename "$BLS")" 2>/dev/null || true
+    done
   fi
 done
 %end
