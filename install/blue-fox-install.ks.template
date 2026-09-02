@@ -158,6 +158,25 @@ for ROOT in /mnt/sysroot /mnt/sysimage; do
       echo "=== fin ==="
     } > "$BFL4" 2>&1 || true
     chmod 644 "$BFL4" 2>/dev/null || true
+
+    # --- ET UNE COPIE HORS LUKS (#23940, 2026-09-02) ------------------------
+    # ⚠️ La gravure ci-dessus vit dans /var/log/anaconda, donc SOUS le
+    # chiffrement. Le 2026-09-01, aucune des deux phrases sequestrees n'a ouvert
+    # le disque : la lecture existait et etait illisible precisement dans le cas
+    # ou elle sert. Une lecture qu'on ne peut consulter que si tout va bien ne
+    # sert a rien.
+    #
+    # La partition EFI n'est pas chiffree, elle. On y depose la meme gravure et
+    # le journal du %pre. Ni l'un ni l'autre ne porte de secret : la gravure
+    # note la PRESENCE du motif --passphrase=, et aucun `out()` de
+    # bfos_provision.py n'interpole la phrase — ce sont des messages a
+    # l'operateur, pas la valeur. Le journal du %pre dit quelle branche le
+    # sequestre a prise, ce qui est exactement la question ouverte.
+    if [ -d "$ROOT/boot/efi" ]; then
+      cp "$BFL4" "$ROOT/boot/efi/bfosl4-installateur.log" 2>/dev/null || true
+      cp /tmp/bfos-provision-pre.log \
+         "$ROOT/boot/efi/bfosl4-provision-pre.log" 2>/dev/null || true
+    fi
   fi
 done
 %end
