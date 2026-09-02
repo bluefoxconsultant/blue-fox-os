@@ -137,10 +137,15 @@ eu lieu et l'installateur tourne en mémoire : à confirmer par `swapon --show`.
 
 ## Procédure d'essai en VM
 
-Cette station n'a ni `virsh`, ni `qemu`, ni `virt-install`, et `output/` est
-vide : l'essai se joue ailleurs. Faire l'installation complète avec le séquestre
-actif (`disk_escrow` est déjà à vrai sur l'organisation BF), puis, **sur le
-système installé, connecté en root** :
+⚠️ **Corrigé le 2026-09-01.** La version précédente disait « cette station n'a
+ni `virsh`, ni `qemu`, ni `virt-install` — l'essai se joue ailleurs ». C'est vrai
+du poste, et faux de **charizard**, qui a `qemu-system-x86_64`, `/dev/kvm` et
+`xorriso`. L'essai s'y joue, et il s'y est joué : voir `~/qemu-smoke/LISEZ-MOI.md`
+(harnais `bfos-smoke.sh` — vTPM, journal série, partage 9p portant les contrôles).
+
+Faire l'installation complète avec le séquestre actif (`disk_escrow` est déjà à
+vrai sur l'organisation BF), puis, **sur le système installé, connecté en
+root** :
 
 ```bash
 # Le marqueur : la phrase réellement séquestrée pour cette machine.
@@ -183,3 +188,44 @@ août) tenait sur ceci : les cinq modes de panne laissent tous Anaconda redemand
 la phrase, donc une installation aboutit même si le séquestre déraille. Un seul
 essai couvre donc les cinq défauts ouverts #23906 à #23910 **et** le séquestre.
 Le `%include` alimenté par le `%pre` n'a jamais tourné sur une vraie machine.
+
+---
+
+## État au 2026-09-01 : l'essai a eu lieu, et il bute sur le prompt LUKS
+
+Deux installations complètes en VM sur charizard (UEFI, vTPM, zero-touch depuis
+le kickstart servi). **Le séquestre s'est déclenché pour de vrai, deux fois** —
+c'était l'inconnue qui restait depuis le 26 juillet :
+
+| fiche | créée (UTC) | `disk_escrowed_on` | révélée |
+|---|---|---|---|
+| 2 | 2026-09-01 03:28:22 | même instant | 03:54, Olivier |
+| 3 | 2026-09-01 04:22:37 | même instant | 04:40, Olivier |
+
+Le dépôt passe par `_valid_passphrase()` : une phrase de longueur ou d'alphabet
+non conformes serait refusée. Les deux dépôts ont donc la bonne forme.
+
+**Ce qui bloque** : au prompt LUKS de la VM, la phrase révélée par Odoo a été
+refusée. Deux causes se ressemblent à l'écran et ne se valent pas du tout :
+
+- **(a)** la phrase est bonne, le prompt ne rend pas ce qu'on tape (disposition
+  de clavier de l'initramfs, saisie à l'aveugle). Ennuyeux, sans gravité.
+- **(b)** le disque est scellé sur autre chose que ce qui est séquestré — et
+  c'est la garantie centrale de #23940 qui tombe.
+
+`~/bfos-tester-phrase.sh` sur charizard tranche : `cryptsetup
+--test-passphrase` contre le qcow2 via `qemu-nbd`, saisie masquée, rien monté,
+rien déverrouillé, rien en argument de commande. **Pas encore joué.**
+
+Tant que le disque ne s'ouvre pas, les surfaces 3 et 5 restent fermées à double
+tour au sens propre : leurs réponses sont sur ce disque. Le `%post` du kickstart
+grave désormais les deux lectures dans
+`/var/log/anaconda/bfosl4-installateur.log` — swap actif pendant le `%pre`,
+droits de `/tmp/bfos-autopart.ks`, et **présence** (jamais la valeur) du motif
+`--passphrase=`. Vérifié : le gabarit synchronisé côté Odoo date du 04:19:45 UTC,
+soit trois minutes avant l'enrôlement de la fiche 3 — cette installation-là porte
+donc bien la gravure.
+
+Ce même fichier tranchera aussi la cause (b) sans révéler quoi que ce soit : si
+la ligne autopart **ne portait pas** de phrase, c'est qu'Anaconda est retombé sur
+la saisie à l'écran, et le disque est scellé sur ce qui a été tapé là.
