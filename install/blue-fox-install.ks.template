@@ -134,10 +134,14 @@ for ROOT in /mnt/sysroot /mnt/sysimage; do
       echo "--- surface 5 : swap actif pendant le %pre ---"
       echo "\$ swapon --show"
       swapon --show 2>&1 || echo "(swapon indisponible)"
-      echo "  [aucune ligne ci-dessus = aucun swap = surface 5 FERMEE]"
       echo "\$ cat /proc/swaps"
       cat /proc/swaps 2>&1 || true
-      echo "  [en-tete seule = aucun swap]"
+      echo "  [COMMENT LIRE (corrige le 2026-09-02) : la question n'est pas"
+      echo "   « y a-t-il du swap » mais « une page peut-elle atterrir sur un"
+      echo "   support PERSISTANT non chiffre ». Rien du tout, ou uniquement"
+      echo "   /dev/zram*, ferme la surface : zram est de la RAM compressee,"
+      echo "   volatile, elle ne touche aucun disque. Une ligne nommant un"
+      echo "   /dev/vd*, /dev/sd* ou /dev/nvme* l'ouvre, elle.]"
       echo
       echo "--- surface 3 : droits de /tmp/bfos-autopart.ks ---"
       ls -l /tmp/bfos-autopart.ks 2>&1 || echo "(absent)"
