@@ -102,6 +102,19 @@ log "volume id (preserve) = '${ISO_VOLID}'"
 # Le numero de version Fedora est capture par regex pour survivre a un F45.
 patch_menu() {
     local cfg="$1"
+
+    # ⚠️ Idempotent (#23940, 2026-09-01). Sans ce retrait prealable, un second
+    # passage du branding ajoutait BF_PARAMS une deuxieme fois et la ligne linux
+    # finissait avec inst.profile / inst.keymap / inst.lang en DOUBLE. Valeurs
+    # identiques, donc sans consequence au demarrage — mais ca s'empile a chaque
+    # passage, et rejouer le branding sur une ISO deja brandee est justement ce
+    # qu'on fait pour corriger un menu sans refaire 28 min de build.
+    local p k
+    for p in ${BF_PARAMS}; do
+        k="${p%%=*}"
+        sed -i -E "/^[[:space:]]*linux(efi)?[[:space:]]+\/images\/pxeboot\/vmlinuz/ s|[[:space:]]+${k}=[^[:space:]]*||g" "$cfg"
+    done
+
     sed -i -E "s|^([[:space:]]*linux(efi)?[[:space:]]+/images/pxeboot/vmlinuz[[:space:]].*)\$|\1 ${BF_PARAMS}|" "$cfg"
     sed -i -E "s|menuentry 'Install Fedora Linux [0-9]+ in basic graphics mode'|menuentry 'Installer Blue Fox OS (mode graphique de base)'|" "$cfg"
     sed -i -E "s|menuentry 'Test this media \& install Fedora Linux [0-9]+'|menuentry 'Tester le support \\& installer Blue Fox OS'|" "$cfg"
@@ -111,14 +124,49 @@ patch_menu() {
     sed -i -E "s|submenu 'Troubleshooting -->'|submenu 'Depannage -->'|" "$cfg"
 }
 
-# Entree zero-touch (BFOSD10) : elle demande le domaine de l'organisation puis
-# va chercher le kickstart servi par bf_zerotouch_install. On la CONSTRUIT A
-# PARTIR des lignes linux/initrd de la premiere entree d'origine — jamais de
-# zero — pour heriter du bon nom de commande et du bon inst.stage2.
+# Entree zero-touch (BFOSD10) : elle va chercher le kickstart servi par
+# bf_zerotouch_install. On la CONSTRUIT A PARTIR des lignes linux/initrd de la
+# premiere entree d'origine — jamais de zero — pour heriter du bon nom de
+# commande et du bon inst.stage2.
+#
+# ⚠️ AUCUNE INVITE : le domaine est pose en dur (#23940, 2026-09-01)
+# ------------------------------------------------------------------
+# Cette entree a longtemps demande le domaine par `read bf_domain`. Elle n'a
+# JAMAIS pu demarrer en UEFI, donc sur aucune vraie machine :
+#
+#   Domaine : error: ../../grub-core/script/function.c:
+#   grub_script_function_find:119: can't find command `read'.
+#
+# `read` vit dans read.mod, et l'ISO ne porte de modules que pour i386-pc : zero
+# fichier sous boot/grub2/x86_64-efi/. Le grub UEFI est le binaire monolithique
+# de efiboot.img, avec un jeu de modules fige et pas de `read` dedans — il n'y a
+# donc rien a insmod. L'erreur AVORTE le menuentry : la ligne `linux` n'est
+# jamais atteinte, et le repli `if [ -z ... ]` non plus.
+#
+# En BIOS ca passait, read.mod etant sur le media. D'ou un defaut invisible tant
+# que personne n'avait demarre l'entree pour de vrai.
+#
+# Pointer une autre organisation reste possible : « e » au menu, editer la ligne
+# set bf_domain, Ctrl-X. C'est le seul cas ou la saisie servait.
 prepend_zerotouch_entry() {
     local cfg="$1"
     local linux_line initrd_line cmd
-    linux_line="$(grep -m1 -E '^[[:space:]]*linux(efi)?[[:space:]]+/images/pxeboot/vmlinuz' "$cfg" || true)"
+
+    # Idempotence : un second passage sur une ISO deja brandee prendrait la
+    # ligne linux de l'entree zero-touch elle-meme comme modele, et empilerait
+    # un doublon portant deja ${bf_domain}. On retire donc l'entree existante
+    # avant de reconstruire, et on choisit un modele qui n'est pas elle.
+    if grep -q "menuentry 'Installer Blue Fox OS (zero-touch)'" "$cfg"; then
+        awk '
+            /^menuentry .Installer Blue Fox OS \(zero-touch\)./ { skip = 1; next }
+            skip && /^\}/                                       { skip = 0; next }
+            !skip                                               { print }
+        ' "$cfg" > "${cfg}.sanszt" && mv "${cfg}.sanszt" "$cfg"
+        log "  entree zero-touch precedente retiree (reconstruction)"
+    fi
+
+    linux_line="$(grep -m1 -E '^[[:space:]]*linux(efi)?[[:space:]]+/images/pxeboot/vmlinuz' "$cfg" \
+        | grep -v 'bf_domain' || true)"
     initrd_line="$(grep -m1 -E '^[[:space:]]*initrd(efi)?[[:space:]]+' "$cfg" || true)"
     if [ -z "${linux_line}" ] || [ -z "${initrd_line}" ]; then
         log "  pas d'entree modele exploitable — zero-touch non ajoutee"
@@ -138,17 +186,9 @@ prepend_zerotouch_entry() {
 
     {
         printf "menuentry 'Installer Blue Fox OS (zero-touch)' --class fedora --class gnu-linux {\n"
-        printf '    set bf_domain=""\n'
-        printf '    echo ""\n'
-        printf '    echo " Blue Fox OS — installation zero-touch"\n'
-        printf '    echo ""\n'
-        printf '    echo " Entrer le domaine racine de votre organisation, puis <entree>."\n'
-        printf '    echo " Exemple : %s"\n' "${ZEROTOUCH_DEFAULT_DOMAIN}"
-        printf '    echo " (Vide = %s)"\n' "${ZEROTOUCH_DEFAULT_DOMAIN}"
-        printf '    echo ""\n'
-        printf '    echo -n " Domaine : "\n'
-        printf '    read bf_domain\n'
-        printf '    if [ -z "${bf_domain}" ]; then set bf_domain="%s"; fi\n' "${ZEROTOUCH_DEFAULT_DOMAIN}"
+        printf '    # Domaine en dur : `read` n%s existe pas dans le grub UEFI.\n' "'"
+        printf '    # Pour une autre organisation : « e » ici, editer, Ctrl-X.\n'
+        printf '    set bf_domain="%s"\n' "${ZEROTOUCH_DEFAULT_DOMAIN}"
         printf '%s\n' "${zt_linux}"
         printf '%s\n' "${initrd_line}"
         printf "}\n\n"
@@ -233,7 +273,38 @@ verify_menu() {   # $1 = etiquette humaine, $2 = fichier
     [ "${nlinux}" -eq "${nprof}" ] \
         || die "${name} : inst.profile sur ${nprof}/${nlinux} entree(s) — le chrome
     Anaconda resterait Fedora sur les autres."
-    log "  ${name} : ${nlinux} entree(s), etiquettes ok, inst.profile ok"
+
+    # ⚠️ Les commandes doivent EXISTER dans le grub qui lira ce menu (#23940).
+    # Jusqu'au 2026-09-01 ce controle validait etiquettes et profil, puis
+    # declarait « ISO livrable » un menu UEFI qui ne pouvait pas demarrer :
+    # l'entree zero-touch appelait `read`, absent du grub UEFI, et le menuentry
+    # avortait avant la ligne `linux`. Un feu vert sur ce qu'on a regarde ne dit
+    # rien de ce qu'on n'a pas regarde.
+    #
+    # L'ISO ne porte de modules que pour i386-pc : en UEFI, rien a insmod. La
+    # liste ci-dessous est donc celle des commandes qu'on a vues manquer, pas un
+    # inventaire exhaustif du jeu integre.
+    local absentes=0 c
+    for c in read; do
+        if grep -qE "^[[:space:]]*${c}[[:space:]]" "$cfg"; then
+            echo "[brand-iso]   ${name}: commande '${c}' absente du grub UEFI" >&2
+            absentes=$((absentes + 1))
+        fi
+    done
+    if [ "${name}" = "UEFI " ] && [ "${absentes}" -gt 0 ]; then
+        die "${name} : ${absentes} commande(s) indisponible(s) en UEFI. Le menuentry
+    avorterait avant la ligne 'linux' — l'entree ne demarrerait sur aucune vraie
+    machine. ISO non livrable."
+    fi
+
+    # Le zero-touch ne vaut que s'il resout un domaine : ${bf_domain} vide
+    # donnerait inst.ks=https:///blue-fox-install.ks.
+    if grep -q 'bf_domain' "$cfg" && ! grep -qE '^[[:space:]]*set bf_domain="[^"]+"' "$cfg"; then
+        die "${name} : bf_domain est cite mais jamais pose a une valeur non vide.
+    Le kickstart serait demande a https:///blue-fox-install.ks."
+    fi
+
+    log "  ${name} : ${nlinux} entree(s), etiquettes ok, inst.profile ok, commandes ok"
 }
 
 if xorriso -osirrox on -indev "${ISO}" -extract /boot/grub2/grub.cfg \
