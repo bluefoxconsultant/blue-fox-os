@@ -164,8 +164,18 @@ modules:
         # garde a vie la politique du jour de son installation. Conditionnee a
         # /etc/bluefox/machine.json, donc inerte sur un poste non enrole.
         - bluefox-policy-sync.timer
-      masked:
-        - tailscaled.service       # user doit `systemctl enable --now tailscaled` consciemment
+        # ⚠️ RENVERSEMENT ASSUME (2026-09-03). tailscaled etait MASQUE, avec
+        # la consigne « l'utilisateur doit l'activer consciemment ». La bascule
+        # de l'organisation en login_mode=sssd (#23906) retire ce choix : la
+        # connexion s'authentifie contre l'avant-poste LDAP d'Authentik, joint
+        # par le tailnet, et il faut donc que le tailnet SOIT LA avant la
+        # premiere ouverture de session. Un service masque ne peut meme pas
+        # etre demarre par le %post — c'est tout l'objet du masquage.
+        #
+        # Le demon seul ne rejoint aucun reseau : sans cle d'authentification il
+        # tourne et attend. C'est `tailscale up` qui engage la machine, et il
+        # reste pilote par la politique.
+        - tailscaled.service
 
   - type: signing
 
