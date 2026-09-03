@@ -55,6 +55,7 @@ config/*.json
 # KDE theme assets generes par scripts/generate_kde_theme.py a partir de
 # tenant.json. Materialises a chaque build, pas commits.
 files/etc/xdg/kdeglobals
+files/etc/xdg/kscreenlockerrc
 files/etc/skel/
 files/etc/sddm.conf.d/
 files/usr/share/color-schemes/

@@ -135,6 +135,14 @@ def emit_look_and_feel(b: dict, files_root: Path) -> Path:
         f"[plasma-org.kde.plasma.desktop-appletsrc][Wallpaper][org.kde.image][General]\n"
         f"Image=file://{wallpaper_path}\n"
         f"FillMode=2\n"
+        f"\n"
+        # L'ecran de VERROUILLAGE est un reglage separe de celui du bureau :
+        # kscreenlocker ne lit pas le fond du bureau. Sans cette section, une
+        # machine brandee retombe sur le fond Plasma d'origine des qu'elle se
+        # verrouille — l'ecran qu'on voit le plus souvent, en pratique.
+        f"[kscreenlockerrc][Greeter][Wallpaper][org.kde.image][General]\n"
+        f"Image=file://{wallpaper_path}\n"
+        f"FillMode=2\n"
     )
     (contents / "defaults").write_text(defaults)
     LOG.info("emit look-and-feel %s", base)
@@ -484,6 +492,57 @@ def _kdeglobals_body(b: dict) -> str:
     )
 
 
+def emit_sddm_breeze_override(b: dict, files_root: Path) -> Path:
+    """Donner au greeter SDDM le papier peint de la marque.
+
+    emit_sddm_config() oriente SDDM vers le theme `breeze` d'origine, mature et
+    livre avec Plasma 6. Le theme par tenant emis juste au-dessus pointe bien
+    sur notre papier peint, mais il n'est PAS celui qui est charge : son propre
+    commentaire annonce une bascule qui n'a jamais eu lieu. Resultat constate le
+    2026-09-02 sur une machine fraichement installee : l'ecran de connexion
+    affiche le fond Breeze d'origine.
+
+    SDDM lit `theme.conf` PUIS `theme.conf.user` dans le repertoire du theme, et
+    le second l'emporte. C'est le point de surcharge prevu en amont, et il
+    survit a une mise a jour du paquet breeze, contrairement a une reecriture de
+    theme.conf.
+    """
+    base = files_root / "usr/share/sddm/themes/breeze"
+    base.mkdir(parents=True, exist_ok=True)
+    conf = (
+        f"# Genere par scripts/generate_kde_theme.py — tenant {b['slug']}.\n"
+        f"# Surcharge de /usr/share/sddm/themes/breeze/theme.conf.\n"
+        f"[General]\n"
+        f"background={BRANDING_RUNTIME}/wallpaper.jpg\n"
+        f"type=image\n"
+    )
+    target = base / "theme.conf.user"
+    target.write_text(conf)
+    LOG.info("emit sddm breeze override %s", target)
+    return target
+
+
+def emit_kscreenlocker_config(b: dict, files_root: Path) -> Path:
+    """Papier peint de l'ecran de verrouillage, a l'echelle du systeme.
+
+    Le `defaults` du look-and-feel ne s'applique qu'a un profil Plasma NEUF. Ce
+    fichier-ci vaut pour toute session, y compris un profil deja cree, et c'est
+    ce qui rend le reglage vrai sur une machine qui a deja servi.
+    """
+    target = files_root / "etc/xdg/kscreenlockerrc"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    wallpaper_path = f"/usr/share/wallpapers/{b['slug']}/contents/images/wallpaper.jpg"
+    conf = (
+        f"# Genere par scripts/generate_kde_theme.py — tenant {b['slug']}.\n"
+        f"[Greeter][Wallpaper][org.kde.image][General]\n"
+        f"Image=file://{wallpaper_path}\n"
+        f"FillMode=2\n"
+    )
+    target.write_text(conf)
+    LOG.info("emit kscreenlocker config %s", target)
+    return target
+
+
 def emit_icon_theme(b: dict, files_root: Path) -> Path:
     """Ship a minimal KDE icon theme inheriting Breeze, overriding only
     `start-here-kde` (the application menu button) with the tenant logo.
@@ -671,6 +730,8 @@ def emit_all(tenant: dict, files_root: Path) -> dict:
         "look_and_feel": emit_look_and_feel(b, files_root),
         "sddm_theme": emit_sddm_theme(b, files_root),
         "sddm_config": emit_sddm_config(b, files_root),
+        "sddm_breeze_override": emit_sddm_breeze_override(b, files_root),
+        "kscreenlocker": emit_kscreenlocker_config(b, files_root),
         "plymouth_theme": emit_plymouth_theme(b, files_root),
         "plymouth_config": emit_plymouth_config(b, files_root),
         "xdg_kdeglobals": emit_xdg_kdeglobals(b, files_root),

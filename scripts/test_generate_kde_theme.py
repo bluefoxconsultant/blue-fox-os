@@ -340,3 +340,42 @@ def test_color_scheme_decoration_keeps_brand_accent(tmp_path: Path):
     for section in ("Colors:Window", "Colors:View", "Colors:Button", "Colors:Header", "Colors:Tooltip"):
         focus = _rgb_to_hex(_rgb_tuple_from_section(text, section, "DecorationFocus"))
         assert focus == "#29ABE1", f"{section}.DecorationFocus must keep raw BF accent (got {focus})"
+
+
+def test_sddm_breeze_override_points_at_brand_wallpaper(tmp_path: Path):
+    """Le greeter tourne sur breeze : c'est CE theme-la qu'il faut surcharger.
+
+    Regression du 2026-09-02 : le theme par tenant pointait bien sur le papier
+    peint, mais emit_sddm_config() oriente SDDM vers breeze, donc l'ecran de
+    connexion affichait le fond d'origine.
+    """
+    b = gkt.resolve_branding({"slug": "bf", "branding": {}})
+    target = gkt.emit_sddm_breeze_override(b, tmp_path)
+    assert target == tmp_path / "usr/share/sddm/themes/breeze/theme.conf.user"
+    body = target.read_text()
+    assert f"background={gkt.BRANDING_RUNTIME}/wallpaper.jpg" in body
+    assert "type=image" in body
+
+
+def test_kscreenlocker_config_uses_tenant_wallpaper(tmp_path: Path):
+    b = gkt.resolve_branding({"slug": "bf", "branding": {}})
+    target = gkt.emit_kscreenlocker_config(b, tmp_path)
+    assert target == tmp_path / "etc/xdg/kscreenlockerrc"
+    body = target.read_text()
+    assert "[Greeter][Wallpaper][org.kde.image][General]" in body
+    assert "Image=file:///usr/share/wallpapers/bf/contents/images/wallpaper.jpg" in body
+
+
+def test_look_and_feel_defaults_cover_the_lock_screen(tmp_path: Path):
+    """kscreenlocker ne lit pas le fond du bureau : il lui faut sa section."""
+    b = gkt.resolve_branding({"slug": "bf", "branding": {}})
+    base = gkt.emit_look_and_feel(b, tmp_path)
+    body = (base / "contents" / "defaults").read_text()
+    assert "[kscreenlockerrc][Greeter][Wallpaper][org.kde.image][General]" in body
+    assert body.count("Image=file:///usr/share/wallpapers/bf/contents/images/wallpaper.jpg") == 2
+
+
+def test_emit_all_ships_both_wallpaper_surfaces(tmp_path: Path):
+    out = gkt.emit_all({"slug": "bf", "branding": {}}, tmp_path)
+    assert out["sddm_breeze_override"].exists()
+    assert out["kscreenlocker"].exists()
