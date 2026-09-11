@@ -220,6 +220,14 @@ def render_sssd_conf(policy) -> str:
         # « b1057f273c9dccc30d3e57e96b026ffbab02c6bb5ebe24385ce7f1d13acb9f17 ».
         # Le nom utilisable est `cn`, celui-la meme que porte le DN.
         "ldap_user_name = cn\n"
+        # ⚠️ MESURE DU 2026-09-11, avec sssd branche sur l'annuaire vivant. Le
+        # traitement des groupes imbriques echoue a CHAQUE recherche —
+        # « sdap_nested_group_single_step_done: Error processing direct
+        # membership [22]: Invalid argument » — et il ne se contente pas de
+        # journaliser : il TRONQUE la liste des membres. Avec, bf-team rendait
+        # « olivier » seul ; sans, il rend « olivier,jace ». L'avant-poste
+        # n'imbrique rien, la resolution ne perd donc rien a s'en passer.
+        "ldap_group_nesting_level = 0\n"
         f"{bind_lines}"
         f"ldap_id_use_start_tls = {start_tls}\n"
         "ldap_tls_reqcert = demand\n"

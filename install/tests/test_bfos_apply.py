@@ -355,3 +355,10 @@ def test_render_sssd_conf_names_the_user_by_cn():
 def test_render_sssd_conf_is_case_insensitive():
     """L'annuaire sert « Olivier », la politique porte « olivier »."""
     assert "case_sensitive = false\n" in ba.render_sssd_conf(POLICY)
+
+
+def test_render_sssd_conf_disables_nested_groups():
+    """MESURE du 2026-09-11 : le traitement des groupes imbriques echoue a
+    chaque recherche ET tronque la liste des membres (bf-team rendait un seul
+    membre sur deux). L'avant-poste n'imbrique rien."""
+    assert "ldap_group_nesting_level = 0\n" in ba.render_sssd_conf(POLICY)
