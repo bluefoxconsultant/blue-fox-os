@@ -99,6 +99,14 @@ _MAX_WAIT = 900  # cap the device-flow wait at 15 min regardless of expires_in
 # passphrase nobody on earth possesses.
 AUTOPART_INCLUDE = "/tmp/bfos-autopart.ks"
 AUTOPART_BASE = "autopart --type=btrfs --encrypted --nohome"
+# La variante EN CLAIR. Elle n'existe que pour le repli decide le 2026-09-11 :
+# sans TPM, l'operateur choisit entre une phrase a taper a chaque demarrage et
+# pas de chiffrement du tout. Ce second choix se prend les yeux ouverts.
+AUTOPART_CLAIR = "autopart --type=btrfs --nohome"
+# Marqueur lu par le %post --nochroot : « enrole le TPM avec la phrase que je
+# viens de tirer ». Explicite, parce que deduire l'intention de la presence
+# d'un TPM confondrait le cas ou l'operateur l'a refuse.
+TPM_MARKER = "/tmp/bfos-tpm-enrol"
 # Crockford's base32 alphabet: digits and uppercase letters minus I, L, O and U.
 # The first three are the shapes people mistype reading a key off a screen
 # (I/1, L/1, O/0); U goes because excluding it is what keeps a random string
@@ -321,7 +329,56 @@ def escrow_requested(policy) -> bool:
     return bool(block.get("enabled")) and bool(block.get("available"))
 
 
-def write_autopart(passphrase=None, path=None):
+def tpm2_present(chemins=("/dev/tpmrm0", "/dev/tpm0")) -> bool:
+    """Y a-t-il un TPM2 utilisable dans cette machine ?
+
+    On regarde le noeud de peripherique plutot que `systemd-analyze has-tpm2` :
+    l'environnement de l'installateur est reduit, et un outil absent rendrait
+    « pas de TPM » pour une mauvaise raison. Un noeud present et illisible
+    serait un cas tordu ; l'enrolement echouerait alors bruyamment au %post,
+    ce qui est le bon endroit pour l'apprendre.
+    """
+    return any(os.path.exists(c) for c in chemins)
+
+
+def decider_chiffrement(out, tpm=None, lire=None) -> tuple:
+    """Rend (chiffrer, enroler_tpm). Decision prise AVANT l'enrolement.
+
+    ⚠️ L'ordre compte : decider apres coup reviendrait a sequestrer une phrase
+    pour un disque qu'on s'apprete a laisser en clair, et la fiche machine
+    mentirait.
+
+    Avec TPM : on chiffre et on enrole a l'installation, sans rien demander.
+    C'est possible depuis le sequestre (#23940) et ca ne l'etait pas avant —
+    `systemd-cryptenroll` exige la phrase existante, et l'installateur la tire
+    desormais lui-meme.
+
+    Sans TPM : on demande. Le defaut, sur toute reponse inattendue comme sur
+    une entree fermee, est de CHIFFRER : c'est la seule direction ou se tromper
+    ne coute que du confort.
+    """
+    lire = lire or (lambda: sys.stdin.readline())
+    if tpm is None:
+        tpm = tpm2_present()
+    if tpm:
+        return True, True
+    out("\n[bfos] Aucun TPM2 sur cette machine.\n"
+        "       1) chiffrer le disque — la phrase est tiree et sequestree dans\n"
+        "          Odoo, et il faudra la TAPER A CHAQUE DEMARRAGE ;\n"
+        "       2) ne pas chiffrer — rien a taper, et un disque vole se lit.\n"
+        "       Choix [1] : ")
+    try:
+        reponse = (lire() or "").strip()
+    except Exception:  # noqa: BLE001 — entree fermee, install pilotee
+        reponse = ""
+    if reponse == "2":
+        out("[bfos] disque NON chiffre, a la demande de l'operateur\n")
+        return False, False
+    out("[bfos] disque chiffre, sans deverrouillage automatique\n")
+    return True, False
+
+
+def write_autopart(passphrase=None, path=None, chiffrer=True):
     """Write the autopart line Anaconda includes, and lock it down.
 
     No passphrase: the prompting form, byte-identical to what the template
@@ -329,6 +386,11 @@ def write_autopart(passphrase=None, path=None):
     0600 because for the length of the install that file IS the disk key.
     """
     path = path or AUTOPART_INCLUDE
+    if not chiffrer:
+        # Aucune phrase ici, et il ne faut surtout pas en accepter une : un
+        # appelant qui passerait les deux se contredit.
+        write_private(path, AUTOPART_CLAIR + "\n")
+        return path
     line = AUTOPART_BASE
     if passphrase:
         line = f"{AUTOPART_BASE} --passphrase={passphrase}"
@@ -461,7 +523,8 @@ def run(env=None, post=_post_form, get=_get, sleep=time.sleep, out=None,
 
 
 def stage_enrolment(token, policy, env=None, out=None, post=_post_json,
-                    path=None, autopart_path=None, gen=None):
+                    path=None, autopart_path=None, gen=None, decider=None,
+                    marqueur_tpm=None):
     """Enrol this machine, stage the secret, and settle the disk passphrase.
 
     ⚠️ This is the `after_policy` seam, and `run()` documents that it must not
@@ -490,7 +553,8 @@ def stage_enrolment(token, policy, env=None, out=None, post=_post_json,
     try:
         return _stage_enrolment(token, policy, env=env, out=out, post=post,
                                 path=path, autopart_path=autopart_path,
-                                gen=gen)
+                                gen=gen, decider=decider,
+                                marqueur_tpm=marqueur_tpm)
     except Exception as exc:  # noqa: BLE001 — the contract is: never raise
         out(f"[bfos] the enrolment step failed ({exc}); the policy already "
             "fetched is kept and the install goes on. Anaconda will ask for "
@@ -499,7 +563,8 @@ def stage_enrolment(token, policy, env=None, out=None, post=_post_json,
 
 
 def _stage_enrolment(token, policy, env=None, out=None, post=_post_json,
-                     path=None, autopart_path=None, gen=None):
+                     path=None, autopart_path=None, gen=None, decider=None,
+                     marqueur_tpm=None):
     """The body of stage_enrolment. Kept apart so the guard above is the only
     way in, and so nothing added here can quietly break the no-raise contract.
     """
@@ -513,8 +578,16 @@ def _stage_enrolment(token, policy, env=None, out=None, post=_post_json,
             "policy changes\n")
         return None
 
+    # ⚠️ La decision de chiffrer se prend AVANT l'enrolement : la prendre apres
+    # reviendrait a sequestrer une phrase pour un disque laisse en clair, et la
+    # fiche machine d'Odoo mentirait sur ce que porte la machine.
+    decider = decider or decider_chiffrement
+    chiffrer, enroler_tpm = decider(out)
+    if not chiffrer:
+        write_autopart(path=autopart_path, chiffrer=False)
+
     passphrase = ""
-    if escrow_requested(policy):
+    if chiffrer and escrow_requested(policy):
         passphrase = generate_disk_passphrase(rng=gen)
 
     try:
@@ -542,6 +615,18 @@ def _stage_enrolment(token, policy, env=None, out=None, post=_post_json,
             write_autopart(passphrase, path=autopart_path)
             out("[bfos] disk passphrase drawn and deposited in Odoo; this "
                 "install will not ask for one\n")
+            if enroler_tpm:
+                # Le %post --nochroot lit ce marqueur ET la phrase dans
+                # /tmp/bfos-autopart.ks. Un marqueur explicite plutot qu'une
+                # deduction : « il y a un TPM et la ligne porte une phrase »
+                # serait vrai aussi quand l'operateur a refuse l'enrolement.
+                try:
+                    write_private(marqueur_tpm or TPM_MARKER, "")
+                    out("[bfos] TPM2 present : le disque sera enrole a "
+                        "l'installation, sans invite au demarrage\n")
+                except OSError as exc:
+                    out(f"[bfos] marqueur TPM non ecrit ({exc}); le disque "
+                        "demandera sa phrase a chaque demarrage\n")
         else:
             reason = machine.get("disk_escrow_error") or "reason unknown"
             out(f"[bfos] disk passphrase NOT deposited ({reason}); Anaconda "

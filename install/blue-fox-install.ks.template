@@ -206,6 +206,66 @@ for ROOT in /mnt/sysroot /mnt/sysimage; do
     done
   fi
 done
+
+# ---------------------------------------------------------------------------
+# Enrolement TPM2 du volume LUKS, decide par le %pre (#23910, 2026-09-11).
+#
+# POURQUOI ICI ET PAS AU PREMIER DEMARRAGE
+# bluefox-tpm-enroll.service s'ordonnait sur graphical.target, atteint quand
+# SDDM demarre et NON quand une session existe : systemd-ask-password n'avait
+# alors aucun agent KDE pour afficher son invite, elle partait sur une console
+# que personne ne regarde, et l'enrolement n'avait jamais lieu.
+#
+# Le faire ici est desormais possible, et ca ne l'etait pas avant le sequestre :
+# systemd-cryptenroll exige la phrase EXISTANTE, et c'est l'installateur qui la
+# tire depuis #23940. Elle est dans /tmp/bfos-autopart.ks, en 0600, dans le
+# systeme de fichiers de l'installateur — d'ou --nochroot.
+#
+# ⚠️ La phrase reste enrolee comme methode de secours : --tpm2-device AJOUTE un
+# emplacement de cle, il n'en retire jamais. Une machine dont le Secure Boot
+# change redemande simplement sa phrase.
+# ---------------------------------------------------------------------------
+if [ -f /tmp/bfos-tpm-enrol ] && [ -f /tmp/bfos-autopart.ks ]; then
+  for ROOT in /mnt/sysroot /mnt/sysimage; do
+    [ -d "$ROOT" ] || continue
+    GRAVURE="$ROOT/var/log/anaconda/bfosl4-installateur.log"
+    mkdir -p "$(dirname "$GRAVURE")" 2>/dev/null || true
+    PHRASE=$(sed -n 's/.*--passphrase=\([^ ][^ ]*\).*/\1/p' /tmp/bfos-autopart.ks)
+    if [ -z "$PHRASE" ]; then
+      echo "--- TPM2 : pas de phrase dans la ligne autopart, rien a enroler ---" >> "$GRAVURE"
+      break
+    fi
+    # Le volume, lu dans le crypttab du systeme installe : 2e champ, en general
+    # UUID=<...>. On ne devine pas le nom du peripherique.
+    SRC=$(awk '$0 !~ /^[[:space:]]*#/ && NF >= 2 {print $2; exit}' "$ROOT/etc/crypttab" 2>/dev/null)
+    case "$SRC" in
+      UUID=*) DEV="/dev/disk/by-uuid/${SRC#UUID=}" ;;
+      /dev/*) DEV="$SRC" ;;
+      *)      DEV="" ;;
+    esac
+    if [ -z "$DEV" ] || [ ! -e "$DEV" ]; then
+      echo "--- TPM2 : volume introuvable (crypttab dit '$SRC') ---" >> "$GRAVURE"
+      break
+    fi
+    # Les PCR viennent de la politique ; 7 = etat du Secure Boot, le defaut.
+    PCRS=$(python3 -c "import json,sys;d=json.load(open('/tmp/bfos-provision.json'));print((((d.get('policies') or {}).get('tpm_autounlock') or {}).get('pcrs')) or '7')" 2>/dev/null || echo 7)
+    if PASSWORD="$PHRASE" systemd-cryptenroll --tpm2-device=auto \
+           --tpm2-pcrs="$PCRS" "$DEV" >> "$GRAVURE" 2>&1; then
+      # Sans cette option, l'emplacement de cle existe et l'initramfs ne s'en
+      # sert pas : la machine redemanderait sa phrase malgre l'enrolement.
+      awk 'BEGIN{OFS="\t"} $0 ~ /^[[:space:]]*#/ || NF < 3 {print; next}
+           {if ($4 == "") $4 = "tpm2-device=auto"; else $4 = $4 ",tpm2-device=auto"; print}' \
+          "$ROOT/etc/crypttab" > "$ROOT/etc/crypttab.tpm" 2>/dev/null \
+          && mv "$ROOT/etc/crypttab.tpm" "$ROOT/etc/crypttab"
+      touch "$ROOT/var/lib/bluefox-welcome/tpm-enrolled" 2>/dev/null || true
+      echo "--- TPM2 : volume enrole sur PCR $PCRS, crypttab mis a jour ---" >> "$GRAVURE"
+    else
+      echo "--- TPM2 : enrolement REFUSE (voir ci-dessus) ; la phrase reste la seule cle ---" >> "$GRAVURE"
+    fi
+    break
+  done
+fi
+
 %end
 
 # ---------------------------------------------------------------------------
@@ -238,7 +298,12 @@ if [ -f /var/lib/bluefox-welcome/provisioning.json ]; then
   python3 /tmp/bfos_apply.py /var/lib/bluefox-welcome/provisioning.json || true
 fi
 
-# Sentinel : le welcome agent verifie qu'il est sur l'image attendue. Si oui,
-# bluefox-rebase.service est un no-op ; sinon il rebase.
+# Sentinel du rebase de premier demarrage.
+# ⚠️ CORRIGE LE 2026-09-11 : ce commentaire disait que « le welcome agent
+# verifie qu'il est sur l'image attendue, si oui bluefox-rebase est un no-op ».
+# Rien ne faisait cette verification. Une installation zero-touch tirant deja
+# son image du registre, le rebase la repointait sur elle-meme, en
+# ostree-unverified-image, et redemarrait la machine pour rien. C'est
+# desormais bluefox-rebase lui-meme qui compare avant d'agir.
 touch /var/lib/bluefox-welcome/needs-rebase
 %end

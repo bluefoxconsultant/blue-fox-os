@@ -637,3 +637,95 @@ def test_the_template_carries_no_bare_autopart_line():
             raise AssertionError(
                 f"ligne autopart nue dans le gabarit : {line.strip()!r}")
     assert "%include /tmp/bfos-autopart.ks" in text
+
+
+# ------------------------------------ chiffrement, TPM et repli (2026-09-11)
+def test_tpm2_present_regarde_le_noeud(tmp_path):
+    absent = tmp_path / "pas-de-tpm"
+    present = tmp_path / "tpmrm0"
+    present.write_text("")
+    assert bp.tpm2_present((str(absent),)) is False
+    assert bp.tpm2_present((str(absent), str(present))) is True
+
+
+def test_avec_tpm_on_chiffre_et_on_enrole_sans_rien_demander():
+    dit = []
+    assert bp.decider_chiffrement(dit.append, tpm=True) == (True, True)
+    assert dit == [], "aucune question ne doit etre posee quand le TPM est la"
+
+
+def test_sans_tpm_le_refus_explicite_laisse_en_clair():
+    dit = []
+    assert bp.decider_chiffrement(dit.append, tpm=False,
+                                  lire=lambda: "2\n") == (False, False)
+    assert "NON chiffre" in "".join(dit)
+
+
+def test_sans_tpm_le_defaut_est_de_chiffrer():
+    """Se tromper vers le chiffrement ne coute que du confort ; l'inverse non."""
+    for reponse in ("", "\n", "1", "oui", "n'importe quoi"):
+        assert bp.decider_chiffrement(lambda _m: None, tpm=False,
+                                      lire=lambda r=reponse: r) == (True, False)
+
+
+def test_sans_tpm_une_entree_fermee_chiffre_quand_meme():
+    """Une install pilotee sans console ne doit pas rester bloquee, ni finir
+    en clair par accident."""
+    def lire_qui_leve():
+        raise OSError("stdin ferme")
+    assert bp.decider_chiffrement(lambda _m: None, tpm=False,
+                                  lire=lire_qui_leve) == (True, False)
+
+
+def test_write_autopart_en_clair_ne_porte_aucune_phrase(tmp_path):
+    ap = tmp_path / "autopart.ks"
+    bp.write_autopart(path=str(ap), chiffrer=False)
+    ligne = ap.read_text().strip()
+    assert ligne == bp.AUTOPART_CLAIR
+    assert "--encrypted" not in ligne and "--passphrase" not in ligne
+
+
+def test_stage_enrolment_en_clair_ne_sequestre_rien(tmp_path):
+    """⚠️ L'ordre compte : decider apres l'enrolement sequestrerait une phrase
+    pour un disque laisse en clair, et la fiche machine mentirait."""
+    ap = tmp_path / "autopart.ks"
+    vus = []
+
+    def post_espion(url, payload, token, timeout=30):
+        vus.append(payload)
+        return _enrol_escrow_ok(url, payload, token, timeout=timeout)
+
+    bp.stage_enrolment("TOK", POLICY_ESCROW,
+                       env={"BFOS_ENROLL_URL": ENROLL_URL}, post=post_espion,
+                       path=str(tmp_path / "machine.json"),
+                       autopart_path=str(ap), out=lambda _m: None,
+                       decider=lambda _out: (False, False))
+    assert ap.read_text().strip() == bp.AUTOPART_CLAIR
+    assert vus and not vus[0].get("disk_passphrase")
+
+
+def test_stage_enrolment_pose_le_marqueur_tpm(tmp_path):
+    ap = tmp_path / "autopart.ks"
+    marqueur = tmp_path / "tpm-enrol"
+    bp.stage_enrolment("TOK", POLICY_ESCROW,
+                       env={"BFOS_ENROLL_URL": ENROLL_URL},
+                       post=_enrol_escrow_ok,
+                       path=str(tmp_path / "machine.json"),
+                       autopart_path=str(ap), out=lambda _m: None,
+                       decider=lambda _out: (True, True),
+                       marqueur_tpm=str(marqueur))
+    assert marqueur.exists(), "le %post ne saurait pas qu'il doit enroler"
+    assert "--passphrase=" in ap.read_text()
+
+
+def test_pas_de_marqueur_tpm_quand_l_enrolement_n_est_pas_voulu(tmp_path):
+    ap = tmp_path / "autopart.ks"
+    marqueur = tmp_path / "tpm-enrol"
+    bp.stage_enrolment("TOK", POLICY_ESCROW,
+                       env={"BFOS_ENROLL_URL": ENROLL_URL},
+                       post=_enrol_escrow_ok,
+                       path=str(tmp_path / "machine.json"),
+                       autopart_path=str(ap), out=lambda _m: None,
+                       decider=lambda _out: (True, False),
+                       marqueur_tpm=str(marqueur))
+    assert not marqueur.exists()
