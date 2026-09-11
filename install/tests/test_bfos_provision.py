@@ -729,3 +729,66 @@ def test_pas_de_marqueur_tpm_quand_l_enrolement_n_est_pas_voulu(tmp_path):
                        decider=lambda _out: (True, False),
                        marqueur_tpm=str(marqueur))
     assert not marqueur.exists()
+
+
+# ------------------------------------- compte de secours local (2026-09-11)
+def test_compte_verrouille_par_defaut(tmp_path):
+    """Le filet : Anaconda est satisfait, mais rien n'est ouvert."""
+    c = tmp_path / "compte.ks"
+    bp.write_compte(path=str(c))
+    ligne = c.read_text().strip()
+    assert ligne == "user --name=bfos-secours --groups=wheel --lock"
+    assert oct(c.stat().st_mode)[-3:] == "600"
+
+
+def test_compte_ouvert_sur_la_phrase_du_disque(tmp_path):
+    c = tmp_path / "compte.ks"
+    bp.write_compte("PWSND-4KX7M-Q2RTB-9HJVC-ZE6YA", path=str(c))
+    ligne = c.read_text().strip()
+    assert "--plaintext --password=PWSND-4KX7M-Q2RTB-9HJVC-ZE6YA" in ligne
+    assert "--lock" not in ligne
+
+
+def test_une_phrase_de_forme_inattendue_laisse_le_compte_verrouille(tmp_path):
+    """⚠️ Un kickstart invalide n'installe RIEN : c'est bien pire que l'absence
+    de compte de secours. La garde prefere verrouiller et le dire."""
+    c = tmp_path / "compte.ks"
+    for mauvaise in ("avec espace", 'avec"guillemet', "saut\nligne", "point;virgule"):
+        dit = []
+        bp.write_compte(mauvaise, path=str(c), out=dit.append)
+        assert c.read_text().strip().endswith("--lock"), mauvaise
+        assert "verrouille" in "".join(dit)
+
+
+def test_stage_enrolment_ouvre_le_compte_quand_odoo_confirme(tmp_path):
+    ap = tmp_path / "autopart.ks"
+    compte = tmp_path / "compte.ks"
+    bp.write_compte(path=str(compte))          # le filet, comme le %pre
+    bp.stage_enrolment("TOK", POLICY_ESCROW,
+                       env={"BFOS_ENROLL_URL": ENROLL_URL},
+                       post=_enrol_escrow_ok,
+                       path=str(tmp_path / "machine.json"),
+                       autopart_path=str(ap), compte_path=str(compte),
+                       out=lambda _m: None,
+                       decider=lambda _out: (True, False))
+    ligne = compte.read_text().strip()
+    assert "--plaintext --password=" in ligne
+    # La MEME phrase que le disque : un seul secret, un seul bouton Reveler.
+    phrase_disque = ap.read_text().split("--passphrase=")[1].strip()
+    assert ligne.endswith(phrase_disque)
+
+
+def test_le_compte_reste_verrouille_si_le_depot_echoue(tmp_path):
+    """Un compte ouvert sur une phrase qu'Odoo ne detient pas serait une porte
+    muree : personne ne pourrait la reveler."""
+    ap = tmp_path / "autopart.ks"
+    compte = tmp_path / "compte.ks"
+    bp.write_compte(path=str(compte))
+    bp.stage_enrolment("TOK", POLICY_ESCROW,
+                       env={"BFOS_ENROLL_URL": ENROLL_URL},
+                       post=_enrol_escrow_refused,
+                       path=str(tmp_path / "machine.json"),
+                       autopart_path=str(ap), compte_path=str(compte),
+                       out=lambda _m: None,
+                       decider=lambda _out: (True, False))
+    assert compte.read_text().strip().endswith("--lock")

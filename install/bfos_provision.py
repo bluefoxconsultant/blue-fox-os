@@ -107,6 +107,15 @@ AUTOPART_CLAIR = "autopart --type=btrfs --nohome"
 # viens de tirer ». Explicite, parce que deduire l'intention de la presence
 # d'un TPM confondrait le cas ou l'operateur l'a refuse.
 TPM_MARKER = "/tmp/bfos-tpm-enrol"
+# Compte de secours local. Anaconda REFUSE de commencer quand root est
+# verrouille et qu'aucun usager n'existe : sans cette ligne il ouvre son volet
+# de creation d'usager et attend quelqu'un — c'est ce qui a fait creer un
+# compte local hors annuaire le 2026-09-11.
+COMPTE_INCLUDE = "/tmp/bfos-compte.ks"
+COMPTE_SECOURS = "bfos-secours"
+# Un nom que l'annuaire ne sert pas : un homonyme LDAP serait masque par le
+# compte local, puisque nsswitch lit `files` avant `sss`.
+_COMPTE_SUR = re.compile(r"^[A-Za-z0-9._-]+$")
 # Crockford's base32 alphabet: digits and uppercase letters minus I, L, O and U.
 # The first three are the shapes people mistype reading a key off a screen
 # (I/1, L/1, O/0); U goes because excluding it is what keeps a random string
@@ -329,6 +338,37 @@ def escrow_requested(policy) -> bool:
     return bool(block.get("enabled")) and bool(block.get("available"))
 
 
+def write_compte(passphrase=None, path=None, nom=COMPTE_SECOURS, out=None):
+    """Ecrit la ligne `user` que le %include du kickstart lit.
+
+    Sans phrase : la forme VERROUILLEE. Elle satisfait Anaconda sans ouvrir
+    quoi que ce soit, et c'est le filet — toute panne du sequestre laisse la
+    machine dependante de l'annuaire, ce qui est visible, plutot que dotee d'un
+    compte dont personne ne connait le mot de passe.
+
+    Avec une phrase : le meme compte, ouvert sur la PHRASE DU DISQUE (arbitrage
+    du 2026-09-11). Un seul secret pour deux usages, deja sequestre, deja
+    revelable par le seul groupe qui en a le droit, deja trace nominativement.
+
+    ⚠️ La phrase est relue AVANT d'etre ecrite. Une valeur portant une espace
+    ou un guillemet produirait une ligne `user` que pykickstart refuse, et un
+    kickstart invalide n'installe RIEN — panne bien pire que l'absence de
+    compte de secours. L'alphabet Crockford ne peut pas en produire ; on ne
+    fait pas reposer l'amorcage sur cette certitude-la.
+    """
+    out = out or (lambda _m: None)
+    path = path or COMPTE_INCLUDE
+    base = f"user --name={nom} --groups=wheel"
+    if passphrase and not _COMPTE_SUR.match(passphrase):
+        out("[bfos] phrase de forme inattendue : le compte de secours reste "
+            "verrouille plutot que de produire un kickstart invalide\n")
+        passphrase = None
+    ligne = (f"{base} --plaintext --password={passphrase}" if passphrase
+             else f"{base} --lock")
+    write_private(path, ligne + "\n")
+    return path
+
+
 def tpm2_present(chemins=("/dev/tpmrm0", "/dev/tpm0")) -> bool:
     """Y a-t-il un TPM2 utilisable dans cette machine ?
 
@@ -524,7 +564,7 @@ def run(env=None, post=_post_form, get=_get, sleep=time.sleep, out=None,
 
 def stage_enrolment(token, policy, env=None, out=None, post=_post_json,
                     path=None, autopart_path=None, gen=None, decider=None,
-                    marqueur_tpm=None):
+                    marqueur_tpm=None, compte_path=None):
     """Enrol this machine, stage the secret, and settle the disk passphrase.
 
     ⚠️ This is the `after_policy` seam, and `run()` documents that it must not
@@ -554,7 +594,8 @@ def stage_enrolment(token, policy, env=None, out=None, post=_post_json,
         return _stage_enrolment(token, policy, env=env, out=out, post=post,
                                 path=path, autopart_path=autopart_path,
                                 gen=gen, decider=decider,
-                                marqueur_tpm=marqueur_tpm)
+                                marqueur_tpm=marqueur_tpm,
+                                compte_path=compte_path)
     except Exception as exc:  # noqa: BLE001 — the contract is: never raise
         out(f"[bfos] the enrolment step failed ({exc}); the policy already "
             "fetched is kept and the install goes on. Anaconda will ask for "
@@ -564,7 +605,7 @@ def stage_enrolment(token, policy, env=None, out=None, post=_post_json,
 
 def _stage_enrolment(token, policy, env=None, out=None, post=_post_json,
                      path=None, autopart_path=None, gen=None, decider=None,
-                     marqueur_tpm=None):
+                     marqueur_tpm=None, compte_path=None):
     """The body of stage_enrolment. Kept apart so the guard above is the only
     way in, and so nothing added here can quietly break the no-raise contract.
     """
@@ -615,6 +656,13 @@ def _stage_enrolment(token, policy, env=None, out=None, post=_post_json,
             write_autopart(passphrase, path=autopart_path)
             out("[bfos] disk passphrase drawn and deposited in Odoo; this "
                 "install will not ask for one\n")
+            # Le compte de secours prend la MEME phrase. Ecrit ici et pas
+            # ailleurs : seul ce point sait qu'Odoo la detient, donc qu'elle
+            # sera revelable. Un compte ouvert sur une phrase perdue serait
+            # une porte murée.
+            write_compte(passphrase, path=compte_path, out=out)
+            out(f"[bfos] compte de secours {COMPTE_SECOURS} ouvert sur la "
+                "phrase du disque (revelable dans Odoo)\n")
             if enroler_tpm:
                 # Le %post --nochroot lit ce marqueur ET la phrase dans
                 # /tmp/bfos-autopart.ks. Un marqueur explicite plutot qu'une

@@ -30,6 +30,20 @@ network --bootproto=dhcp --activate
 # ou, en mode 'enabled', le laisser tel quel. Jamais de credentials hardcoded.
 rootpw --lock
 
+# Compte de secours local, ecrit par le %pre (voir le filet plus bas).
+#
+# POURQUOI IL EXISTE. En login_mode=sssd le compte de siege vient de l'annuaire,
+# et une machine qui ne le joint pas a son PREMIER demarrage n'a AUCUNE porte
+# d'entree : le cache hors ligne de sssd ne sert qu'apres une premiere connexion
+# en ligne. Un portable en avion, un avant-poste en panne, et la machine se
+# reinstalle. Ce compte est cette porte.
+#
+# ⚠️ Son mot de passe est la PHRASE DU DISQUE (arbitrage du 2026-09-11), donc
+# deja sequestree dans Odoo, deja revelable par le seul groupe qui en a le
+# droit, et deja tracee nominativement. Un seul secret pour deux usages :
+# quiconque peut reveler la phrase peut de toute facon ouvrir la machine.
+%include /tmp/bfos-compte.ks
+
 # Disque : btrfs sur LUKS.
 #
 # La ligne autopart n'est PAS ecrite ici : elle vient d'un fichier que le %pre
@@ -85,6 +99,15 @@ export BFOS_FALLBACK_TIMEZONE="{{TIMEZONE}}"
 # bfos_provision.py ne le reecrit qu'apres confirmation d'Odoo (#23940).
 printf '%s\n' 'autopart --type=btrfs --encrypted --nohome' > /tmp/bfos-autopart.ks
 chmod 600 /tmp/bfos-autopart.ks
+# Meme filet pour le compte de secours. Anaconda REFUSE de commencer quand root
+# est verrouille et qu'aucun usager n'existe : sans cette ligne, il ouvre son
+# volet de creation d'usager et attend quelqu'un. C'est ce qui s'est passe le
+# 2026-09-11, et c'est ce qui a fait creer un compte local hors annuaire.
+# La forme par defaut est VERROUILLEE : elle satisfait Anaconda sans ouvrir
+# quoi que ce soit. bfos_provision.py ne lui donne un mot de passe qu'une fois
+# la phrase du disque confirmee par Odoo, donc revelable et tracee.
+printf '%s\n' 'user --name=bfos-secours --groups=wheel --lock' > /tmp/bfos-compte.ks
+chmod 600 /tmp/bfos-compte.ks
 cat > /tmp/bfos_provision.py <<'BFOSPROVISIONEOF'
 {{PROVISION_SCRIPT}}
 BFOSPROVISIONEOF
