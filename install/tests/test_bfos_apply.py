@@ -343,3 +343,15 @@ def test_apply_sssd_refuses_a_bad_username_in_sudoers(tmp_path):
     p = {**POLICY, "user": {"login": "Bad Name@x"}}
     ba.apply(p, root=str(tmp_path), run=lambda argv, check=False: None)
     assert not (tmp_path / "etc/sudoers.d/10-bluefox-seat").exists()
+
+
+def test_render_sssd_conf_names_the_user_by_cn():
+    """MESURE du 2026-09-11 : l'avant-poste sert une empreinte de 64 caracteres
+    dans `uid`, qui est l'attribut de nom par defaut de rfc2307bis. Sans
+    ldap_user_name, la machine cree un compte nomme par cette empreinte."""
+    assert "ldap_user_name = cn\n" in ba.render_sssd_conf(POLICY)
+
+
+def test_render_sssd_conf_is_case_insensitive():
+    """L'annuaire sert « Olivier », la politique porte « olivier »."""
+    assert "case_sensitive = false\n" in ba.render_sssd_conf(POLICY)

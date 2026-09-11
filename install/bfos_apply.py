@@ -213,6 +213,13 @@ def render_sssd_conf(policy) -> str:
         "ldap_schema = rfc2307bis\n"
         "ldap_user_object_class = user\n"
         "ldap_group_object_class = group\n"
+        # ⚠️ MESURE DU 2026-09-11, pas une valeur documentee. En rfc2307bis,
+        # sssd nomme l'utilisateur par `uid` — et l'avant-poste d'Authentik sert
+        # dans `uid` une empreinte de 64 caracteres, pas le nom du compte. Sans
+        # cette ligne, la machine cree un compte nomme
+        # « b1057f273c9dccc30d3e57e96b026ffbab02c6bb5ebe24385ce7f1d13acb9f17 ».
+        # Le nom utilisable est `cn`, celui-la meme que porte le DN.
+        "ldap_user_name = cn\n"
         f"{bind_lines}"
         f"ldap_id_use_start_tls = {start_tls}\n"
         "ldap_tls_reqcert = demand\n"
@@ -221,6 +228,15 @@ def render_sssd_conf(policy) -> str:
         # personnel et avec /bin/sh.
         "fallback_homedir = /home/%u\n"
         "default_shell = /bin/bash\n"
+        # ⚠️ MESURE DU 2026-09-11. L'annuaire sert « Olivier », majuscule
+        # comprise, parce que c'est le nom du compte Authentik ; la politique,
+        # elle, porte le login Odoo « olivier@… » dont on tire « olivier ». Les
+        # deux ne se rencontrent jamais si sssd compare a la casse : la regle
+        # d'acces designerait un compte inexistant, et l'utilisateur devrait
+        # taper son nom avec la bonne majuscule a l'ecran de connexion. En
+        # insensible, sssd replie tout en minuscules et les deux formes se
+        # rejoignent.
+        "case_sensitive = false\n"
         f"cache_credentials = {cache}\n"
         "enumerate = false\n"
         f"{allow_line}"
