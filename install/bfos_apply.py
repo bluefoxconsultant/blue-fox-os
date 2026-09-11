@@ -42,6 +42,14 @@ _USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]*$")
 _XKB_RE = re.compile(r"^[A-Za-z0-9_,:+()-]*$")
 
 
+def _exiger(condition, message):
+    """Leve si la condition est fausse — sert a faire ECHOUER une action que le
+    journal d'installation afficherait sinon en OK. Une action qui ne verifie
+    rien rend un feu vert sur ce qu'on n'a pas regarde."""
+    if not condition:
+        raise ValueError(message)
+
+
 def _ini_safe(value, default="") -> str:
     """Sanitize a policy-supplied value before it lands in an INI-style config
     (sssd.conf): drop CR/LF and control chars so a crafted value can't inject
@@ -145,6 +153,19 @@ def render_kxkbrc(policy) -> str:
     return out
 
 
+def _seat_username(policy) -> str:
+    """Nom de compte de siege, en forme courte.
+
+    Le login Odoo est une adresse ; le compte Unix porte la partie qui precede
+    l'arobase, en mode local comme en mode sssd. Les deux chemins doivent tirer
+    le MEME nom : `simple_allow_users` recevait l'adresse entiere alors que
+    l'annuaire sert le nom court, donc la regle d'acces ne designait personne et
+    sssd refusait la session apres avoir pourtant valide le mot de passe.
+    """
+    login = policy.get("user", {}).get("login", "") or ""
+    return login.split("@")[0]
+
+
 def render_sssd_conf(policy) -> str:
     """Render /etc/sssd/sssd.conf binding the seat login to the Authentik LDAP
     outpost, with offline credential caching gated by the org policy."""
@@ -152,12 +173,31 @@ def render_sssd_conf(policy) -> str:
     login = install.get("login", {})
     pol = policy.get("policies", {})
     offline = pol.get("offline_login", {}) if isinstance(pol, dict) else {}
-    user_login = _ini_safe(policy.get("user", {}).get("login", ""))
+    username = _ini_safe(_seat_username(policy))
 
+    uri = _ini_safe(login.get("ldap_uri", ""))
     cache = "true" if offline.get("enabled", True) else "false"
     expire = int(offline.get("max_offline_days", 0) or 0)
-    allow_line = (f"simple_allow_users = {user_login}\n"
-                  if user_login else "")
+
+    # TLS : une URI ldaps:// est chiffree des la poignee de main. Y ajouter
+    # StartTLS revient a demander a negocier TLS DANS un canal qui l'est deja,
+    # et sssd echoue. StartTLS ne vaut que pour une URI ldap:// en clair. La
+    # version precedente posait `true` en dur a cote d'une URI ldaps://.
+    start_tls = "true" if uri.startswith("ldap://") else "false"
+
+    # L'avant-poste LDAP d'Authentik ne sert PAS les recherches anonymes. Sans
+    # identite de liaison, sssd ne resout aucun utilisateur : la connexion
+    # echoue avant meme qu'un mot de passe soit demande. Le fichier est ecrit en
+    # 0600, c'est ce qui rend le secret tenable sur le poste.
+    bind_dn = _ini_safe(login.get("bind_dn", ""))
+    bind_pw = _ini_safe(login.get("bind_password", ""))
+    bind_lines = ""
+    if bind_dn:
+        bind_lines = f"ldap_default_bind_dn = {bind_dn}\n"
+        if bind_pw:
+            bind_lines += f"ldap_default_authtok = {bind_pw}\n"
+
+    allow_line = f"simple_allow_users = {username}\n" if username else ""
     return (
         "[sssd]\n"
         "config_file_version = 2\n"
@@ -168,12 +208,19 @@ def render_sssd_conf(policy) -> str:
         "id_provider = ldap\n"
         "auth_provider = ldap\n"
         "access_provider = simple\n"
-        f"ldap_uri = {_ini_safe(login.get('ldap_uri', ''))}\n"
+        f"ldap_uri = {uri}\n"
         f"ldap_search_base = {_ini_safe(login.get('ldap_base_dn', ''))}\n"
         "ldap_schema = rfc2307bis\n"
         "ldap_user_object_class = user\n"
         "ldap_group_object_class = group\n"
-        "ldap_id_use_start_tls = true\n"
+        f"{bind_lines}"
+        f"ldap_id_use_start_tls = {start_tls}\n"
+        "ldap_tls_reqcert = demand\n"
+        # L'annuaire ne sert pas forcement homeDirectory ni loginShell ; sans
+        # ces deux replis, un compte resolu ouvre une session sans repertoire
+        # personnel et avec /bin/sh.
+        "fallback_homedir = /home/%u\n"
+        "default_shell = /bin/bash\n"
         f"cache_credentials = {cache}\n"
         "enumerate = false\n"
         f"{allow_line}"
@@ -181,6 +228,22 @@ def render_sssd_conf(policy) -> str:
         "[pam]\n"
         f"offline_credentials_expiration = {expire}\n"
     )
+
+
+def render_seat_sudoers(policy) -> str:
+    """Droit d'administration du compte de siege, en mode sssd.
+
+    En mode local, `useradd -m -G wheel` donne sudo au passage. En mode sssd le
+    compte vient de l'annuaire : il n'est membre d'aucun groupe LOCAL, donc
+    `wheel` ne le couvre pas, et la machine se retrouve sans personne pour
+    l'administrer une fois root verrouille. On nomme l'utilisateur plutot que
+    d'esperer qu'un groupe de l'annuaire porte le gid 10 — un gid local ne se
+    reclame pas depuis LDAP.
+    """
+    username = _seat_username(policy)
+    return ("# Genere par bfos_apply.py depuis la politique (mode sssd).\n"
+            "# Ne pas editer a la main.\n"
+            f"{username} ALL=(ALL) ALL\n")
 
 
 def render_flatpak_list(app_ids, kind) -> str:
@@ -265,17 +328,33 @@ def apply(policy, root="/", run=subprocess.run, writer=None):
             _chroot(root, ["passwd", "-l", "root"]), check=False))
 
     if login.get("mode") == "sssd":
+        # Une politique en mode sssd sans URI d'annuaire ou sans identite de
+        # liaison produit EXACTEMENT la machine sans session de #23906. On le
+        # dit ici, plutot que d'ecrire une configuration dont on sait deja
+        # qu'elle ne peut pas resoudre un utilisateur.
+        record("sssd-gate", lambda: _exiger(
+            login.get("ldap_uri") and login.get("bind_dn"),
+            "politique en mode sssd sans ldap_uri ou sans bind_dn"))
         record("sssd-conf", lambda: writer(
             "/etc/sssd/sssd.conf", render_sssd_conf(policy), mode=0o600))
+        # ⚠️ check=True, et c'est le coeur du correctif. Ces deux gestes sont la
+        # difference entre une machine qui ouvre une session et une qui n'en
+        # ouvre aucune. En check=False, un paquet absent de l'image les faisait
+        # echouer SANS AUCUNE TRACE : le journal d'installation affichait OK
+        # pour les deux, et le defaut ne se voyait qu'a l'ecran de connexion.
         record("sssd-profile", lambda: run(
             _chroot(root, ["authselect", "select", "sssd", "with-mkhomedir",
-                           "--force"]), check=False))
+                           "--force"]), check=True))
         record("sssd-enable", lambda: run(
             _chroot(root, ["systemctl", "enable", "sssd.service",
-                           "oddjobd.service"]), check=False))
+                           "oddjobd.service"]), check=True))
+        seat = _seat_username(policy)
+        if seat and _USERNAME_RE.match(seat):
+            record("seat-sudo", lambda: writer(
+                "/etc/sudoers.d/10-bluefox-seat", render_seat_sudoers(policy),
+                mode=0o440))
     elif login.get("mode") == "local":
-        user_login = policy.get("user", {}).get("login", "")
-        username = user_login.split("@")[0] if user_login else ""
+        username = _seat_username(policy)
         if username and _USERNAME_RE.match(username):
             record("local-user", lambda: run(
                 _chroot(root, ["useradd", "-m", "-G", "wheel", username]),

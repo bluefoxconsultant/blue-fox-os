@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 
 import bfos_apply as ba
 
@@ -14,7 +15,9 @@ POLICY = {
         "root": "locked",
         "login": {"mode": "sssd",
                   "ldap_uri": "ldaps://ldap.example.com:636",
-                  "ldap_base_dn": "dc=ldap,dc=goauthentik,dc=io"},
+                  "ldap_base_dn": "dc=ldap,dc=goauthentik,dc=io",
+                  "bind_dn": "cn=svc-bfos-ldap,ou=users,dc=ldap,dc=goauthentik,dc=io",
+                  "bind_password": "jeton-de-service"},
     },
     "policies": {"offline_login": {"enabled": True, "max_offline_days": 7},
                  "mfa_required": True, "auto_lock_minutes": 15},
@@ -104,7 +107,7 @@ def test_render_sssd_conf_cache_on():
     assert "ldap_search_base = dc=ldap,dc=goauthentik,dc=io" in conf
     assert "cache_credentials = true" in conf
     assert "offline_credentials_expiration = 7" in conf
-    assert "simple_allow_users = olivier@bluefoxconsultant.com" in conf
+    assert "simple_allow_users = olivier" in conf
 
 
 def test_render_sssd_conf_cache_off():
@@ -237,3 +240,106 @@ def test_flatpak_list_format_is_one_id_per_line():
     body = [l for l in out.splitlines() if l and not l.startswith("#")]
     assert body == ["a.b.C", "d.e.F"]
     assert out.endswith("\n")
+
+
+# --------------------------------------------------- connexion de siege (#22387)
+def test_render_sssd_conf_allows_the_short_username():
+    """L'annuaire sert le nom court ; la regle d'acces doit designer CE nom.
+
+    La version precedente posait l'adresse entiere dans simple_allow_users, si
+    bien qu'apres un mot de passe pourtant valide, sssd refusait la session
+    parce que la regle ne designait personne.
+    """
+    conf = ba.render_sssd_conf(POLICY)
+    assert "simple_allow_users = olivier\n" in conf
+    assert "olivier@bluefoxconsultant.com" not in conf
+
+
+def test_render_sssd_conf_carries_the_bind_identity():
+    """L'avant-poste d'Authentik ne sert pas les recherches anonymes."""
+    conf = ba.render_sssd_conf(POLICY)
+    assert "ldap_default_bind_dn = cn=svc-bfos-ldap,ou=users," in conf
+    assert "ldap_default_authtok = jeton-de-service" in conf
+
+
+def test_render_sssd_conf_omits_bind_lines_when_absent():
+    """Pas d'identite = pas de directive vide, qui ferait refuser le demarrage."""
+    p = {**POLICY, "install": {**POLICY["install"],
+                               "login": {"mode": "sssd",
+                                         "ldap_uri": "ldaps://x:636",
+                                         "ldap_base_dn": "dc=x"}}}
+    conf = ba.render_sssd_conf(p)
+    assert "ldap_default_bind_dn" not in conf
+    assert "ldap_default_authtok" not in conf
+
+
+def test_render_sssd_conf_no_starttls_over_ldaps():
+    """StartTLS dans un canal deja chiffre = echec de connexion a l'annuaire."""
+    assert "ldap_id_use_start_tls = false" in ba.render_sssd_conf(POLICY)
+
+
+def test_render_sssd_conf_starttls_over_plain_ldap():
+    p = {**POLICY, "install": {**POLICY["install"],
+                               "login": {**POLICY["install"]["login"],
+                                         "ldap_uri": "ldap://ldap.example.com:389"}}}
+    assert "ldap_id_use_start_tls = true" in ba.render_sssd_conf(p)
+
+
+def test_render_sssd_conf_sanitizes_the_bind_password():
+    p = {**POLICY, "install": {**POLICY["install"],
+                               "login": {**POLICY["install"]["login"],
+                                         "bind_password": "abc\nrogue = 1"}}}
+    assert "rogue = 1" not in ba.render_sssd_conf(p).splitlines()
+
+
+def test_apply_sssd_gate_fails_without_ldap_uri(tmp_path):
+    """Une politique sssd sans annuaire produit la machine sans session de
+    #23906 : l'action doit ECHOUER, pas passer en silence."""
+    p = {**POLICY, "install": {**POLICY["install"],
+                               "login": {"mode": "sssd", "ldap_base_dn": "dc=x"}}}
+    res = {a: ok for a, ok, _ in ba.apply(p, root=str(tmp_path),
+                                         run=lambda argv, check=False: None)}
+    assert res["sssd-gate"] is False
+
+
+def test_apply_sssd_gate_fails_without_bind_dn(tmp_path):
+    p = {**POLICY, "install": {**POLICY["install"],
+                               "login": {"mode": "sssd",
+                                         "ldap_uri": "ldaps://x:636",
+                                         "ldap_base_dn": "dc=x"}}}
+    res = {a: ok for a, ok, _ in ba.apply(p, root=str(tmp_path),
+                                         run=lambda argv, check=False: None)}
+    assert res["sssd-gate"] is False
+
+
+def test_apply_sssd_gate_passes_on_a_complete_policy(tmp_path):
+    res = {a: ok for a, ok, _ in ba.apply(POLICY, root=str(tmp_path),
+                                         run=lambda argv, check=False: None)}
+    assert res["sssd-gate"] is True
+
+
+def test_apply_sssd_records_a_failing_command(tmp_path):
+    """LE defaut de #23906 par l'autre bout : les paquets sssd manquaient de
+    l'image, les commandes echouaient, et check=False les affichait en OK."""
+    def run_qui_echoue(argv, check=False):
+        if check and "authselect" in argv:
+            raise subprocess.CalledProcessError(1, argv)
+    res = {a: ok for a, ok, _ in ba.apply(POLICY, root=str(tmp_path),
+                                         run=run_qui_echoue)}
+    assert res["sssd-profile"] is False
+    assert res["sssd-enable"] is True
+
+
+def test_apply_sssd_writes_seat_sudoers(tmp_path):
+    """En mode sssd, le compte vient de l'annuaire et n'est dans aucun groupe
+    local : sans ce fichier, root verrouille laisse la machine sans administrateur."""
+    ba.apply(POLICY, root=str(tmp_path), run=lambda argv, check=False: None)
+    sudo = tmp_path / "etc/sudoers.d/10-bluefox-seat"
+    assert "olivier ALL=(ALL) ALL" in sudo.read_text()
+    assert oct(sudo.stat().st_mode)[-3:] == "440"
+
+
+def test_apply_sssd_refuses_a_bad_username_in_sudoers(tmp_path):
+    p = {**POLICY, "user": {"login": "Bad Name@x"}}
+    ba.apply(p, root=str(tmp_path), run=lambda argv, check=False: None)
+    assert not (tmp_path / "etc/sudoers.d/10-bluefox-seat").exists()
