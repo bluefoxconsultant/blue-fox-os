@@ -64,3 +64,43 @@ def test_merge_branding_overlays_accent_and_wallpaper():
 def test_merge_branding_no_session_returns_input():
     tenant = {"slug": "bf", "branding": {}}
     assert merge_branding(tenant, {}) is tenant
+
+
+# --------------------------------------- copie expurgee et erreurs visibles
+def test_la_copie_expurgee_est_preferee(tmp_path):
+    """C'est la seule que la session peut lire : elle doit gagner."""
+    import json as _json
+    from bluefox_welcome.provisioning import load_provisioning
+    complete = tmp_path / "provisioning.json"
+    complete.write_text(_json.dumps(
+        {"schema": "bf-policy/v2", "user": {"login": "complete@x"}}))
+    (tmp_path / "policy-public.json").write_text(_json.dumps(
+        {"schema": "bf-policy/v2", "user": {"login": "expurgee@x"}}))
+    assert load_provisioning(complete)["user"]["login"] == "expurgee@x"
+
+
+def test_repli_sur_la_complete_quand_la_copie_manque(tmp_path):
+    """Un appelant root (bluefox-policy-sync) lit la complete."""
+    import json as _json
+    from bluefox_welcome.provisioning import load_provisioning
+    complete = tmp_path / "provisioning.json"
+    complete.write_text(_json.dumps(
+        {"schema": "bf-policy/v2", "user": {"login": "complete@x"}}))
+    assert load_provisioning(complete)["user"]["login"] == "complete@x"
+
+
+def test_une_politique_illisible_se_voit(tmp_path, caplog):
+    """🔴 LE defaut du 2026-09-11 : l'exception etait avalee en WARNING et
+    l'assistant manuel prenait la main sans que rien ne le dise."""
+    import json as _json, logging
+    from bluefox_welcome.provisioning import load_provisioning
+    complete = tmp_path / "provisioning.json"
+    complete.write_text(_json.dumps({"schema": "bf-policy/v2"}))
+    complete.chmod(0o000)
+    try:
+        with caplog.at_level(logging.ERROR):
+            assert load_provisioning(complete) == {}
+        assert any(r.levelno >= logging.ERROR for r in caplog.records), \
+            "une politique presente mais illisible doit se journaliser en ERROR"
+    finally:
+        complete.chmod(0o600)

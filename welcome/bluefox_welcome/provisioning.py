@@ -18,20 +18,69 @@ from pathlib import Path
 
 LOG = logging.getLogger("bluefox-welcome.provisioning")
 PROVISIONING_FILE = Path("/var/lib/bluefox-welcome/provisioning.json")
+# Copie EXPURGEE, 0644, ecrite par bfos_apply.py. C'est celle que la session
+# peut lire : la complete est en 0600 root parce qu'elle porte le mot de passe
+# de liaison LDAP.
+PUBLIC_FILE = Path("/var/lib/bluefox-welcome/policy-public.json")
 
 
-def load_provisioning(path: Path = PROVISIONING_FILE) -> dict:
-    """Load the staged bf-policy/v2 JSON, or {} if absent/invalid."""
-    if path.exists():
-        try:
-            data = json.loads(path.read_text())
-        except Exception as e:  # noqa: BLE001
-            LOG.warning("failed to load %s: %s", path, e)
-            return {}
-        if isinstance(data, dict) and data.get("schema") == "bf-policy/v2":
-            return data
-        LOG.warning("%s present but not bf-policy/v2 ; ignoring", path)
+def _lire(path: Path) -> dict:
+    """Lit UN fichier de politique. Rend {} sinon, en nommant la raison.
+
+    ⚠️ La permission refusee se journalise en ERROR, pas en WARNING, et elle ne
+    se confond pas avec l'absence. Le 2026-09-11, l'agent tournant en tant que
+    l'usager ne pouvait pas lire la politique en 0600 root : l'exception etait
+    avalee, {} etait rendu, et l'assistant manuel en 5 pages prenait la main
+    comme si aucune politique n'avait jamais ete deposee. Personne ne pouvait
+    le savoir depuis l'ecran.
+    """
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except PermissionError as e:
+        LOG.error("%s existe mais n'est pas lisible par %s : %s — "
+                  "la politique NE SERA PAS appliquee et l'assistant manuel "
+                  "va prendre la main. Attendu : une copie expurgee en 0644.",
+                  path, _qui(), e)
+        return {}
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("failed to load %s: %s", path, e)
+        return {}
+    if isinstance(data, dict) and data.get("schema") == "bf-policy/v2":
+        return data
+    LOG.warning("%s present but not bf-policy/v2 ; ignoring", path)
     return {}
+
+
+def _qui() -> str:
+    try:
+        import getpass
+        return getpass.getuser()
+    except Exception:  # noqa: BLE001
+        return "?"
+
+
+def load_provisioning(path: Path = PROVISIONING_FILE,
+                      public: Path | None = None) -> dict:
+    """Load the staged bf-policy/v2 JSON, or {} if absent/invalid.
+
+    Ordre de lecture : la copie EXPURGEE d'abord, parce que c'est la seule que
+    la session peut lire ; la complete ensuite, pour les appelants root
+    (bluefox-policy-sync). Une politique presente des deux cotes donne le meme
+    bloc `session` — le seul ecart est le secret de liaison, dont l'agent n'a
+    aucun usage.
+    """
+    # La copie expurgee est SOLIDAIRE du chemin demande : un appelant qui
+    # pointe ailleurs (un test, un banc) ne doit pas se faire servir le fichier
+    # systeme a son insu.
+    if public is None:
+        public = (PUBLIC_FILE if path == PROVISIONING_FILE
+                  else path.parent / PUBLIC_FILE.name)
+    data = _lire(public)
+    if data:
+        return data
+    return _lire(path)
 
 
 def user_login(prov: dict) -> str:

@@ -362,3 +362,45 @@ def test_render_sssd_conf_disables_nested_groups():
     chaque recherche ET tronque la liste des membres (bf-team rendait un seul
     membre sur deux). L'avant-poste n'imbrique rien."""
     assert "ldap_group_nesting_level = 0\n" in ba.render_sssd_conf(POLICY)
+
+
+# ------------------------------------------- copie expurgee de la politique
+def test_render_public_policy_retire_le_secret_de_liaison():
+    """Le bloc login porte le mot de passe du compte de service de l'annuaire.
+    Il n'a rien a faire dans un fichier que la session peut lire."""
+    public = json.loads(ba.render_public_policy(POLICY))
+    login = public["install"]["login"]
+    assert "bind_password" not in login
+    assert login["bind_dn"] == POLICY["install"]["login"]["bind_dn"]
+    assert login["ldap_uri"] == POLICY["install"]["login"]["ldap_uri"]
+
+
+def test_render_public_policy_garde_ce_dont_l_agent_a_besoin():
+    public = json.loads(ba.render_public_policy(POLICY))
+    assert public["schema"] == "bf-policy/v2"
+    assert public["user"]["login"] == "olivier@bluefoxconsultant.com"
+    assert "session" in public
+
+
+def test_render_public_policy_ne_touche_pas_l_original():
+    """deepcopy, pas une vue : la politique servie au %post reste entiere."""
+    ba.render_public_policy(POLICY)
+    assert POLICY["install"]["login"]["bind_password"] == "jeton-de-service"
+
+
+def test_apply_ecrit_la_copie_expurgee_en_0644(tmp_path):
+    """LE defaut du 2026-09-11 : l'agent tourne en tant que l'usager et ne
+    pouvait pas lire une politique en 0600 root, donc il basculait en silence
+    sur l'assistant manuel."""
+    ba.apply(POLICY, root=str(tmp_path), run=lambda argv, check=False: None)
+    pub = tmp_path / "var/lib/bluefox-welcome/policy-public.json"
+    assert oct(pub.stat().st_mode)[-3:] == "644"
+    assert "bind_password" not in pub.read_text()
+    assert json.loads(pub.read_text())["session"] == POLICY["session"]
+
+
+def test_apply_ecrit_la_copie_expurgee_aussi_en_mode_local(tmp_path):
+    """Le bloc session (montages, PWA) vaut quel que soit le mode de connexion."""
+    p = {**POLICY, "install": {**POLICY["install"], "login": {"mode": "local"}}}
+    ba.apply(p, root=str(tmp_path), run=lambda argv, check=False: None)
+    assert (tmp_path / "var/lib/bluefox-welcome/policy-public.json").exists()

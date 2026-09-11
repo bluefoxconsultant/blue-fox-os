@@ -254,6 +254,43 @@ def render_sssd_conf(policy) -> str:
     )
 
 
+# Cle(s) a retirer avant de rendre la politique lisible par l'usager. Le bloc
+# login porte le mot de passe de liaison LDAP depuis le 2026-09-11 : c'est un
+# compte de service de l'annuaire, il n'a rien a faire dans un fichier que la
+# session peut lire.
+_SECRETS_DE_POLITIQUE = (("install", "login", "bind_password"),)
+
+PUBLIC_JSON = "/var/lib/bluefox-welcome/policy-public.json"
+
+
+def render_public_policy(policy) -> str:
+    """Rend la politique EXPURGEE, destinee a l'agent d'accueil.
+
+    ⚠️ POURQUOI CE FICHIER EXISTE (defaut du 2026-09-11, #22436)
+    La politique complete est deposee en 0600 root — elle porte un secret. Or
+    l'agent d'accueil demarre depuis /etc/xdg/autostart, donc EN TANT QUE
+    L'USAGER : il ne peut pas la lire. `load_provisioning` avalait l'erreur de
+    permission et rendait {}, et l'agent basculait alors sur l'assistant manuel
+    en 5 pages — celui qui redemande clavier, langue, fuseau et theme que la
+    politique fixe deja. Aucun montage, aucune PWA, et pas un mot a l'ecran.
+
+    Le fichier expurge est ecrit en 0644 : tout ce dont la session a besoin,
+    rien de ce qu'elle ne doit pas voir.
+    """
+    import copy as _copy
+    public = _copy.deepcopy(policy)
+    for chemin in _SECRETS_DE_POLITIQUE:
+        noeud = public
+        for cle in chemin[:-1]:
+            noeud = noeud.get(cle) if isinstance(noeud, dict) else None
+            if not isinstance(noeud, dict):
+                noeud = None
+                break
+        if isinstance(noeud, dict):
+            noeud.pop(chemin[-1], None)
+    return json.dumps(public, indent=2, ensure_ascii=False) + "\n"
+
+
 def render_seat_sudoers(policy) -> str:
     """Droit d'administration du compte de siege, en mode sssd.
 
@@ -377,7 +414,13 @@ def apply(policy, root="/", run=subprocess.run, writer=None):
             record("seat-sudo", lambda: writer(
                 "/etc/sudoers.d/10-bluefox-seat", render_seat_sudoers(policy),
                 mode=0o440))
-    elif login.get("mode") == "local":
+    # La copie expurgee, pour l'agent d'accueil qui tourne en tant que l'usager.
+    # Ecrite QUELLE QUE SOIT la branche de connexion : c'est elle qui porte les
+    # preferences de session, les montages et les PWA.
+    record("policy-public", lambda: writer(
+        PUBLIC_JSON, render_public_policy(policy), mode=0o644))
+
+    if login.get("mode") == "local":
         username = _seat_username(policy)
         if username and _USERNAME_RE.match(username):
             record("local-user", lambda: run(
