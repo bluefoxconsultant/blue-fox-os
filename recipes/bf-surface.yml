@@ -81,6 +81,16 @@ modules:
       - surface-secureboot
       # plymouth-plugin-script : script.so requis par Plymouth theme [#22420]
       - plymouth-plugin-script
+      # Connexion de siege sur l'avant-poste LDAP d'Authentik (#22387). La base
+      # kinoite-main ne porte que sssd-client : le demon, le fournisseur LDAP,
+      # oddjobd et son module PAM manquent tous. Sans eux, les trois gestes du
+      # chemin sssd de bfos_apply.py echouent EN SILENCE (check=False) et la
+      # machine n'a aucune session ouvrable — soit exactement #23906 par un
+      # autre chemin. Le controle de construction plus bas les affirme.
+      - sssd
+      - sssd-ldap
+      - oddjob
+      - oddjob-mkhomedir
       # Note : on n'installe PAS libwacom-surface car il conflicte avec
       # libwacom du stock Fedora qui est plus recent. La calibration pen
       # marche correctement avec libwacom stock + le kernel-surface ; on
@@ -140,6 +150,12 @@ modules:
       #      ostree vit dans /usr/lib/modules/<kver>/initramfs.img.
       # La boucle couvre les DEUX noyaux de cette variante (Fedora + surface).
       - PLYMOUTH_THEME=$(awk -F= '/^Theme=/{print $2}' /etc/plymouth/plymouthd.conf) && [ -n "$PLYMOUTH_THEME" ] && plymouth-set-default-theme "$PLYMOUTH_THEME" && for KDIR in /usr/lib/modules/*/; do KVER=$(basename "$KDIR"); dracut -f --kver "$KVER" --add ostree --no-hostonly --tmpdir /tmp "${KDIR}initramfs.img" || exit 1; lsinitrd "${KDIR}initramfs.img" | grep -q "plymouth/themes/${PLYMOUTH_THEME}/" || { echo "ERREUR - theme ${PLYMOUTH_THEME} absent de ${KDIR}initramfs.img"; exit 1; }; for M in ostree btrfs crypt dm systemd-cryptsetup plymouth; do lsinitrd "${KDIR}initramfs.img" | sed -n "/^dracut modules:/,/^===/p" | grep -qx "$M" || { echo "ERREUR - module dracut $M absent de ${KDIR}initramfs.img ; sans ostree rien ne prepare /sysroot et switch-root echoue"; exit 1; }; done; done
+      # Connexion de siege (#22387) : le chemin sssd de bfos_apply.py fait ses
+      # trois gestes en check=False. Si un morceau manque de l'image, ils
+      # echouent sans bruit et la machine n'ouvre aucune session, soit le meme
+      # symptome que #23906. On l'affirme donc ici, ou l'echec coute un build
+      # et pas une installation complete. Chemins releves sur Fedora 44.
+      - for F in /usr/sbin/sssd /usr/lib64/sssd/libsss_ldap.so /usr/lib64/security/pam_sss.so /usr/lib64/security/pam_oddjob_mkhomedir.so /usr/sbin/oddjobd /usr/lib/systemd/system/sssd.service /usr/lib/systemd/system/oddjobd.service; do [ -e "$F" ] || { echo "ERREUR - $F absent, le mode login sssd n'ouvrirait aucune session"; exit 1; }; done; authselect list | grep -qw sssd || { echo "ERREUR - profil authselect sssd absent de l'image"; exit 1; }
 
   - type: systemd
     system:
@@ -147,17 +163,23 @@ modules:
         - rpm-ostreed-automatic.timer
         - bluefox-rebase.service
         - firstboot.service
-        # ⚠️ RENVERSEMENT ASSUME (2026-09-03). tailscaled etait MASQUE, avec
-        # la consigne « l'utilisateur doit l'activer consciemment ». La bascule
-        # de l'organisation en login_mode=sssd (#23906) retire ce choix : la
-        # connexion s'authentifie contre l'avant-poste LDAP d'Authentik, joint
-        # par le tailnet, et il faut donc que le tailnet SOIT LA avant la
-        # premiere ouverture de session. Un service masque ne peut meme pas
-        # etre demarre par le %post — c'est tout l'objet du masquage.
+        # ⚠️ RENVERSEMENT ASSUME (2026-09-03), dont la JUSTIFICATION A CHANGE
+        # le 2026-09-11. tailscaled etait MASQUE, avec la consigne
+        # « l'utilisateur doit l'activer consciemment ». Le demasquage a ete
+        # fait pour la connexion de siege, qu'on croyait alors devoir passer
+        # par le tailnet pour joindre l'avant-poste LDAP d'Authentik.
+        #
+        # Ce n'est plus le chemin retenu : l'avant-poste est joint en LDAPS
+        # public (#22387, arbitrage du 2026-09-11), donc la premiere ouverture
+        # de session ne depend plus du tailnet. Le demasquage reste en place,
+        # mais il ne porte plus rien de critique. Le defaire serait une
+        # decision, pas un menage : un service masque ne peut meme pas etre
+        # demarre par le %post, c'est tout l'objet du masquage.
         #
         # Le demon seul ne rejoint aucun reseau : sans cle d'authentification il
         # tourne et attend. C'est `tailscale up` qui engage la machine, et il
-        # reste pilote par la politique.
+        # n'est automatise nulle part a ce jour — ni dans la politique, ni dans
+        # le kickstart.
         - tailscaled.service
         - bluefox-tpm-enroll.service   # auto-deverrouillage LUKS TPM2, pilote par la policy
         - bluefox-policy-sync.timer    # re-tirage quotidien de la politique (#23909)
