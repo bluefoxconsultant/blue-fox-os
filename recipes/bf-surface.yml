@@ -124,7 +124,13 @@ modules:
       install:
         - com.brave.Browser
         - org.mozilla.Thunderbird
-        - com.nextcloud.desktopclient.nextcloudclient
+        # ⚠️ CORRIGE LE 2026-09-11. L'identifiant etait
+        # com.nextcloud.desktopclient.nextcloudclient — il n'existe PAS sur
+        # Flathub (404). Et `flatpak install` sur une liste abandonne TOUT le
+        # lot au premier identifiant inconnu : aucune application n'arrivait,
+        # Brave compris, donc aucun navigateur pour le SSO de l'agent d'accueil.
+        # Verifie contre https://flathub.org/api/v2/appstream/<id> avant d'ecrire.
+        - com.nextcloud.desktopclient.nextcloud
         - com.bitwarden.desktop
 
   - type: files
