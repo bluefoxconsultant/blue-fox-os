@@ -5,7 +5,7 @@
 # point d'entrée firstboot ; cette entrée permet à l'utilisateur de
 # relancer manuellement la config depuis le menu KDE quand voulu.
 #
-# Le `--service-mode` skip le wizard si /var/lib/bluefox-welcome/done
+# Le `--service-mode` skip le wizard si ~/.config/bluefox-welcome/done
 # existe (idempotent ; relance = re-config si ce flag a été supprimé).
 Type=Application
 Name=Configuration Blue Fox

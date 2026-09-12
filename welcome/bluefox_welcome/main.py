@@ -46,7 +46,14 @@ from .tenant import get_service_url, get_slug, load_tenant
 
 LOG = logging.getLogger("bluefox-welcome")
 STATE_DIR = Path("/var/lib/bluefox-welcome")
-DONE_FLAG = STATE_DIR / "done"
+# ⚠️ DEPLACE LE 2026-09-11 : le drapeau vivait dans STATE_DIR, un repertoire
+# cree root par le %post. L'agent tourne en tant que l'usager (autostart XDG)
+# et ne pouvait donc JAMAIS l'ecrire — la PermissionError etait avalee en
+# WARNING, le drapeau n'existait pas, et l'assistant se relancait a chaque
+# ouverture de session. Un parcours d'accueil est par usager sur un poste
+# multi-usagers : son drapeau vit dans le profil, la ou l'agent ecrit deja
+# user_email et son journal.
+DONE_FLAG = Path.home() / ".config" / "bluefox-welcome" / "done"
 NEEDS_REBASE_FLAG = STATE_DIR / "needs-rebase"
 USER_CONFIG_DIR = Path.home() / ".config" / "bluefox-welcome"
 USER_LOG = Path.home() / ".local/share/bluefox-welcome/firstboot.log"
@@ -609,12 +616,12 @@ def _finalize_and_apply(
     for name, ok, msg in results:
         LOG.info("apply %s: ok=%s msg=%s", name, ok, msg)
 
-    try:
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        DONE_FLAG.touch()
-    except PermissionError:
-        LOG.warning("cannot write %s as user ; firstboot.service should mkdir at /var/lib", STATE_DIR)
     USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    # Dans le profil, donc toujours inscriptible : plus d'exception avalee, et
+    # un echec ici doit se VOIR — c'est lui qui decide si l'assistant revient.
+    # Le parent du DRAPEAU, pas USER_CONFIG_DIR : les tests les separent.
+    DONE_FLAG.parent.mkdir(parents=True, exist_ok=True)
+    DONE_FLAG.touch()
     email_file = USER_CONFIG_DIR / "user_email"
     write_private(email_file, user_email + "\n")
     LOG.info("wizard finished ; flagged done at %s", DONE_FLAG)
