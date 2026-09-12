@@ -52,6 +52,22 @@ modules:
       - oddjob
       - oddjob-mkhomedir
     remove:
+      # ⚠️ RETIRE LE 2026-09-11, a la demande d'Olivier. plasma-welcome est le
+      # Centre d'accueil de KDE : il redemande langue, clavier, fuseau ET
+      # theme au premier demarrage, alors que la politique les fixe deja. Le
+      # resultat est pire qu'une question inutile — on choisit « sombre » et
+      # autre chose l'ecrase, ce qui donne un reglage qui ne prend pas.
+      #
+      # ⚠️ Pourquoi retirer le paquet plutot que couper son demarrage : ce
+      # n'est PAS un autostart mais un module KDED
+      # (kded_plasma_welcome.so), dont l'identifiant vit dans des metadonnees
+      # Qt6 en CBOR — illisible avec `strings`. Un `[Module-<id>]` devine dans
+      # kdedrc ne couperait rien du tout, en silence. Retirer le paquet ne se
+      # devine pas : `rpm -q` tranche.
+      #
+      # Corollaire assume : on perd la page d'intro brandee que
+      # files/usr/share/plasma/plasma-welcome/ lui livrait.
+      - plasma-welcome
       - firefox
       - firefox-langpacks
     # Lexend : pas de paquet dans les repos Fedora, les TTFs sont
@@ -164,6 +180,11 @@ modules:
       # symptome que #23906. On l'affirme donc ici, ou l'echec coute un build
       # et pas une installation complete. Chemins releves sur Fedora 44.
       - for F in /usr/sbin/sssd /usr/lib64/sssd/libsss_ldap.so /usr/lib64/security/pam_sss.so /usr/lib64/security/pam_oddjob_mkhomedir.so /usr/sbin/oddjobd /usr/lib/systemd/system/sssd.service /usr/lib/systemd/system/oddjobd.service; do [ -e "$F" ] || { echo "ERREUR - $F absent, le mode login sssd n'ouvrirait aucune session"; exit 1; }; done; authselect list | grep -qw sssd || { echo "ERREUR - profil authselect sssd absent de l'image"; exit 1; }
+      # Le Centre d'accueil de KDE doit avoir DISPARU (#2026-09-11) : tant
+      # qu'il est la, il redemande langue, clavier, fuseau et theme que la
+      # politique fixe deja. `rpm -q` est le seul controle qui tranche — son
+      # module KDED ne se coupe pas par un reglage devinable.
+      - rpm -q plasma-welcome >/dev/null 2>&1 && { echo "ERREUR - plasma-welcome est encore dans l image, il reposera les questions de la politique"; exit 1; } || true
 
   - type: systemd
     system:
