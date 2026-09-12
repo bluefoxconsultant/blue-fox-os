@@ -48,7 +48,16 @@ try:
     d = json.load(sys.stdin)['deployments'][0]
 except Exception:
     sys.exit(0)
-print((d.get('container-image-reference') or '').split('docker://')[-1])
+import re
+ref = d.get('container-image-reference') or ''
+# ⚠️ CORRIGE LE 2026-09-11 : une installation zero-touch par
+# `ostreecontainer --transport=registry` donne une reference de la forme
+# ostree-unverified-registry:ghcr.io/...:latest — SANS docker://. La version
+# precedente ne retirait que docker:// et ne concordait donc jamais : le
+# rebase repartait, et la machine redemarrait une minute apres son premier
+# demarrage, en tuant au passage l'installation des Flatpak. On retire tout
+# prefixe de transport ostree, avec ou sans docker://.
+print(re.sub(r'^ostree-[a-z-]+:(docker://)?', '', ref))
 " 2>/dev/null || true)
 if [ -n "$ACTUELLE" ] && [ "$ACTUELLE" = "$IMAGE_REF" ]; then
     echo "[bluefox-rebase] deja sur $IMAGE_REF ; rien a rebaser, aucun redemarrage"
