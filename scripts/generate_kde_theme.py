@@ -9,7 +9,8 @@ system_font}` (with BF canonical defaults if absent) and produces:
   <files>/usr/share/wallpapers/<slug>/{metadata.json,contents/images/...}
   <files>/usr/share/plasma/look-and-feel/<slug>/{metadata.json,contents/defaults}
   <files>/etc/xdg/kdeglobals
-  <files>/etc/plasmalogin.conf.d/10-bluefox.conf
+  <files>/etc/plasmalogin.conf.d/10-bluefox.conf   (Fedora 44 : plasmalogin)
+  <files>/etc/sddm.conf.d/blue-fox.conf            (Fedora 43 : sddm)
   <files>/etc/skel/.config/kdeglobals
   <files>/etc/skel/.config/plasma-org.kde.plasma.desktop-appletsrc
 
@@ -422,6 +423,85 @@ def _kdeglobals_body(b: dict) -> str:
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# DEUX GENERATIONS DE GREETER COHABITENT DANS NOTRE PROPRE PARC (2026-09-13)
+#
+#   bf, factice   image-version: latest -> Fedora 44 -> plasmalogin
+#   bf-surface    image-version: "43"   -> Fedora 43 -> sddm
+#
+# Mesure sur les images publiees, `display-manager.service` :
+#   bf-surface -> sddm.service     (sddm, sddm-breeze installes,
+#                                   /usr/share/sddm/themes/breeze appartient
+#                                   bien a sddm-breeze-6.7.5-1.fc43)
+#   bf/factice -> plasmalogin.service  (/usr/bin/sddm ABSENT, aucun paquet sddm,
+#                                   et /usr/share/sddm/themes/ n appartenant a
+#                                   AUCUN paquet — cree par ce script)
+#
+# ⚠️ D ou une correction d un constat pose plus tot le meme jour : le reglage
+# SDDM n etait PAS mort partout. Il etait mort sur les deux images en 44, et
+# parfaitement vivant sur celle en 43 — y compris la surcharge
+# `breeze/theme.conf.user` du 2026-09-02, qui faisait bien son travail la.
+# Conclure « dead code » depuis UNE image, c est conclure depuis un echantillon
+# de un.
+#
+# On emet donc les DEUX, et c est l assertion de build qui exige celui que
+# l image cable vraiment. Un fichier de config pour un greeter absent ne coute
+# que quelques centaines d octets et ne fait rien ; il manquer coute un ecran
+# de connexion sans marque.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def emit_sddm_config(b: dict, files_root: Path) -> Path:
+    """Wire SDDM to use Breeze with our brand background + cursor."""
+    target = files_root / "etc/sddm.conf.d/blue-fox.conf"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # We stick with Breeze (mature, ships in Plasma 6) and override its
+    # background via the theme.conf symlink trick documented in the theme dir.
+    # When BFOSL3 audit lands we may switch to a custom QML theme.
+    conf = (
+        f"[Theme]\n"
+        f"Current=breeze\n"
+        f"CursorTheme=breeze_cursors\n"
+        f"Font={b['system_font']}\n"
+        f"\n"
+        f"[General]\n"
+        f"# Tenant: {b['slug']}\n"
+    )
+    target.write_text(conf)
+    LOG.info("emit sddm config %s", target)
+    return target
+
+
+def emit_sddm_breeze_override(b: dict, files_root: Path) -> Path:
+    """Donner au greeter SDDM le papier peint de la marque.
+
+    emit_sddm_config() oriente SDDM vers le theme `breeze` d'origine, mature et
+    livre avec Plasma 6. Le theme par tenant emis juste au-dessus pointe bien
+    sur notre papier peint, mais il n'est PAS celui qui est charge : son propre
+    commentaire annonce une bascule qui n'a jamais eu lieu. Resultat constate le
+    2026-09-02 sur une machine fraichement installee : l'ecran de connexion
+    affiche le fond Breeze d'origine.
+
+    SDDM lit `theme.conf` PUIS `theme.conf.user` dans le repertoire du theme, et
+    le second l'emporte. C'est le point de surcharge prevu en amont, et il
+    survit a une mise a jour du paquet breeze, contrairement a une reecriture de
+    theme.conf.
+    """
+    base = files_root / "usr/share/sddm/themes/breeze"
+    base.mkdir(parents=True, exist_ok=True)
+    conf = (
+        f"# Genere par scripts/generate_kde_theme.py — tenant {b['slug']}.\n"
+        f"# Surcharge de /usr/share/sddm/themes/breeze/theme.conf.\n"
+        f"[General]\n"
+        f"background={BRANDING_RUNTIME}/wallpaper.jpg\n"
+        f"type=image\n"
+    )
+    target = base / "theme.conf.user"
+    target.write_text(conf)
+    LOG.info("emit sddm breeze override %s", target)
+    return target
+
+
 def emit_plasmalogin_config(b: dict, files_root: Path) -> Path:
     """Papier peint de la marque sur l'ecran de connexion.
 
@@ -678,6 +758,8 @@ def emit_all(tenant: dict, files_root: Path) -> dict:
         "color_scheme": emit_color_scheme(b, files_root),
         "wallpaper_pkg": emit_wallpaper_package(b, files_root),
         "look_and_feel": emit_look_and_feel(b, files_root),
+        "sddm_config": emit_sddm_config(b, files_root),
+        "sddm_breeze_override": emit_sddm_breeze_override(b, files_root),
         "plasmalogin_config": emit_plasmalogin_config(b, files_root),
         "kscreenlocker": emit_kscreenlocker_config(b, files_root),
         "plymouth_theme": emit_plymouth_theme(b, files_root),

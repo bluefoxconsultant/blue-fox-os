@@ -58,16 +58,19 @@ files/etc/xdg/kdeglobals
 files/etc/xdg/kscreenlockerrc
 files/etc/skel/
 files/etc/plasmalogin.conf.d/
-# ⚠️ Le 2026-09-13, cette ligne manquait pour le NOUVEAU chemin : le
-# premier locataire de la passe a salit `git status`, et publish-image.sh
-# a refuse net les deux suivants. Tout chemin ecrit par
-# scripts/generate_kde_theme.py doit figurer ici — un test le verifie.
+files/etc/sddm.conf.d/
+# ⚠️ Le 2026-09-13, la ligne plasmalogin manquait : le staging du PREMIER
+# locataire a salit `git status`, et publish-image.sh a refuse net les deux
+# suivants — un locataire plus loin que sa cause. Tout chemin ecrit par
+# scripts/generate_kde_theme.py doit figurer ici, un test le verifie en
+# faisant tourner l'emetteur plutot qu'en relisant cette liste.
 files/usr/share/color-schemes/
 files/usr/share/wallpapers/
 # files/usr/share/plasma/look-and-feel/ et /icons/* sont générés par
 # scripts/generate_kde_theme.py ; files/usr/share/plasma/plasma-welcome/
 # est hand-written (intégration Plasma Welcome BFOS, #22423).
 files/usr/share/plasma/look-and-feel/
+files/usr/share/sddm/themes/
 files/usr/share/plymouth/themes/
 files/usr/share/icons/bluefox-*/
 files/etc/plymouth/

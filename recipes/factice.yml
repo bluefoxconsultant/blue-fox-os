@@ -130,18 +130,20 @@ modules:
       - U=/usr/lib/systemd/system/plasma-setup.service; if [ -e "$U" ]; then grep -q '^ConditionPathExists=!/etc/plasma-setup-done$' "$U" || { echo "ERREUR - plasma-setup.service ne se garde plus sur /etc/plasma-setup-done, relire l unite avant de publier"; exit 1; }; [ -f /etc/plasma-setup-done ] || { echo "ERREUR - /etc/plasma-setup-done absent, l assistant OOBE de KDE s ouvrirait avant le gestionnaire de connexion"; exit 1; }; fi
       # L ecran de connexion, et le gestionnaire qui le rend (2026-09-13).
       #
-      # ⚠️ CE N EST PLUS SDDM. Mesure sur l image publiee : display-manager
-      # pointe sur plasmalogin.service, /usr/bin/sddm n existe pas, aucun
-      # paquet sddm n est installe. Tout ce qu on generait pour SDDM n etait
-      # lu par personne, et /usr/share/sddm/themes n appartenait a AUCUN
-      # paquet — il existait parce que notre propre script le creait.
+      # ⚠️ NOTRE PARC STRADDLE DEUX GENERATIONS. bf et factice suivent
+      # kinoite-main:latest, donc Fedora 44, ou SDDM a cede la place a
+      # plasmalogin. bf-surface est EPINGLE en 43 pour le noyau linux-surface,
+      # et y tourne encore sur sddm. Mesure sur les images publiees.
       #
-      # Le defaut de Fedora sert son papier peint a lui. On le surcharge par un
-      # drop-in, et on affirme ICI les deux bouts : le gestionnaire est bien
-      # celui qu on configure, et le drop-in est bien la. Le jour ou Fedora
-      # change encore de greeter, le build le dit — au lieu de laisser l ecran
-      # de connexion revenir au fond Fedora sans un mot.
-      - D=/etc/systemd/system/display-manager.service; C="$(readlink -f "$D" 2>/dev/null)"; case "$C" in *plasmalogin*) ;; *) { echo "ERREUR - le gestionnaire de connexion n est plus plasmalogin mais [$C], le drop-in /etc/plasmalogin.conf.d ne serait plus lu"; exit 1; };; esac; [ -f /etc/plasmalogin.conf.d/10-bluefox.conf ] || { echo "ERREUR - drop-in plasmalogin absent, l ecran de connexion servirait le papier peint de Fedora"; exit 1; }
+      # Les deux configurations sont donc emises, et c est ICI qu on exige
+      # celle que l image cable vraiment — en lisant display-manager plutot
+      # qu en supposant. Une configuration pour un greeter absent ne coute que
+      # quelques centaines d octets ; la manquer coute un ecran de connexion
+      # sans marque, et ca ne se voit qu a l installation.
+      #
+      # Un greeter inconnu echoue aussi : le silence serait le retour au fond
+      # de Fedora, sans un mot.
+      - D=/etc/systemd/system/display-manager.service; C="$(readlink -f "$D" 2>/dev/null)"; case "$C" in *plasmalogin*) [ -f /etc/plasmalogin.conf.d/10-bluefox.conf ] || { echo "ERREUR - greeter plasmalogin mais drop-in /etc/plasmalogin.conf.d absent, l ecran de connexion servirait le papier peint de Fedora"; exit 1; };; *sddm*) [ -f /etc/sddm.conf.d/blue-fox.conf ] || { echo "ERREUR - greeter sddm mais /etc/sddm.conf.d/blue-fox.conf absent, l ecran de connexion resterait sans marque"; exit 1; };; *) { echo "ERREUR - gestionnaire de connexion inconnu [$C], aucune de nos deux configurations ne serait lue"; exit 1; };; esac
 
   - type: systemd
     system:

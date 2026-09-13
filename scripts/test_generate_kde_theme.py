@@ -350,19 +350,29 @@ def test_color_scheme_decoration_keeps_brand_accent(tmp_path: Path):
         assert focus == "#29ABE1", f"{section}.DecorationFocus must keep raw BF accent (got {focus})"
 
 
-def test_plus_aucun_artefact_sddm_n_est_emis(tmp_path: Path):
-    """Onze jours de reglages ecrits pour un systeme absent de la machine.
+def test_les_deux_configurations_de_greeter_sont_emises(tmp_path: Path):
+    """Le parc straddle Fedora 43 (sddm) et Fedora 44 (plasmalogin).
 
-    Le correctif du 2026-09-02 visait `breeze/theme.conf.user` pour reparer
-    « l'ecran de connexion affiche le fond Breeze d'origine ». Le fond n'etait
-    pas celui de Breeze mais celui de FEDORA, et SDDM n'etait pas installe :
-    /usr/bin/sddm absent, aucun paquet sddm, et `/usr/share/sddm/themes/`
-    n'appartenant a AUCUN paquet — il n'existait que parce que ce script le
-    creait.
+    🔴 Une premiere version de ce test, ecrite le meme jour, exigeait le
+    CONTRAIRE : qu'aucun artefact SDDM ne soit plus emis. Elle reposait sur
+    l'ouverture d'UNE image, `factice`, en 44. Sur `bf-surface`, epingle en 43,
+    sddm et sddm-breeze sont bel et bien installes et
+    /usr/share/sddm/themes/breeze appartient au paquet. Le build de bf-surface
+    a rougi, et la passe de publication y est passee.
+
+    On emet les deux ; l'assertion de recette exige celle que l'image cable.
     """
-    gkt.emit_all({"slug": "bf", "branding": {}}, tmp_path)
-    restes = [c for c in tmp_path.rglob("*") if "sddm" in str(c).lower()]
-    assert not restes, f"artefacts SDDM encore emis : {restes}"
+    out = gkt.emit_all({"slug": "bf", "branding": {}}, tmp_path)
+    assert out["plasmalogin_config"] == tmp_path / "etc/plasmalogin.conf.d/10-bluefox.conf"
+    assert out["sddm_config"] == tmp_path / "etc/sddm.conf.d/blue-fox.conf"
+    assert out["sddm_breeze_override"] == tmp_path / "usr/share/sddm/themes/breeze/theme.conf.user"
+    for cle in ("plasmalogin_config", "sddm_config", "sddm_breeze_override"):
+        assert out[cle].is_file(), f"{cle} annonce mais pas ecrit"
+
+    sddm = out["sddm_config"].read_text()
+    assert "Current=breeze" in sddm and "Font=Lexend" in sddm
+    override = out["sddm_breeze_override"].read_text()
+    assert f"background={gkt.BRANDING_RUNTIME}/wallpaper.jpg" in override
 
 
 def test_kscreenlocker_config_uses_tenant_wallpaper(tmp_path: Path):

@@ -1,25 +1,32 @@
-"""Garde-fous sur l'ecran de connexion (releve le 2026-09-13).
+"""Garde-fous sur l'ecran de connexion (releve et corrige le 2026-09-13).
 
-Onze jours durant, la marque de l'ecran de connexion a ete reglee dans un
-systeme qui n'existe pas sur la machine. Mesure sur l'image publiee :
+NOTRE PARC STRADDLE DEUX GENERATIONS DE GREETER, et c'est le fait central :
 
-    /etc/systemd/system/display-manager.service -> plasmalogin.service
-    /usr/bin/sddm                                  ABSENT
-    paquets sddm                                   AUCUN
+    bf, factice   image-version: latest -> Fedora 44 -> plasmalogin
+    bf-surface    image-version: "43"   -> Fedora 43 -> sddm
 
-Fedora 44 / Plasma 6.7 ont remplace SDDM par plasma-login-manager. Tout ce que
-`generate_kde_theme.py` produisait pour SDDM — un fichier dans
-`/etc/sddm.conf.d/`, un theme par locataire, une surcharge `theme.conf.user` —
-n'etait lu par personne. Pire : `/usr/share/sddm/themes/` n'appartenait a AUCUN
-paquet, il existait parce que notre propre script le creait. Un arbre entier qui
-donnait l'illusion d'un ecran de connexion brande.
+Mesure sur les images publiees, `/etc/systemd/system/display-manager.service` :
 
-⚠️ La surcharge `breeze/theme.conf.user` avait ete ecrite le 2026-09-02 pour
-corriger « l'ecran de connexion affiche le fond Breeze d'origine ». Le fond
-n'etait pas celui de Breeze, c'etait celui de FEDORA, servi par
-`/usr/lib/plasmalogin/defaults.conf`. Un diagnostic qui nomme le mauvais
-coupable produit un correctif qui ne corrige rien, et qui a l'air d'un
-correctif.
+    bf-surface -> sddm.service      sddm + sddm-breeze installes, et
+                                    /usr/share/sddm/themes/breeze appartient
+                                    bien a sddm-breeze-6.7.5-1.fc43
+    bf/factice -> plasmalogin.service   /usr/bin/sddm ABSENT, aucun paquet sddm,
+                                    et /usr/share/sddm/themes/ n'appartenant a
+                                    AUCUN paquet : notre propre script le creait
+
+⚠️ LA PREMIERE LECTURE, LE MEME JOUR, ETAIT FAUSSE et a coute une passe de
+publication. En ouvrant l'image `factice` on a conclu « le reglage SDDM est mort
+depuis onze jours » et on a retire les emetteurs. C'etait vrai des deux images en
+44 et FAUX de celle en 43, ou la surcharge `breeze/theme.conf.user` du
+2026-09-02 faisait parfaitement son travail. Le build de bf-surface a rougi sur
+l'assertion qui exigeait plasmalogin.
+
+*Conclure « code mort » depuis une seule image, c'est conclure depuis un
+echantillon de un.*
+
+D'ou la regle que ces tests gardent : on emet les DEUX configurations, et
+l'assertion de build exige celle que l'image cable vraiment, en LISANT
+display-manager au lieu de la supposer.
 
 Stdlib seulement (lane `test-wizard`), comme test_provenance.py.
 """
@@ -31,8 +38,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 RECIPES_DIR = REPO_ROOT / "recipes"
 GENERATEUR = REPO_ROOT / "scripts" / "generate_kde_theme.py"
 
-DROP_IN = "/etc/plasmalogin.conf.d/10-bluefox.conf"
-GREETER = "plasmalogin"
+DROP_IN_PLASMALOGIN = "/etc/plasmalogin.conf.d/10-bluefox.conf"
+CONF_SDDM = "/etc/sddm.conf.d/blue-fox.conf"
 
 
 def _recipes_locataires() -> list[Path]:
@@ -42,21 +49,15 @@ def _recipes_locataires() -> list[Path]:
     return trouvees
 
 
-def _generateur() -> str:
-    return GENERATEUR.read_text()
-
-
 def _code_seul(corps: str) -> str:
     """Le CODE seul, commentaires et docstrings retires.
 
-    ⚠️ Ce fichier-ci et le generateur CITENT tous deux SDDM, longuement, pour
-    dire pourquoi il n'y est plus. Une recherche naive prend la documentation
-    pour du code et echoue sur l'explication elle-meme — c'est arrive a la
-    premiere version de ce test.
-
-    ⚠️ Et on ne peut pas simplement jeter toutes les chaines : d'autres tests
-    ici verifient des litteraux du generateur. On retire donc precisement les
-    docstrings, par l'arbre syntaxique, et les lignes de commentaire.
+    ⚠️ Ce fichier et le generateur CITENT tous deux abondamment SDDM et
+    plasmalogin pour expliquer leur cohabitation. Une recherche naive prend la
+    documentation pour du code — c'est arrive a la premiere version de ce test.
+    On ne peut pas non plus jeter toutes les chaines : d'autres tests ici
+    verifient des litteraux. On retire donc precisement les docstrings, par
+    l'arbre syntaxique, et les lignes de commentaire.
     """
     arbre = ast.parse(corps)
     lignes = corps.splitlines()
@@ -76,26 +77,21 @@ def _code_seul(corps: str) -> str:
     )
 
 
-def test_le_generateur_n_ecrit_plus_rien_pour_sddm():
-    code = _code_seul(_generateur())
-    for mort in ("emit_sddm_theme", "emit_sddm_config", "emit_sddm_breeze_override",
-                 "etc/sddm.conf.d", "usr/share/sddm"):
-        assert mort not in code, (
-            f"{mort} est encore produit : ces fichiers ne sont lus par personne, "
-            "et ils font croire que l'ecran de connexion est brande"
-        )
-
-
-def test_le_generateur_ecrit_le_drop_in_du_vrai_greeter():
-    code = _code_seul(_generateur())
+def test_les_deux_generations_de_greeter_sont_servies():
+    """Une image en 43 et une image en 44 ne lisent pas le meme fichier."""
+    code = _code_seul(GENERATEUR.read_text())
     assert "etc/plasmalogin.conf.d" in code, (
-        "aucun reglage n'est produit pour plasmalogin : l'ecran de connexion "
-        "sert alors le papier peint de Fedora"
+        "rien n'est produit pour plasmalogin : sur Fedora 44 l'ecran de "
+        "connexion servirait le papier peint de Fedora"
+    )
+    assert "etc/sddm.conf.d" in code, (
+        "rien n'est produit pour sddm : sur bf-surface, epingle en 43, l'ecran "
+        "de connexion perdrait la marque qu'il avait deja"
     )
 
 
-def test_le_drop_in_copie_la_forme_des_cles_amont():
-    """Ne pas inventer des cles plausibles — c'est ce qui a coute onze jours.
+def test_le_drop_in_plasmalogin_copie_la_forme_des_cles_amont():
+    """Ne pas inventer des cles plausibles.
 
     `/usr/lib/plasmalogin/defaults.conf` donne la forme exacte :
 
@@ -105,7 +101,7 @@ def test_le_drop_in_copie_la_forme_des_cles_amont():
         [Greeter][Wallpaper][org.kde.image][General]
         Image=file:///usr/share/wallpapers/Fedora/
     """
-    code = _code_seul(_generateur())
+    code = _code_seul(GENERATEUR.read_text())
     for cle in ("WallpaperPlugin=org.kde.image",
                 "[Greeter][Wallpaper][org.kde.image][General]",
                 "Image={paquet}",
@@ -117,32 +113,42 @@ def test_le_drop_in_copie_la_forme_des_cles_amont():
 
 
 def test_le_papier_peint_vise_un_paquet_kde_pas_un_fichier_nu():
-    """Fedora pointe sur un REPERTOIRE de paquet de papier peint. On emet le
-    notre dans emit_wallpaper_package() ; viser le .jpg nu marcherait
-    peut-etre, mais s'ecarterait de la forme qu'on sait bonne."""
-    code = _code_seul(_generateur())
+    """Fedora pointe sur un REPERTOIRE de paquet de papier peint, et on en emet
+    un dans emit_wallpaper_package(). Viser le .jpg nu marcherait peut-etre,
+    mais s'ecarterait de la forme qu'on sait bonne."""
+    code = _code_seul(GENERATEUR.read_text())
     assert 'f"file:///usr/share/wallpapers/{b[\'slug\']}/"' in code, (
         "le papier peint du greeter doit designer le paquet KDE du locataire"
     )
 
 
-def test_chaque_recipe_affirme_le_greeter_ET_le_drop_in():
-    """Les deux moities, comme pour plasma-setup.
+def test_chaque_recipe_exige_la_config_DU_greeter_cable():
+    """Le coeur de la correction : lire, pas supposer.
 
-    Poser le drop-in sans verifier QUI lit ne prouve rien : c'est exactement
-    l'etat d'avant, ou un fichier parfaitement forme attendait un lecteur qui
-    n'existait pas.
+    Exiger plasmalogin partout a fait rougir bf-surface, qui tourne sur sddm.
+    Exiger sddm partout laisserait bf et factice sans marque. L'assertion doit
+    donc brancher sur ce que `display-manager.service` designe REELLEMENT.
     """
     for recipe in _recipes_locataires():
         texte = recipe.read_text()
-        assert DROP_IN in texte, (
-            f"{recipe.name} ne verifie pas la presence de {DROP_IN}"
-        )
         assert "display-manager.service" in texte, (
-            f"{recipe.name} ne verifie pas QUI rend l'ecran de connexion : un "
-            "changement de greeter chez Fedora repasserait au fond Fedora sans "
-            "un mot"
+            f"{recipe.name} ne lit pas display-manager : il supposerait le "
+            "greeter au lieu de le constater"
         )
-        assert GREETER in texte, (
-            f"{recipe.name} : l'assertion doit nommer le gestionnaire attendu"
+        assert DROP_IN_PLASMALOGIN in texte, f"{recipe.name} : branche plasmalogin absente"
+        assert CONF_SDDM in texte, f"{recipe.name} : branche sddm absente"
+
+
+def test_un_greeter_inconnu_fait_rougir_le_build():
+    """Le cas qui compte le jour ou Fedora change encore.
+
+    Sans branche par defaut, un troisieme greeter passerait sans un mot et
+    l'ecran de connexion reviendrait au fond de Fedora — exactement le defaut
+    qu'on vient de corriger, mais sans personne pour le voir.
+    """
+    for recipe in _recipes_locataires():
+        texte = recipe.read_text()
+        assert "gestionnaire de connexion inconnu" in texte, (
+            f"{recipe.name} : aucune branche par defaut, un greeter inattendu "
+            "serait accepte en silence"
         )
