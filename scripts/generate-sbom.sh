@@ -143,14 +143,50 @@ export SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP="${SYFT_RELATIONSHIPS_PACKAGE_F
 log "   file.metadata.selection      = ${SYFT_FILE_METADATA_SELECTION}"
 log "   package-file-ownership       = ${SYFT_RELATIONSHIPS_PACKAGE_FILE_OWNERSHIP}"
 
+# ⚠️⚠️ EXCLURE LE DEPOT OSTREE, SANS QUOI LE SBOM DECRIT L HISTOIRE ET PAS
+# L IMAGE (trouve le 2026-09-13, il courait depuis toujours).
+#
+# Une image rpm-ostree porte `/sysroot/ostree/repo/objects/` — 7,3 Go sur bf —
+# et `/ostree` y est un lien symbolique. Ces objets sont ceux du commit de BASE,
+# rpmdb comprise. `syft scan dir:` les lit et catalogue des paquets que l image
+# N A PLUS : `plasma-welcome`, retire le 2026-09-11, figurait encore au SBOM du
+# 2026-09-13, avec son propre aveu dans le document —
+#
+#     "sourceInfo": "acquired package info from RPM DB:
+#                    /sysroot/ostree/repo/objects/40/db53....file"
+#
+# Le SBOM a donc servi de preuve pendant deux jours que le retrait n avait pas
+# pris, alors que le binaire, le .desktop et le module KDED etaient bel et bien
+# absents de /usr. Le tell qui aurait du alerter : `firefox`, retire par la MEME
+# transaction, ne reapparait pas — parce qu aucun objet de base ne le
+# reintroduit par ce chemin. Une sonde qui ne ment que sur la moitie des cas est
+# plus couteuse qu une sonde muette.
+#
 # --source-name / --source-version : le document doit s'identifier par la
 # reference PUBLIEE, pas par le chemin overlay du montage.
 syft scan "dir:${MNT}" \
+    --exclude './sysroot/**' \
+    --exclude './ostree/**' \
     --source-name "$IMAGE_REPO" \
     --source-version "$DIGEST" \
     -o "spdx-json=${OUT}"
 
 [ -s "$OUT" ] || die "SBOM vide apres le scan."
+
+# La garde qui prouve l exclusion par contre-exemple : syft ecrit dans
+# `sourceInfo` d ou il tient chaque paquet. Si un seul vient encore du depot
+# ostree, l inventaire decrit deux systemes a la fois et on ne l atteste pas.
+python3 - "$OUT" <<'PYGARDE' || die "le scan a lu le depot ostree : inventaire non fiable, voir ci-dessus."
+import json, sys
+doc = json.load(open(sys.argv[1]))
+fantomes = [p.get("name", "?") for p in doc.get("packages", [])
+            if "/sysroot/ostree" in (p.get("sourceInfo") or "")]
+if fantomes:
+    apercu = ", ".join(sorted(set(fantomes))[:5])
+    print(f"[sbom] {len(fantomes)} paquet(s) lus dans /sysroot/ostree : {apercu}"
+          " ... — les exclusions --exclude ne mordent plus.", file=sys.stderr)
+    sys.exit(1)
+PYGARDE
 
 # --- projection au niveau paquet -------------------------------------------
 # Le document atteste est un INVENTAIRE DE PAQUETS, et c'est une decision, pas

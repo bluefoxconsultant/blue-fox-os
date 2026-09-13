@@ -254,3 +254,48 @@ def test_skopeo_is_a_hard_requirement_of_a_real_publish():
         "l'etape 5 depend de skopeo : son absence doit echouer au preflight, "
         "pas apres 9 Go de build et un push"
     )
+
+
+def test_the_scan_excludes_the_ostree_repository():
+    """Le SBOM decrivait l'HISTOIRE du depot, pas l'image (releve 2026-09-13).
+
+    Une image rpm-ostree porte `/sysroot/ostree/repo/objects/` — 7,3 Go sur bf —
+    et `/ostree` y est un lien symbolique. Ces objets sont ceux du commit de
+    BASE, rpmdb comprise, et `syft scan dir:` les lit. Resultat : le SBOM du
+    2026-09-13 listait `plasma-welcome 6.7.5-1.fc44` pour une image d'ou le
+    paquet avait ete retire le 11, binaire, .desktop et module KDED compris.
+
+    Le document s'en accusait lui-meme, dans le champ prevu pour ca :
+
+        "sourceInfo": "acquired package info from RPM DB:
+                       /sysroot/ostree/repo/objects/40/db53....file"
+
+    ⚠️ Ce que cette sonde a coute : deux jours a chercher pourquoi un retrait
+    « ne prenait pas », alors qu'il prenait. Et elle ne mentait qu'a moitie —
+    `firefox`, retire par la MEME transaction, n'y reapparaissait pas. Une
+    sonde fausse sur la moitie des cas coute plus cher qu'une sonde muette.
+    """
+    body = _strip_comments(_gensbom())
+    for motif in ("--exclude './sysroot/**'", "--exclude './ostree/**'"):
+        assert motif in body, (
+            f"{motif} absent : syft catalogue les paquets du commit de base et "
+            "le SBOM decrit deux systemes a la fois"
+        )
+
+
+def test_a_ghost_package_from_the_ostree_repo_fails_the_run():
+    """L'exclusion se prouve par contre-exemple, pas par sa presence.
+
+    Un glob qui cesserait de mordre — chemin deplace en amont, syntaxe changee —
+    laisserait le scan repartir dans le depot sans un mot. La garde relit donc
+    `sourceInfo` APRES le scan : si un seul paquet en vient encore, la passe
+    s'arrete avant l'attestation.
+    """
+    body = _strip_comments(_gensbom())
+    assert "/sysroot/ostree" in body, (
+        "aucune garde ne relit sourceInfo : l'exclusion n'est affirmee que par "
+        "sa propre presence, ce qui ne prouve rien"
+    )
+    assert "sourceInfo" in body, (
+        "la garde doit lire le champ ou syft avoue sa source"
+    )
