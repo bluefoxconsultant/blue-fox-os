@@ -21,7 +21,7 @@ def test_resolve_branding_applies_bf_defaults():
     assert b["accent"] == b["primary"]
     assert b["system_font"] == gkt.BF_FONT
     assert b["plasma_theme"] == "client"
-    assert b["sddm_theme"] == "client"
+    assert "sddm_theme" not in b  # SDDM n'existe plus dans l'image (2026-09-13)
 
 
 def test_resolve_branding_respects_palette_override():
@@ -37,10 +37,10 @@ def test_resolve_branding_respects_palette_override():
 def test_resolve_branding_respects_theme_overrides():
     b = gkt.resolve_branding({
         "slug": "bf",
-        "branding": {"plasma_theme": "blue-fox-dark", "sddm_theme": "blue-fox"},
+        "branding": {"plasma_theme": "blue-fox-dark"},
     })
     assert b["plasma_theme"] == "blue-fox-dark"
-    assert b["sddm_theme"] == "blue-fox"
+    assert "sddm_theme" not in b
 
 
 def test_hex_to_rgb_round_trip():
@@ -94,12 +94,20 @@ def test_emit_wallpaper_symlinks_runtime_path(tmp_path: Path):
     assert str(link.readlink()) == "/usr/share/bluefox/branding/wallpaper.jpg"
 
 
-def test_emit_sddm_config_steers_to_breeze(tmp_path: Path):
-    tenant = {"slug": "bf"}
-    artifacts = gkt.emit_all(tenant, tmp_path)
-    text = artifacts["sddm_config"].read_text()
-    assert "Current=breeze" in text
-    assert "Font=Lexend" in text
+def test_emit_plasmalogin_config_sert_le_papier_peint_du_locataire(tmp_path: Path):
+    """Le greeter est plasmalogin, pas SDDM (mesure du 2026-09-13).
+
+    Son defaut Fedora sert `file:///usr/share/wallpapers/Fedora/`. On reprend la
+    forme exacte de ses cles, et on vise NOTRE paquet de papier peint.
+    """
+    artifacts = gkt.emit_all({"slug": "bf"}, tmp_path)
+    cible = artifacts["plasmalogin_config"]
+    assert cible == tmp_path / "etc/plasmalogin.conf.d/10-bluefox.conf"
+    text = cible.read_text()
+    assert "WallpaperPlugin=org.kde.image" in text
+    assert "[Greeter][Wallpaper][org.kde.image][General]" in text
+    assert "Image=file:///usr/share/wallpapers/bf/" in text
+    assert "PreviewImage=file:///usr/share/wallpapers/bf/" in text
 
 
 def test_emit_skel_kdeglobals_mirrors_xdg(tmp_path: Path):
@@ -342,19 +350,19 @@ def test_color_scheme_decoration_keeps_brand_accent(tmp_path: Path):
         assert focus == "#29ABE1", f"{section}.DecorationFocus must keep raw BF accent (got {focus})"
 
 
-def test_sddm_breeze_override_points_at_brand_wallpaper(tmp_path: Path):
-    """Le greeter tourne sur breeze : c'est CE theme-la qu'il faut surcharger.
+def test_plus_aucun_artefact_sddm_n_est_emis(tmp_path: Path):
+    """Onze jours de reglages ecrits pour un systeme absent de la machine.
 
-    Regression du 2026-09-02 : le theme par tenant pointait bien sur le papier
-    peint, mais emit_sddm_config() oriente SDDM vers breeze, donc l'ecran de
-    connexion affichait le fond d'origine.
+    Le correctif du 2026-09-02 visait `breeze/theme.conf.user` pour reparer
+    « l'ecran de connexion affiche le fond Breeze d'origine ». Le fond n'etait
+    pas celui de Breeze mais celui de FEDORA, et SDDM n'etait pas installe :
+    /usr/bin/sddm absent, aucun paquet sddm, et `/usr/share/sddm/themes/`
+    n'appartenant a AUCUN paquet — il n'existait que parce que ce script le
+    creait.
     """
-    b = gkt.resolve_branding({"slug": "bf", "branding": {}})
-    target = gkt.emit_sddm_breeze_override(b, tmp_path)
-    assert target == tmp_path / "usr/share/sddm/themes/breeze/theme.conf.user"
-    body = target.read_text()
-    assert f"background={gkt.BRANDING_RUNTIME}/wallpaper.jpg" in body
-    assert "type=image" in body
+    gkt.emit_all({"slug": "bf", "branding": {}}, tmp_path)
+    restes = [c for c in tmp_path.rglob("*") if "sddm" in str(c).lower()]
+    assert not restes, f"artefacts SDDM encore emis : {restes}"
 
 
 def test_kscreenlocker_config_uses_tenant_wallpaper(tmp_path: Path):
@@ -377,5 +385,5 @@ def test_look_and_feel_defaults_cover_the_lock_screen(tmp_path: Path):
 
 def test_emit_all_ships_both_wallpaper_surfaces(tmp_path: Path):
     out = gkt.emit_all({"slug": "bf", "branding": {}}, tmp_path)
-    assert out["sddm_breeze_override"].exists()
+    assert out["plasmalogin_config"].exists()
     assert out["kscreenlocker"].exists()

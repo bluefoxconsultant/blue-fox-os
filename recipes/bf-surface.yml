@@ -137,7 +137,7 @@ modules:
     files:
       - source: usr
         destination: /usr
-      # KDE theme (kdeglobals + sddm.conf.d + skel) généré par
+      # KDE theme (kdeglobals + plasmalogin.conf.d + skel) généré par
       # scripts/generate_kde_theme.py à partir de config/bf.json.
       - source: etc
         destination: /etc
@@ -192,7 +192,21 @@ modules:
       # l unite se garde toujours sur ce chemin. Si une version future deplace
       # le drapeau, le build echoue au lieu de rendre l assistant en silence.
       - rpm -q plasma-welcome >/dev/null 2>&1 && { echo "ERREUR - plasma-welcome est encore dans l image, il reposera les questions de la politique"; exit 1; } || true
-      - U=/usr/lib/systemd/system/plasma-setup.service; if [ -e "$U" ]; then grep -q '^ConditionPathExists=!/etc/plasma-setup-done$' "$U" || { echo "ERREUR - plasma-setup.service ne se garde plus sur /etc/plasma-setup-done, relire l unite avant de publier"; exit 1; }; [ -f /etc/plasma-setup-done ] || { echo "ERREUR - /etc/plasma-setup-done absent, l assistant OOBE de KDE s ouvrirait avant SDDM"; exit 1; }; fi
+      - U=/usr/lib/systemd/system/plasma-setup.service; if [ -e "$U" ]; then grep -q '^ConditionPathExists=!/etc/plasma-setup-done$' "$U" || { echo "ERREUR - plasma-setup.service ne se garde plus sur /etc/plasma-setup-done, relire l unite avant de publier"; exit 1; }; [ -f /etc/plasma-setup-done ] || { echo "ERREUR - /etc/plasma-setup-done absent, l assistant OOBE de KDE s ouvrirait avant le gestionnaire de connexion"; exit 1; }; fi
+      # L ecran de connexion, et le gestionnaire qui le rend (2026-09-13).
+      #
+      # ⚠️ CE N EST PLUS SDDM. Mesure sur l image publiee : display-manager
+      # pointe sur plasmalogin.service, /usr/bin/sddm n existe pas, aucun
+      # paquet sddm n est installe. Tout ce qu on generait pour SDDM n etait
+      # lu par personne, et /usr/share/sddm/themes n appartenait a AUCUN
+      # paquet — il existait parce que notre propre script le creait.
+      #
+      # Le defaut de Fedora sert son papier peint a lui. On le surcharge par un
+      # drop-in, et on affirme ICI les deux bouts : le gestionnaire est bien
+      # celui qu on configure, et le drop-in est bien la. Le jour ou Fedora
+      # change encore de greeter, le build le dit — au lieu de laisser l ecran
+      # de connexion revenir au fond Fedora sans un mot.
+      - D=/etc/systemd/system/display-manager.service; C="$(readlink -f "$D" 2>/dev/null)"; case "$C" in *plasmalogin*) ;; *) { echo "ERREUR - le gestionnaire de connexion n est plus plasmalogin mais [$C], le drop-in /etc/plasmalogin.conf.d ne serait plus lu"; exit 1; };; esac; [ -f /etc/plasmalogin.conf.d/10-bluefox.conf ] || { echo "ERREUR - drop-in plasmalogin absent, l ecran de connexion servirait le papier peint de Fedora"; exit 1; }
 
   - type: systemd
     system:

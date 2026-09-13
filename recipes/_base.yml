@@ -85,7 +85,7 @@ modules:
       # source est relatif a <repo>/files/ (conventionnel BlueBuild).
       - source: usr
         destination: /usr
-      # /etc/xdg/kdeglobals + /etc/sddm.conf.d + /etc/skel/.config matérialisés
+      # /etc/xdg/kdeglobals + /etc/plasmalogin.conf.d + /etc/skel/.config matérialisés
       # par scripts/generate_kde_theme.py à partir de tenant.json.
       - source: etc
         destination: /etc

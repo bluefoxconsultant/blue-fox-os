@@ -154,7 +154,7 @@
         "logo_url",
         "wallpaper_url"
       ],
-      "description": "Champs optionnels (palette, system_font, plasma_theme, sddm_theme) tombent sur les defaults BF canoniques (#29ABE1 / #2D3031 / Lexend) si absents — voir scripts/generate_kde_theme.py.",
+      "description": "Champs optionnels (palette, system_font, plasma_theme) tombent sur les defaults BF canoniques (#29ABE1 / #2D3031 / Lexend) si absents — voir scripts/generate_kde_theme.py.",
       "properties": {
         "logo_url": {
           "type": "string",
@@ -212,7 +212,7 @@
         },
         "sddm_theme": {
           "type": "string",
-          "description": "Nom du theme SDDM. Defaut: dérivé du slug (ex: 'bf')."
+          "description": "OBSOLETE (2026-09-13) : sans effet. Fedora 44 / Plasma 6.7 ont remplacé SDDM par plasmalogin ; l'écran de connexion se règle par /etc/plasmalogin.conf.d/. La propriété reste acceptée pour ne pas invalider les configs de locataires qui la portent encore."
         }
       }
     },

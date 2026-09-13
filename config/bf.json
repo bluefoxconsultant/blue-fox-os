@@ -48,8 +48,7 @@
     },
     "boot_bg_color": "#001533",
     "system_font": "Lexend",
-    "plasma_theme": "blue-fox-dark",
-    "sddm_theme": "blue-fox"
+    "plasma_theme": "blue-fox-dark"
   },
   "bookmarks": [
     {

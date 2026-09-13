@@ -42,8 +42,7 @@
       "accent": "#E66B00"
     },
     "system_font": "Lexend",
-    "plasma_theme": "blue-fox-dark",
-    "sddm_theme": "blue-fox"
+    "plasma_theme": "blue-fox-dark"
   },
   "bookmarks": [
     {"title": "Nextcloud", "url": "https://nextcloud.bluefoxconsultant.com", "pinned": true},

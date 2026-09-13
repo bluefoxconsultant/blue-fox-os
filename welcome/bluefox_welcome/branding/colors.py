@@ -67,7 +67,6 @@ def resolve_branding(tenant: dict) -> dict:
         "boot_bg_color": branding.get("boot_bg_color") or secondary,
         "system_font": branding.get("system_font") or BF_FONT,
         "plasma_theme": branding.get("plasma_theme") or slug,
-        "sddm_theme": branding.get("sddm_theme") or slug,
     }
 
 

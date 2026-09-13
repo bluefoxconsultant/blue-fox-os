@@ -8,9 +8,8 @@ system_font}` (with BF canonical defaults if absent) and produces:
   <files>/usr/share/color-schemes/<slug>.colors
   <files>/usr/share/wallpapers/<slug>/{metadata.json,contents/images/...}
   <files>/usr/share/plasma/look-and-feel/<slug>/{metadata.json,contents/defaults}
-  <files>/usr/share/sddm/themes/<slug>/{theme.conf,Background.jpg,metadata.desktop}
   <files>/etc/xdg/kdeglobals
-  <files>/etc/sddm.conf.d/blue-fox.conf
+  <files>/etc/plasmalogin.conf.d/10-bluefox.conf
   <files>/etc/skel/.config/kdeglobals
   <files>/etc/skel/.config/plasma-org.kde.plasma.desktop-appletsrc
 
@@ -146,54 +145,6 @@ def emit_look_and_feel(b: dict, files_root: Path) -> Path:
     )
     (contents / "defaults").write_text(defaults)
     LOG.info("emit look-and-feel %s", base)
-    return base
-
-
-def emit_sddm_theme(b: dict, files_root: Path) -> Path:
-    """Minimal SDDM theme: Breeze-style override with brand background + accent.
-
-    Directory name uses b['sddm_theme'] (defaults to slug). Currently SDDM
-    is steered to the upstream `breeze` theme via emit_sddm_config(); this
-    per-tenant theme dir is shipped as a forward-compatibility hook for v1.1
-    when we ship a custom QML theme.
-    """
-    base = files_root / "usr/share/sddm/themes" / b["sddm_theme"]
-    base.mkdir(parents=True, exist_ok=True)
-
-    desktop = (
-        f"[Desktop Entry]\n"
-        f"Type=Application\n"
-        f"Name=Blue Fox OS — {b['name']}\n"
-        f"Comment=SDDM theme for tenant {b['slug']}\n"
-        f"X-KDE-PluginInfo-Name={b['sddm_theme']}\n"
-        f"X-KDE-PluginInfo-Version=1.0\n"
-        f"X-KDE-PluginInfo-Author=Blue Fox\n"
-    )
-    (base / "metadata.desktop").write_text(desktop)
-
-    theme_conf = (
-        f"[General]\n"
-        f"background={BRANDING_RUNTIME}/wallpaper.jpg\n"
-        f"type=image\n"
-        f"color={b['secondary']}\n"
-        f"fontSize=10\n"
-        f"font={b['system_font']}\n"
-        f"accentColor={b['accent']}\n"
-    )
-    (base / "theme.conf").write_text(theme_conf)
-
-    # Symlink Background.jpg for themes that look at base dir directly (e.g. Breeze fork).
-    bg_link = base / "Background.jpg"
-    if bg_link.is_symlink() or bg_link.exists():
-        bg_link.unlink()
-    bg_link.symlink_to(f"{BRANDING_RUNTIME}/wallpaper.jpg")
-
-    # Minimal Main.qml so SDDM has something to load if the theme is selected
-    # before Breeze theming is borrowed. Plasma 6 ships a usable Breeze theme
-    # at /usr/share/sddm/themes/breeze; in v1 we just steer SDDM to use breeze
-    # via /etc/sddm.conf.d/blue-fox.conf rather than ship a full QML tree here.
-    # See emit_sddm_config() below.
-    LOG.info("emit sddm theme %s", base)
     return base
 
 
@@ -443,27 +394,6 @@ def emit_plymouth_config(b: dict, files_root: Path) -> Path:
     return target
 
 
-def emit_sddm_config(b: dict, files_root: Path) -> Path:
-    """Wire SDDM to use Breeze with our brand background + cursor."""
-    target = files_root / "etc/sddm.conf.d/blue-fox.conf"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    # We stick with Breeze (mature, ships in Plasma 6) and override its
-    # background via the theme.conf symlink trick documented in the theme dir.
-    # When BFOSL3 audit lands we may switch to a custom QML theme.
-    conf = (
-        f"[Theme]\n"
-        f"Current=breeze\n"
-        f"CursorTheme=breeze_cursors\n"
-        f"Font={b['system_font']}\n"
-        f"\n"
-        f"[General]\n"
-        f"# Tenant: {b['slug']}\n"
-    )
-    target.write_text(conf)
-    LOG.info("emit sddm config %s", target)
-    return target
-
-
 def _kdeglobals_body(b: dict) -> str:
     icon_theme = f"bluefox-{b['slug']}"
     return (
@@ -492,33 +422,53 @@ def _kdeglobals_body(b: dict) -> str:
     )
 
 
-def emit_sddm_breeze_override(b: dict, files_root: Path) -> Path:
-    """Donner au greeter SDDM le papier peint de la marque.
+def emit_plasmalogin_config(b: dict, files_root: Path) -> Path:
+    """Papier peint de la marque sur l'ecran de connexion.
 
-    emit_sddm_config() oriente SDDM vers le theme `breeze` d'origine, mature et
-    livre avec Plasma 6. Le theme par tenant emis juste au-dessus pointe bien
-    sur notre papier peint, mais il n'est PAS celui qui est charge : son propre
-    commentaire annonce une bascule qui n'a jamais eu lieu. Resultat constate le
-    2026-09-02 sur une machine fraichement installee : l'ecran de connexion
-    affiche le fond Breeze d'origine.
+    ⚠️⚠️ CE N'EST PLUS SDDM. Mesure du 2026-09-13 sur l'image publiee :
+    `/etc/systemd/system/display-manager.service` pointe sur
+    `plasmalogin.service`, `/usr/bin/sddm` n'existe pas, et aucun paquet sddm
+    n'est installe — Fedora 44 / Plasma 6.7 ont remplace SDDM par
+    plasma-login-manager.
 
-    SDDM lit `theme.conf` PUIS `theme.conf.user` dans le repertoire du theme, et
-    le second l'emporte. C'est le point de surcharge prevu en amont, et il
-    survit a une mise a jour du paquet breeze, contrairement a une reecriture de
-    theme.conf.
+    Tout ce qu'on generait pour SDDM n'etait donc lu par personne :
+    `/etc/sddm.conf.d/blue-fox.conf`, un theme par locataire jamais selectionne,
+    et une surcharge `breeze/theme.conf.user` posee le 2026-09-02 pour corriger
+    « l'ecran de connexion affiche le fond Breeze d'origine ». Le repertoire
+    `/usr/share/sddm/themes/` n'appartenait a AUCUN paquet : il existait parce
+    que ce script le creait. Un arbre entier qui donnait l'illusion d'un ecran
+    de connexion brande.
+
+    Ce que la machine lit vraiment, `/usr/lib/plasmalogin/defaults.conf` :
+
+        [Greeter][Wallpaper][org.kde.image][General]
+        Image=file:///usr/share/wallpapers/Fedora/
+
+    — donc le papier peint de FEDORA, sur chaque Blue Fox OS, locataire tiers
+    ou pas. On ecrit ici un drop-in dans `/etc/plasmalogin.conf.d/`, qui l'emporte
+    sur les defauts du paquet et survit a ses mises a jour.
+
+    ⚠️ On copie la FORME EXACTE des cles de `defaults.conf` — meme greffon, meme
+    genre de valeur (un paquet de papier peint KDE, pas un fichier nu) — plutot
+    que d'inventer des cles plausibles. C'est precisement ce qui avait ete fait
+    du cote SDDM, et ca a tenu onze jours sans que rien ne le dise.
     """
-    base = files_root / "usr/share/sddm/themes/breeze"
-    base.mkdir(parents=True, exist_ok=True)
+    target = files_root / "etc/plasmalogin.conf.d/10-bluefox.conf"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    paquet = f"file:///usr/share/wallpapers/{b['slug']}/"
     conf = (
         f"# Genere par scripts/generate_kde_theme.py — tenant {b['slug']}.\n"
-        f"# Surcharge de /usr/share/sddm/themes/breeze/theme.conf.\n"
-        f"[General]\n"
-        f"background={BRANDING_RUNTIME}/wallpaper.jpg\n"
-        f"type=image\n"
+        f"# Surcharge /usr/lib/plasmalogin/defaults.conf, qui sert le papier\n"
+        f"# peint de Fedora. Le paquet vise est emis par emit_wallpaper_package().\n"
+        f"[Greeter]\n"
+        f"WallpaperPlugin=org.kde.image\n"
+        f"\n"
+        f"[Greeter][Wallpaper][org.kde.image][General]\n"
+        f"Image={paquet}\n"
+        f"PreviewImage={paquet}\n"
     )
-    target = base / "theme.conf.user"
     target.write_text(conf)
-    LOG.info("emit sddm breeze override %s", target)
+    LOG.info("emit plasmalogin config %s", target)
     return target
 
 
@@ -728,9 +678,7 @@ def emit_all(tenant: dict, files_root: Path) -> dict:
         "color_scheme": emit_color_scheme(b, files_root),
         "wallpaper_pkg": emit_wallpaper_package(b, files_root),
         "look_and_feel": emit_look_and_feel(b, files_root),
-        "sddm_theme": emit_sddm_theme(b, files_root),
-        "sddm_config": emit_sddm_config(b, files_root),
-        "sddm_breeze_override": emit_sddm_breeze_override(b, files_root),
+        "plasmalogin_config": emit_plasmalogin_config(b, files_root),
         "kscreenlocker": emit_kscreenlocker_config(b, files_root),
         "plymouth_theme": emit_plymouth_theme(b, files_root),
         "plymouth_config": emit_plymouth_config(b, files_root),
