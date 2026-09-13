@@ -792,3 +792,165 @@ def test_le_compte_reste_verrouille_si_le_depot_echoue(tmp_path):
                        out=lambda _m: None,
                        decider=lambda _out: (True, False))
     assert compte.read_text().strip().endswith("--lock")
+
+
+# ===========================================================================
+# Code QR et ecran d'autorisation (#22419 — rendu de l'etape d'installation)
+# ===========================================================================
+#
+# Pourquoi des vecteurs d'or plutot qu'un aller-retour : relire le QR avec le
+# meme parcours que celui qui l'a ecrit serait circulaire — le test passerait
+# au vert meme avec un encodeur faux. La validation reelle s'est faite contre
+# zxing-cpp (decodeur independant) sur les 106 longueurs ; ces empreintes
+# figent la sortie exacte que ce decodeur a relue correctement.
+#
+# Si un de ces tests casse apres une modification de l'encodeur, ne PAS
+# regenerer l'empreinte : revalider d'abord contre un vrai decodeur.
+
+
+class TestCodeQR:
+    GOLDEN = {
+        "https://auth.bluefoxconsultant.com/device?code=119271062":
+            (33, "37bde5a745ae8ebcdbec4b34ca843f204479a3911418e40087b1d867c7a6e1f3"),
+        "https://auth.bluefoxconsultant.com/device":
+            (29, "3fa2f972083443e55fd41683ff52a766e78dfbb08c9bf281c195898ade9a24f4"),
+        "BFOS":
+            (21, "d6ff61017e6ea9ba7b8ebdde10a24ede93eeb68d9ef7589a0593ff2cad8a0daa"),
+        "https://auth.bluefoxconsultant.com/device?code=000000001":
+            (33, "ca31952ea3268017da40100089fa9623f50d50a0a100cfb671630c2538f06e64"),
+    }
+
+    def test_matrices_conformes_aux_vecteurs_valides_par_un_decodeur(self):
+        import hashlib
+        for texte, (taille, empreinte) in self.GOLDEN.items():
+            m = bp._qr_encode(texte)
+            assert len(m) == taille, texte
+            plat = "".join("".join(str(v) for v in ligne) for ligne in m)
+            assert hashlib.sha256(plat.encode()).hexdigest() == empreinte, texte
+
+    def test_motifs_de_reperage_aux_trois_coins(self):
+        m = bp._qr_encode("BFOS")
+        n = len(m)
+        for r0, c0 in ((0, 0), (0, n - 7), (n - 7, 0)):
+            assert m[r0][c0] == 1
+            assert m[r0 + 3][c0 + 3] == 1          # coeur plein
+            assert m[r0 + 1][c0 + 1] == 0          # anneau clair
+            assert m[r0 + 6][c0 + 6] == 1
+
+    def test_module_sombre_toujours_present(self):
+        for v in (1, 4):
+            texte = "x" * (10 if v == 1 else 60)
+            m = bp._qr_encode(texte)
+            assert m[len(m) - 8][8] == 1
+
+    def test_refuse_au_dela_de_la_capacite(self):
+        with pytest.raises(ValueError):
+            bp._qr_encode("x" * 107)
+
+    def test_rendu_demi_blocs_moitie_moins_haut_que_large(self):
+        lignes, largeur = bp.render_qr_lines("BFOS")
+        assert all(len(l) == largeur for l in lignes)
+        assert len(lignes) == (largeur + 1) // 2
+        assert set("".join(lignes)) <= {" ", "▀", "▄", "█"}
+
+    def test_zone_de_silence_presente(self):
+        lignes, largeur = bp.render_qr_lines("BFOS", quiet=4)
+        # les deux premieres lignes = 4 modules clairs = 2 lignes vides
+        assert lignes[0].strip() == ""
+        assert lignes[1].strip() == ""
+        assert lignes[-1].strip() == ""
+
+
+class TestEcranAutorisation:
+    D = {
+        "verification_uri": "https://auth.bluefoxconsultant.com/device",
+        "verification_uri_complete":
+            "https://auth.bluefoxconsultant.com/device?code=119271062",
+        "user_code": "119271062",
+    }
+
+    def _plat(self, **kw):
+        ecran = bp.composer_ecran(self.D, **kw)
+        return [bp._sans_ansi(l)
+                for l in ecran.rstrip("\n").split("\n")]
+
+    def test_tient_dans_une_console_80x25(self):
+        lignes = self._plat()
+        assert len(lignes) <= 24, f"{len(lignes)} lignes"
+        assert max(len(l) for l in lignes) <= 78
+
+    def test_le_code_et_l_adresse_restent_lisibles_en_texte(self):
+        # Le QR s'AJOUTE au code, il ne le remplace pas : sans appareil photo,
+        # sans police adequate, l'installation doit rester terminable.
+        texte = "\n".join(self._plat())
+        assert "auth.bluefoxconsultant.com/device" in texte
+        assert "1 1 9   2 7 1   0 6 2" in texte
+
+    def test_le_qr_encode_l_adresse_avec_le_code(self):
+        # et non l'adresse nue : balayer ne doit pas obliger a taper le code.
+        lignes, _ = bp.render_qr_lines(self.D["verification_uri_complete"])
+        attendu, _ = bp.render_qr_lines(
+            "https://auth.bluefoxconsultant.com/device?code=119271062")
+        assert lignes == attendu
+
+    def test_sans_qr_le_code_survit(self):
+        lignes = self._plat(qr=False)
+        texte = "\n".join(lignes)
+        assert "1 1 9   2 7 1   0 6 2" in texte
+        assert self.D["verification_uri_complete"] in texte
+
+    def test_encre_noire_sur_fond_blanc(self):
+        # Une console est blanche sur noir : dessine tel quel, le QR serait
+        # INVERSE et certains appareils photo le refusent.
+        ecran = bp.composer_ecran(self.D)
+        assert "\x1b[30;47m" in ecran
+        assert "\x1b[0m" in ecran
+
+    def test_groupement_du_code(self):
+        assert bp._grouper_code("119271062") == "1 1 9   2 7 1   0 6 2"
+        assert bp._grouper_code("ABCD-EFGH") == "A B C   D E F   G H"
+        assert bp._grouper_code("") == ""
+
+    def test_repli_en_pile_si_le_qr_est_trop_large(self, monkeypatch):
+        # Une adresse plus longue donne un QR de version superieure ; plutot
+        # que de deborder a 80 colonnes, on empile.
+        monkeypatch.setattr(bp, "_LARGEUR", 40)
+        lignes = self._plat()
+        # empile = plus aucune ligne ne porte a la fois le dessin et le texte
+        melangees = [l for l in lignes
+                     if set(l) & {"▀", "▄", "█"} and "Balayez" in l]
+        assert melangees == []
+        joint = "\n".join(lignes)
+        assert "1 1 9   2 7 1   0 6 2" in joint
+        assert self.D["verification_uri_complete"] in joint
+
+
+class TestEcritureConsole:
+    def test_le_dessin_ne_casse_pas_un_stderr_ascii(self, tmp_path, monkeypatch):
+        """Le piege qui transformait un ecran plus joli en echec d'installation.
+
+        En %pre la locale est souvent ASCII. Avant correction, le `print` vers
+        stderr etait HORS du try : un seul caractere de dessin levait
+        UnicodeEncodeError, qui remontait jusqu'au garde-fou general et faisait
+        basculer toute l'installation sur la politique de repli.
+        """
+        import io
+        import sys
+
+        class StderrAscii(io.TextIOBase):
+            def __init__(self):
+                self.buffer = io.BytesIO()
+
+            def write(self, s):
+                s.encode("ascii")  # leve comme le ferait une locale ASCII
+                return len(s)
+
+        faux = StderrAscii()
+        monkeypatch.setattr(bp, "CONSOLE", str(tmp_path / "console"))
+        monkeypatch.setattr(sys, "stderr", faux)
+        ecrire = bp._console_writer()
+        ecrire("█▀▄ essai")  # ne doit rien lever
+        assert "essai" in faux.buffer.getvalue().decode("utf-8")
+
+    def test_le_journal_ne_recoit_pas_les_sequences_ansi(self):
+        assert bp._sans_ansi("\x1b[30;47mx\x1b[0m") == "x"

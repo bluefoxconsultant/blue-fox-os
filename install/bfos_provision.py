@@ -167,19 +167,479 @@ def device_authorize(device_url, client_id, post=_post_form):
     return d
 
 
-def announce(d, out):
-    """Print the verification URL + user code to the install console."""
-    uri = d.get("verification_uri", "")
+# =========================================================================
+# Code QR — encodeur autonome
+# =========================================================================
+# Pourquoi du code maison plutot qu'une bibliotheque : le runtime d'Anaconda
+# ne garantit ni `qrencode` ni `python3-qrcode`, et ce script voyage integre
+# verbatim dans le kickstart — il ne peut rien importer qui ne soit pas deja
+# la. Dependre du jeu de paquets de lorax, ce serait accepter qu'une mise a
+# jour de Fedora eteigne l'ecran d'installation sans prevenir.
+#
+# Eprouve par aller-retour contre un vrai decodeur (zxing-cpp) sur les 106
+# longueurs, pas par comparaison visuelle : un QR faux ressemble exactement a
+# un QR juste. Voir install/tests/test_bfos_provision.py.
+# --- corps de Galois GF(256), polynome primitif 0x11D -----------------------
+_EXP = [0] * 512
+_LOG = [0] * 256
+_x = 1
+for _i in range(255):
+    _EXP[_i] = _x
+    _LOG[_x] = _i
+    _x <<= 1
+    if _x & 0x100:
+        _x ^= 0x11D
+for _i in range(255, 512):
+    _EXP[_i] = _EXP[_i - 255]
+
+
+def _gf_mul(a, b):
+    if a == 0 or b == 0:
+        return 0
+    return _EXP[_LOG[a] + _LOG[b]]
+
+
+def _rs_generator(degree):
+    """Polynome generateur de Reed-Solomon de degre donne."""
+    poly = [1]
+    for i in range(degree):
+        nxt = [0] * (len(poly) + 1)
+        for j, c in enumerate(poly):
+            nxt[j] ^= c
+            nxt[j + 1] ^= _gf_mul(c, _EXP[i])
+        poly = nxt
+    return poly
+
+
+def _rs_ecc(data, ec_count):
+    """Mots de correction pour un bloc de donnees."""
+    gen = _rs_generator(ec_count)
+    rem = [0] * ec_count
+    for byte in data:
+        factor = byte ^ rem[0]
+        rem = rem[1:] + [0]
+        for i, g in enumerate(gen[1:]):
+            rem[i] ^= _gf_mul(g, factor)
+    return rem
+
+
+# --- tables par version, niveau de correction M -----------------------------
+# version -> (mots de correction par bloc, [(nb de blocs, mots de donnees), ...])
+_SPEC_M = {
+    1: (10, [(1, 16)]),
+    2: (16, [(1, 28)]),
+    3: (26, [(1, 44)]),
+    4: (18, [(2, 32)]),
+    5: (24, [(2, 43)]),
+    6: (16, [(4, 27)]),
+}
+_ALIGN = {1: [], 2: [6, 18], 3: [6, 22], 4: [6, 26], 5: [6, 30], 6: [6, 34]}
+
+
+def _capacity(version):
+    """Nombre d'octets encodables en mode octet pour cette version."""
+    total = sum(n * d for n, d in _SPEC_M[version][1])
+    return (total * 8 - 4 - 8) // 8
+
+
+def _pick_version(nbytes):
+    for v in sorted(_SPEC_M):
+        if nbytes <= _capacity(v):
+            return v
+    raise ValueError(
+        f"{nbytes} octets depassent la version 6 en correction M "
+        f"({_capacity(6)} octets) — hors de la portee de cet encodeur")
+
+
+# --- flux binaire -----------------------------------------------------------
+def _bitstream(payload, version):
+    ec_per_block, groups = _SPEC_M[version]
+    total_data = sum(n * d for n, d in groups)
+
+    bits = []
+    def put(value, length):
+        for i in range(length - 1, -1, -1):
+            bits.append((value >> i) & 1)
+
+    put(0b0100, 4)              # mode octet
+    put(len(payload), 8)        # compte (8 bits pour les versions 1 a 9)
+    for byte in payload:
+        put(byte, 8)
+
+    # terminateur : jusqu'a 4 zeros, sans depasser la capacite
+    put(0, min(4, total_data * 8 - len(bits)))
+    # alignement sur l'octet
+    if len(bits) % 8:
+        put(0, 8 - len(bits) % 8)
+
+    data = bytearray(int("".join(str(b) for b in bits[i:i + 8]), 2)
+                     for i in range(0, len(bits), 8))
+    # octets de bourrage alternes, prescrits par la norme
+    for i in range(total_data - len(data)):
+        data.append(0xEC if i % 2 == 0 else 0x11)
+
+    # decoupage en blocs, puis entrelacement
+    blocks, eccs, pos = [], [], 0
+    for count, size in groups:
+        for _ in range(count):
+            blk = bytes(data[pos:pos + size])
+            pos += size
+            blocks.append(blk)
+            eccs.append(_rs_ecc(blk, ec_per_block))
+
+    out = bytearray()
+    for i in range(max(len(b) for b in blocks)):
+        for b in blocks:
+            if i < len(b):
+                out.append(b[i])
+    for i in range(ec_per_block):
+        for e in eccs:
+            out.append(e[i])
+    return out
+
+
+# --- matrice ----------------------------------------------------------------
+def _blank(size):
+    return [[None] * size for _ in range(size)]
+
+
+def _place_function_patterns(m, version):
+    size = len(m)
+
+    def finder(r0, c0):
+        for r in range(-1, 8):
+            for c in range(-1, 8):
+                rr, cc = r0 + r, c0 + c
+                if not (0 <= rr < size and 0 <= cc < size):
+                    continue
+                dark = (0 <= r <= 6 and c in (0, 6)) or \
+                       (0 <= c <= 6 and r in (0, 6)) or \
+                       (2 <= r <= 4 and 2 <= c <= 4)
+                m[rr][cc] = 1 if dark else 0
+
+    finder(0, 0)
+    finder(0, size - 7)
+    finder(size - 7, 0)
+
+    # motifs de synchronisation
+    for i in range(8, size - 8):
+        bit = 1 if i % 2 == 0 else 0
+        m[6][i] = bit
+        m[i][6] = bit
+
+    # motifs d'alignement, sauf la ou ils chevaucheraient un motif de reperage
+    centers = _ALIGN[version]
+    for r in centers:
+        for c in centers:
+            if (r, c) in ((6, 6), (6, size - 7), (size - 7, 6)):
+                continue
+            for dr in range(-2, 3):
+                for dc in range(-2, 3):
+                    m[r + dr][c + dc] = \
+                        1 if max(abs(dr), abs(dc)) != 1 else 0
+
+    m[size - 8][8] = 1  # module sombre, toujours
+
+
+def _reserve_format(m):
+    size = len(m)
+    for i in range(9):
+        if m[8][i] is None:
+            m[8][i] = 0
+        if m[i][8] is None:
+            m[i][8] = 0
+    for i in range(8):
+        if m[8][size - 1 - i] is None:
+            m[8][size - 1 - i] = 0
+        if m[size - 1 - i][8] is None:
+            m[size - 1 - i][8] = 0
+
+
+def _place_data(m, stream, reserved):
+    size = len(m)
+    bits = [(byte >> i) & 1 for byte in stream for i in range(7, -1, -1)]
+    idx = 0
+    col = size - 1
+    upward = True
+    while col > 0:
+        if col == 6:          # la colonne de synchronisation ne porte rien
+            col -= 1
+        rows = range(size - 1, -1, -1) if upward else range(size)
+        for row in rows:
+            for c in (col, col - 1):
+                if reserved[row][c]:
+                    continue
+                m[row][c] = bits[idx] if idx < len(bits) else 0
+                idx += 1
+        upward = not upward
+        col -= 2
+
+
+_MASKS = (
+    lambda r, c: (r + c) % 2 == 0,
+    lambda r, c: r % 2 == 0,
+    lambda r, c: c % 3 == 0,
+    lambda r, c: (r + c) % 3 == 0,
+    lambda r, c: (r // 2 + c // 3) % 2 == 0,
+    lambda r, c: (r * c) % 2 + (r * c) % 3 == 0,
+    lambda r, c: ((r * c) % 2 + (r * c) % 3) % 2 == 0,
+    lambda r, c: ((r + c) % 2 + (r * c) % 3) % 2 == 0,
+)
+
+
+def _penalty(m):
+    size = len(m)
+    score = 0
+
+    # N1 : suites de 5 modules ou plus de meme couleur
+    for line in list(m) + [list(col) for col in zip(*m)]:
+        run, prev = 1, line[0]
+        for v in line[1:]:
+            if v == prev:
+                run += 1
+            else:
+                if run >= 5:
+                    score += 3 + (run - 5)
+                run, prev = 1, v
+        if run >= 5:
+            score += 3 + (run - 5)
+
+    # N2 : blocs 2x2 de meme couleur
+    for r in range(size - 1):
+        for c in range(size - 1):
+            if m[r][c] == m[r][c + 1] == m[r + 1][c] == m[r + 1][c + 1]:
+                score += 3
+
+    # N3 : motif 1:1:3:1:1 evoquant un motif de reperage
+    patt_a = [1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0]
+    patt_b = list(reversed(patt_a))
+    for line in list(m) + [list(col) for col in zip(*m)]:
+        for i in range(size - 10):
+            window = line[i:i + 11]
+            if window == patt_a or window == patt_b:
+                score += 40
+
+    # N4 : desequilibre clair/sombre
+    dark = sum(sum(row) for row in m)
+    ratio = dark * 100 // (size * size)
+    score += 10 * (abs(ratio - 50) // 5)
+    return score
+
+
+_FORMAT_GEN = 0x537
+_FORMAT_XOR = 0x5412
+
+
+def _format_bits(mask):
+    # niveau M = 0b00
+    data = (0b00 << 3) | mask
+    rem = data << 10
+    for i in range(4, -1, -1):
+        if rem & (1 << (i + 10)):
+            rem ^= _FORMAT_GEN << i
+    return ((data << 10) | rem) ^ _FORMAT_XOR
+
+
+def _apply_format(m, mask):
+    """Ecrit les deux copies de l'information de format.
+
+    Repere mesure contre une implementation de reference, pas deduit : la
+    COLONNE 8 porte les bits 0 a 5 en descendant, la RANGEE 8 porte les bits
+    14 a 9 en allant vers la gauche. Les intervertir donne un QR d'allure
+    parfaitement normale que plus aucun lecteur ne decode.
+    """
+    size = len(m)
+    bits = _format_bits(mask)
+
+    def bit(i):
+        return (bits >> i) & 1
+
+    # copie 1 : autour du motif de reperage superieur gauche
+    for i in range(6):
+        m[i][8] = bit(i)
+    m[7][8] = bit(6)
+    m[8][8] = bit(7)
+    m[8][7] = bit(8)
+    for i in range(6):
+        m[8][5 - i] = bit(9 + i)
+
+    # copie 2 : sous le reperage inferieur gauche, et a droite du superieur droit
+    for i in range(8):
+        m[8][size - 8 + i] = bit(7 - i)
+    for i in range(7):
+        m[size - 1 - i][8] = bit(14 - i)
+    m[size - 8][8] = 1  # module sombre, toujours
+
+
+def _qr_encode(text):
+    """Rend la matrice du QR : liste de listes de 0/1, sans zone de silence."""
+    payload = text.encode("utf-8")
+    version = _pick_version(len(payload))
+    size = 17 + 4 * version
+
+    base = _blank(size)
+    _place_function_patterns(base, version)
+    _reserve_format(base)
+    reserved = [[cell is not None for cell in row] for row in base]
+
+    stream = _bitstream(payload, version)
+    _place_data(base, stream, reserved)
+
+    best, best_score = None, None
+    for mask in range(8):
+        cand = [row[:] for row in base]
+        for r in range(size):
+            for c in range(size):
+                if not reserved[r][c] and _MASKS[mask](r, c):
+                    cand[r][c] ^= 1
+        _apply_format(cand, mask)
+        sc = _penalty(cand)
+        if best_score is None or sc < best_score:
+            best, best_score = cand, sc
+    return best
+
+
+_QR_PLEIN = "\u2588"
+_QR_HAUT = "\u2580"
+_QR_BAS = "\u2584"
+# Noir sur blanc, explicitement. La console est blanche sur noir : dessiner le
+# QR tel quel donnerait un code INVERSE, que certains appareils photo refusent.
+_QR_ENCRE = "\x1b[30;47m"
+_QR_FIN = "\x1b[0m"
+
+
+def render_qr_lines(text, quiet=4):
+    """Rend le QR en demi-blocs : une colonne par module, deux modules par
+    ligne. C'est ce qui garde les modules carres sur une console dont les
+    caracteres sont deux fois plus hauts que larges — et ce qui fait tenir un
+    code de version 4 en 21 lignes au lieu de 41.
+
+    Retourne (lignes, largeur_en_colonnes), sans sequences ANSI.
+    """
+    m = _qr_encode(text)
+    n = len(m)
+    w = n + 2 * quiet
+    grille = [[0] * w for _ in range(w)]
+    for r in range(n):
+        for c in range(n):
+            grille[r + quiet][c + quiet] = m[r][c]
+    glyphes = (" ", _QR_BAS, _QR_HAUT, _QR_PLEIN)
+    lignes = []
+    for r in range(0, w, 2):
+        haut = grille[r]
+        bas = grille[r + 1] if r + 1 < w else [0] * w
+        lignes.append("".join(glyphes[(haut[c] << 1) | bas[c]] for c in range(w)))
+    return lignes, w
+
+
+def _grouper_code(code):
+    """Coupe le code en groupes de trois. Neuf caracteres d'affilee se retapent
+    mal sur un telephone ; trois par trois, on ne perd plus sa place."""
+    brut = "".join(ch for ch in str(code) if ch.isalnum())
+    if not brut:
+        return str(code)
+    return "   ".join(" ".join(brut[i:i + 3]) for i in range(0, len(brut), 3))
+
+
+def _hote_lisible(uri):
+    """L'adresse sans le schema : c'est ce qu'on retape, pas le https://."""
+    for prefixe in ("https://", "http://"):
+        if uri.startswith(prefixe):
+            return uri[len(prefixe):]
+    return uri
+
+
+# Taille cible : 24 lignes sur 78 colonnes. Une console texte fait 80x25 au
+# minimum ; deborder d'une seule ligne ferait defiler l'ecran et la premiere
+# chose a sortir par le haut serait le QR.
+_LARGEUR = 78
+_HAUTEUR_MAX = 24
+_ECART = 2  # colonnes entre le QR et le texte
+
+
+def _panneau(uri, code):
+    return [
+        "",
+        "Cette machine demande a rejoindre",
+        "votre organisation.",
+        "",
+        "1.  Balayez le code ci-contre avec",
+        "    l'appareil photo du telephone.",
+        "",
+        "2.  Ou ouvrez cette adresse :",
+        "",
+        "  " + _hote_lisible(uri),
+        "",
+        "3.  Puis entrez ce code :",
+        "",
+        "  " + _grouper_code(code),
+        "",
+        "",
+        "L'installation se poursuivra au nom",
+        "de qui autorise.",
+    ]
+
+
+def composer_ecran(d, qr=True):
+    """Compose l'ecran d'autorisation, sequences ANSI comprises.
+
+    Separe de `announce` pour etre testable sans console.
+    """
+    uri = d.get("verification_uri", "") or ""
     uri_complete = d.get("verification_uri_complete") or uri
-    out(
-        "\n==================== Blue Fox OS ====================\n"
-        " Authentifiez cette installation :\n"
-        f"   1. Sur un autre appareil, ouvrez : {uri}\n"
-        f"   2. Entrez le code : {d.get('user_code', '?')}\n"
-        f"   (ou directement : {uri_complete})\n"
-        " En attente d'autorisation (2FA incluse)...\n"
-        "=====================================================\n"
-    )
+    code = d.get("user_code", "?")
+    droite = _panneau(uri, code)
+
+    gauche, largeur_qr = [], 0
+    if qr and uri_complete:
+        try:
+            gauche, largeur_qr = render_qr_lines(uri_complete)
+        except Exception:  # noqa: BLE001
+            # Un QR absent ne doit jamais couter le code : on retombe sur le
+            # texte seul, qui suffit a terminer l'installation.
+            gauche, largeur_qr = [], 0
+
+    # Cote a cote seulement si les deux colonnes tiennent vraiment. Une URL
+    # plus longue donnerait un QR de version superieure, donc plus large.
+    besoin = largeur_qr + _ECART + max(len(x) for x in droite)
+    cote_a_cote = bool(gauche) and besoin <= _LARGEUR
+
+    titre = " BLUE FOX OS "
+    queue = " autorisation "
+    lignes = [titre + "-" * max(1, _LARGEUR - len(titre) - len(queue)) + queue]
+
+    if cote_a_cote:
+        for i in range(max(len(gauche), len(droite))):
+            g = gauche[i] if i < len(gauche) else " " * largeur_qr
+            dte = droite[i] if i < len(droite) else ""
+            lignes.append(_QR_ENCRE + g + _QR_FIN + " " * _ECART + dte)
+    else:
+        if gauche:
+            lignes.extend(_QR_ENCRE + g + _QR_FIN for g in gauche)
+        lignes.extend("  " + x for x in droite)
+        lignes.append("")
+        lignes.append("  Adresse complete : " + uri_complete)
+
+    lignes += [
+        "-" * _LARGEUR,
+        "  En attente de l'autorisation (double facteur inclus)...",
+    ]
+    return "\n".join(lignes) + "\n"
+
+
+def announce(d, out):
+    """Affiche l'ecran d'autorisation sur la console d'installation."""
+    out(composer_ecran(d, qr=_env_drapeau("BFOS_QR", True)))
+
+
+def _env_drapeau(nom, defaut):
+    """Drapeau d'environnement : absent = valeur par defaut ; '0'/'false'/'no'
+    = desactive. Sert a eteindre le QR sur une console recalcitrante sans
+    reconstruire quoi que ce soit."""
+    brut = os.environ.get(nom)
+    if brut is None or brut == "":
+        return defaut
+    return brut.strip().lower() not in ("0", "false", "no", "off")
 
 
 def poll_token(token_url, client_id, device_code, interval, expires_in,
@@ -516,19 +976,47 @@ def fallback_policy(env=None):
     }
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _sans_ansi(msg):
+    return _ANSI_RE.sub("", msg)
+
+
 def _console_writer():
+    """Ecrit sur la console d'installation, et une copie a plat dans le journal.
+
+    La console est ouverte explicitement en UTF-8 avec errors="replace". La
+    locale du %pre est souvent ASCII : un seul caractere de dessin suffisait
+    alors a lever UnicodeEncodeError. Sur la console c'etait deja avale en
+    silence, mais le `print` vers stderr, lui, etait HORS du try — l'exception
+    remontait jusqu'au garde-fou general et faisait basculer toute
+    l'installation sur la politique de repli. Autrement dit : un ecran plus
+    joli qui empeche l'enrolement. Le journal passe par le tampon binaire pour
+    la meme raison, et sans les sequences ANSI, qui n'ont rien a y faire.
+    """
     try:
-        fh = open(CONSOLE, "w")
+        fh = open(CONSOLE, "w", encoding="utf-8", errors="replace")
     except Exception:  # noqa: BLE001
-        return lambda msg: print(msg, file=sys.stderr)
+        fh = None
 
     def write(msg):
+        if fh is not None:
+            try:
+                fh.write(msg)
+                fh.flush()
+            except Exception:  # noqa: BLE001
+                pass
+        plat = _sans_ansi(msg)
         try:
-            fh.write(msg)
-            fh.flush()
+            tampon = getattr(sys.stderr, "buffer", None)
+            if tampon is not None:
+                tampon.write((plat + "\n").encode("utf-8", "replace"))
+                tampon.flush()
+            else:
+                print(plat, file=sys.stderr)
         except Exception:  # noqa: BLE001
             pass
-        print(msg, file=sys.stderr)
 
     return write
 
