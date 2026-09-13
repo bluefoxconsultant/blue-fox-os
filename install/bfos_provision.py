@@ -85,6 +85,26 @@ def write_private(path, content):
         fh.write(content)
 
 
+def write_public(path, content, mode=0o644):
+    """Écrire un fichier qui DOIT être lisible : une politique de conteneurs,
+    une clé publique, une ligne d'installation.
+
+    Séparé de `write_private` volontairement. Passer un mode à l'écrivain de
+    secrets ferait lire « write_private(..., 0644) » à la relecture — une
+    phrase qui se contredit, et exactement le genre d'appel qu'on finit par
+    copier vers un vrai secret sans y penser.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        os.fchmod(fd, mode)
+        fh = os.fdopen(fd, "w")
+    except BaseException:
+        os.close(fd)
+        raise
+    with fh:
+        fh.write(content)
+
+
 STAGED_JSON = "/tmp/bfos-provision.json"
 MACHINE_JSON = "/tmp/bfos-machine.json"
 SCOPE = "openid profile email"
@@ -1101,6 +1121,151 @@ def render_partitionnement(plan, passphrase=None, chiffrer=True):
         return "\n".join(lignes) + "\n"
 
     raise ProvisionError(f"plan de partitionnement inconnu : {mode!r}")
+
+
+# =========================================================================
+# Verification de la signature de l'image (#22419)
+# =========================================================================
+# L'installation tirait l'image avec --no-signature-verification. Tant que
+# l'URL est EN DUR dans le kickstart, le risque est borne : on fait confiance
+# a ghcr.io et a TLS. Le jour ou c'est le domaine TAPE PAR LE CLIENT qui
+# fournit la reference d'image, ce drapeau devient le trou : une faute de
+# frappe vers un domaine hostile installe le systeme d'exploitation de
+# quelqu'un d'autre, avec acces complet a la machine.
+#
+# POURQUOI PAR LA POLITIQUE ET NON PAR UN `cosign verify` PREALABLE.
+# Verifier puis installer laisse un intervalle entre le controle et l'usage :
+# le tag peut bouger entre les deux. `ostreecontainer` n'a qu'un drapeau
+# NEGATIF ; le retirer fait que la poussee elle-meme est barree par
+# /etc/containers/policy.json. C'est le pull qui verifie, donc pas
+# d'intervalle. Mesure dans le runtime d'Anaconda : skopeo, podman et
+# /etc/containers/policy.json y sont, et la politique par defaut y est
+# `insecureAcceptAnything` — retirer le drapeau SEUL ne changerait rien.
+#
+# ⚠️ D'OU VIENT LA CLE, et pourquoi ca decide de tout.
+# Une cle qui voyagerait dans le kickstart viendrait du DOMAINE, donc de
+# l'attaquant dans le scenario meme qu'on veut couvrir. La seule copie qui
+# vaille est celle GRAVEE DANS L'ISO. La copie embarquee ci-dessous n'est
+# acceptable que tant que la reference d'image est elle aussi en dur : des que
+# la reference vient d'une decouverte, `exiger=True` refuse la copie embarquee.
+
+IMAGE_INCLUDE = "/tmp/bfos-image.ks"
+POLICY_CONTAINERS = "/etc/containers/policy.json"
+CLE_ISO = "/run/install/repo/bfos-cosign.pub"
+CLE_POSEE = "/etc/pki/bfos-cosign.pub"
+
+# Copie de secours. Publique par nature — ce n'est pas un secret, c'est un
+# point d'ancrage de confiance.
+CLE_EMBARQUEE = """-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaHUAdYyRGWeSzvkyiLn1Wp/uDhD9
+7M3rVr32kljeuXsqRXc93Fv3Zi2afSQzNO3FSaeBwILDjndJf0EbrXAEow==
+-----END PUBLIC KEY-----
+"""
+
+
+def lire_cle_cosign(chemin_iso=None, exiger=False):
+    """Rend (cle, provenance). Leve si `exiger` et que l'ISO n'en porte pas."""
+    chemin_iso = chemin_iso or CLE_ISO
+    try:
+        with open(chemin_iso, encoding="utf-8") as fh:
+            cle = fh.read().strip()
+        if "BEGIN PUBLIC KEY" in cle:
+            return cle + "\n", "iso"
+    except OSError:
+        pass
+    if exiger:
+        raise ProvisionError(
+            f"aucune cle de signature sur l'ISO ({chemin_iso}) : une reference "
+            "d'image issue d'une decouverte ne peut pas etre validee par une "
+            "cle qui voyage avec elle")
+    return CLE_EMBARQUEE, "embarquee"
+
+
+def _prefixe_registre(url):
+    """`ghcr.io/org/depot:tag` -> `ghcr.io/org`. La politique s'ecrit par
+    espace de noms : la restreindre au depot exact casserait au premier
+    locataire de plus."""
+    nu = re.sub(r"^[a-z0-9+.-]+://", "", url).split("@")[0]
+    morceaux = nu.split("/")
+    if len(morceaux) < 2:
+        raise ProvisionError(f"reference d'image inattendue : {url!r}")
+    return "/".join(morceaux[:2])
+
+
+def render_containers_policy(url, chemin_cle=None):
+    """Politique containers-image : tout refuser, sauf notre espace de noms
+    signe par notre cle.
+
+    Le defaut est `reject`, pas `insecureAcceptAnything` : une image hors de
+    l'espace de noms attendu doit etre REFUSEE, pas acceptee faute de regle.
+    """
+    chemin_cle = chemin_cle or CLE_POSEE
+    prefixe = _prefixe_registre(url)
+    registre = prefixe.split("/")[0]
+    return json.dumps({
+        "default": [{"type": "reject"}],
+        "transports": {
+            "docker": {
+                prefixe: [{
+                    "type": "sigstoreSigned",
+                    "keyPath": chemin_cle,
+                    "signedIdentity": {"type": "matchRepoDigestOrExact"},
+                }],
+                registre: [{"type": "reject"}],
+            },
+            "containers-storage": {"": [{"type": "insecureAcceptAnything"}]},
+        },
+    }, indent=2) + "\n"
+
+
+def render_image_line(url, verifier):
+    """La ligne ostreecontainer qu'Anaconda %include."""
+    ligne = f"ostreecontainer --url={url} --transport=registry"
+    if not verifier:
+        ligne += " --no-signature-verification"
+    return ligne + "\n"
+
+
+def armer_verification_image(url, exiger=False, out=None, chemin_iso=None,
+                             policy_path=None, cle_path=None,
+                             include_path=None):
+    """Pose la politique et la ligne d'image. Rend True si la signature sera
+    verifiee.
+
+    `exiger=True` : la reference vient d'une DECOUVERTE (domaine tape). On
+    echoue alors FERME — mieux vaut ne pas installer que d'installer le
+    systeme de n'importe qui. `exiger=False` : reference en dur, on retombe
+    sur le comportement d'aujourd'hui en le DISANT, plutot que de faire
+    echouer une installation qui marchait.
+    """
+    out = out or (lambda msg: None)
+    policy_path = policy_path or POLICY_CONTAINERS
+    cle_path = cle_path or CLE_POSEE
+    include_path = include_path or IMAGE_INCLUDE
+    try:
+        cle, provenance = lire_cle_cosign(chemin_iso, exiger=exiger)
+        if exiger and provenance != "iso":
+            raise ProvisionError("cle embarquee refusee pour une reference "
+                                 "issue d'une decouverte")
+        write_public(cle_path, cle)   # publique par nature
+        write_public(policy_path, render_containers_policy(url, cle_path))
+        write_public(include_path, render_image_line(url, True))
+        out(f"[bfos] signature de l'image verifiee a la poussee "
+            f"(cle {provenance}).\n")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        if exiger:
+            # Echec FERME : on ecrit une ligne qui n'installera rien plutot
+            # qu'une ligne qui installerait n'importe quoi.
+            write_public(include_path,
+                         "# Image refusee : signature non verifiable.\n"
+                         f"# {exc}\n")
+            out(f"[bfos] INSTALLATION REFUSEE : {exc}\n")
+            return False
+        write_public(include_path, render_image_line(url, False))
+        out(f"[bfos] signature de l'image NON verifiee ({exc}) ; "
+            "comportement inchange par rapport a avant.\n")
+        return False
 
 
 def plan_par_defaut(run=None):

@@ -1485,3 +1485,120 @@ class TestInterrupteurCohabitation:
         def run(cmd):
             raise FileNotFoundError("lsblk")
         assert PLAN_PAR_DEFAUT_REEL(run=run)["mode"] == "interactif"
+
+
+# ===========================================================================
+# Verification de la signature de l'image (#22419)
+# ===========================================================================
+
+IMG = "ghcr.io/bluefoxconsultant/blue-fox-os-bf:latest"
+
+
+class TestPolitiqueConteneurs:
+    def test_le_defaut_refuse(self):
+        """⚠️ `reject`, pas `insecureAcceptAnything`. Une image hors de notre
+        espace de noms doit etre REFUSEE, pas acceptee faute de regle — c'est
+        precisement l'etat du runtime d'Anaconda aujourd'hui, et c'est pour ca
+        que retirer le drapeau SEUL ne changerait rien."""
+        pol = json.loads(bp.render_containers_policy(IMG, "/etc/pki/k.pub"))
+        assert pol["default"] == [{"type": "reject"}]
+
+    def test_notre_espace_de_noms_exige_une_signature(self):
+        pol = json.loads(bp.render_containers_policy(IMG, "/etc/pki/k.pub"))
+        regle = pol["transports"]["docker"]["ghcr.io/bluefoxconsultant"][0]
+        assert regle["type"] == "sigstoreSigned"
+        assert regle["keyPath"] == "/etc/pki/k.pub"
+
+    def test_le_reste_du_registre_est_refuse(self):
+        pol = json.loads(bp.render_containers_policy(IMG, "/etc/pki/k.pub"))
+        assert pol["transports"]["docker"]["ghcr.io"] == [{"type": "reject"}]
+
+    def test_la_politique_porte_sur_l_espace_de_noms_pas_le_depot(self):
+        """La restreindre au depot exact casserait au premier locataire de
+        plus : bf, bf-surface et factice partagent l'espace de noms."""
+        for slug in ("bf", "bf-surface", "factice"):
+            pol = json.loads(bp.render_containers_policy(
+                f"ghcr.io/bluefoxconsultant/blue-fox-os-{slug}:latest", "/k"))
+            assert "ghcr.io/bluefoxconsultant" in pol["transports"]["docker"]
+
+    def test_reference_inattendue_leve(self):
+        with pytest.raises(bp.ProvisionError):
+            bp.render_containers_policy("pasunereference", "/k")
+
+
+class TestLigneImage:
+    def test_verifiee_n_a_plus_le_drapeau(self):
+        ligne = bp.render_image_line(IMG, True)
+        assert "--no-signature-verification" not in ligne
+        assert ligne.startswith(f"ostreecontainer --url={IMG} --transport=registry")
+
+    def test_non_verifiee_garde_le_comportement_d_avant(self):
+        assert "--no-signature-verification" in bp.render_image_line(IMG, False)
+
+
+class TestCleCosign:
+    def test_l_iso_prime_sur_la_copie_embarquee(self, tmp_path):
+        f = tmp_path / "k.pub"
+        f.write_text("-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----")
+        cle, provenance = bp.lire_cle_cosign(str(f))
+        assert provenance == "iso" and "AAAA" in cle
+
+    def test_sans_iso_on_retombe_sur_la_copie_embarquee(self, tmp_path):
+        cle, provenance = bp.lire_cle_cosign(str(tmp_path / "absent.pub"))
+        assert provenance == "embarquee" and "BEGIN PUBLIC KEY" in cle
+
+    def test_un_fichier_qui_n_est_pas_une_cle_ne_compte_pas(self, tmp_path):
+        f = tmp_path / "k.pub"
+        f.write_text("bonjour")
+        assert bp.lire_cle_cosign(str(f))[1] == "embarquee"
+
+    def test_exiger_refuse_la_copie_embarquee(self, tmp_path):
+        """⚠️ Le coeur du sujet. Une cle qui voyage avec le kickstart vient du
+        DOMAINE TAPE, donc de l'attaquant dans le scenario qu'on veut couvrir.
+        Seule la copie gravee dans l'ISO vaut."""
+        with pytest.raises(bp.ProvisionError):
+            bp.lire_cle_cosign(str(tmp_path / "absent.pub"), exiger=True)
+
+
+class TestArmerVerification:
+    def _chemins(self, tmp_path):
+        return {"policy_path": str(tmp_path / "policy.json"),
+                "cle_path": str(tmp_path / "k.pub"),
+                "include_path": str(tmp_path / "image.ks")}
+
+    def test_cas_nominal(self, tmp_path):
+        c = self._chemins(tmp_path)
+        iso = tmp_path / "iso.pub"
+        iso.write_text("-----BEGIN PUBLIC KEY-----\nZZ\n-----END PUBLIC KEY-----")
+        dit = []
+        assert bp.armer_verification_image(IMG, chemin_iso=str(iso),
+                                           out=dit.append, **c) is True
+        assert "--no-signature-verification" not in open(c["include_path"]).read()
+        assert json.loads(open(c["policy_path"]).read())["default"][0]["type"] == "reject"
+        assert oct(os.stat(c["policy_path"]).st_mode & 0o777) == "0o644"
+        assert any("cle iso" in m for m in dit)
+
+    def test_reference_en_dur_echoue_OUVERT_en_le_disant(self, tmp_path):
+        """Reference en dur : ne pas casser une installation qui marchait.
+        On retombe sur le comportement d'avant, mais la console le DIT."""
+        c = self._chemins(tmp_path)
+        c["policy_path"] = "/interdit/policy.json"     # ecriture impossible
+        dit = []
+        assert bp.armer_verification_image(
+            IMG, chemin_iso=str(tmp_path / "absent"), out=dit.append, **c) is False
+        assert "--no-signature-verification" in open(c["include_path"]).read()
+        assert any("NON verifiee" in m for m in dit)
+
+    def test_decouverte_echoue_FERME(self, tmp_path):
+        """⚠️ Reference issue d'un domaine tape : mieux vaut ne rien installer
+        que d'installer le systeme de n'importe qui."""
+        c = self._chemins(tmp_path)
+        dit = []
+        assert bp.armer_verification_image(
+            IMG, exiger=True, chemin_iso=str(tmp_path / "absent"),
+            out=dit.append, **c) is False
+        contenu = open(c["include_path"]).read()
+        assert "ostreecontainer" not in contenu       # rien ne s'installera
+        for ligne in contenu.splitlines():
+            assert ligne.startswith("#")
+        assert any("REFUSEE" in m for m in dit)
