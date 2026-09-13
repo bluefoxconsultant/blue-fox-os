@@ -966,6 +966,7 @@ class TestEcritureConsole:
         """
         import io
         import sys
+        import sys
 
         class StderrAscii(io.TextIOBase):
             def __init__(self):
@@ -1602,3 +1603,37 @@ class TestArmerVerification:
         for ligne in contenu.splitlines():
             assert ligne.startswith("#")
         assert any("REFUSEE" in m for m in dit)
+
+
+class TestRetourChariotConsole:
+    """⚠️ Mesuré en VM le 2026-09-12. La console de l'installateur n'a pas
+    ONLCR : un \\n y descend d'une ligne sans ramener le curseur à gauche.
+    L'écran de 24 lignes partait en escalier — contenu exact, placement
+    illisible. Le défaut précédait le code QR."""
+
+    def test_chaque_ligne_se_termine_par_crlf(self):
+        assert bp._en_crlf("a\nb\n") == "a\r\nb\r\n"
+
+    def test_un_crlf_deja_la_n_est_pas_double(self):
+        assert bp._en_crlf("a\r\nb\n") == "a\r\nb\r\n"
+
+    def test_la_console_recoit_du_crlf_et_le_journal_non(self, tmp_path,
+                                                         monkeypatch):
+        import io
+        import sys
+        console = tmp_path / "console"
+        monkeypatch.setattr(bp, "CONSOLE", str(console))
+        faux = io.TextIOBase()
+        faux.buffer = io.BytesIO()
+        monkeypatch.setattr(sys, "stderr", faux)
+        ecrire = bp._console_writer()
+        ecrire("\x1b[30;47mligne1\x1b[0m\nligne2\n")
+        # ⚠️ read_text() normalise les fins de ligne : il rendrait \n la ou
+        # le fichier porte \r\n, et le test passerait au vert sans rien
+        # prouver. On lit les OCTETS.
+        vu = console.read_bytes().decode("utf-8")
+        assert "ligne1\x1b[0m\r\nligne2\r\n" in vu
+        # le journal reste a plat : ni ANSI, ni CR
+        journal = faux.buffer.getvalue().decode()
+        assert "\x1b[" not in journal and "\r" not in journal
+        assert "ligne1" in journal and "ligne2" in journal

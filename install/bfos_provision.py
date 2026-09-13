@@ -1401,6 +1401,12 @@ def fallback_policy(env=None):
 
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_SEUL_LF_RE = re.compile(r"(?<!\r)\n")
+
+
+def _en_crlf(msg):
+    """Termine chaque ligne par CRLF, sans doubler ceux qui en ont deja un."""
+    return _SEUL_LF_RE.sub("\r\n", msg)
 
 
 def _sans_ansi(msg):
@@ -1427,7 +1433,16 @@ def _console_writer():
     def write(msg):
         if fh is not None:
             try:
-                fh.write(msg)
+                # ⚠️ CRLF, et ce n'est pas de la coquetterie (mesure le
+                # 2026-09-12 en VM). La console de l'installateur n'a pas
+                # ONLCR : un \n y descend d'une ligne SANS ramener le curseur
+                # a gauche. Chaque ligne repart donc la ou la precedente s'est
+                # arretee — l'ecran part en escalier et le contenu, pourtant
+                # exact, devient illisible. Le defaut existait avant le code
+                # QR : l'ancienne banniere de six lignes courtes escaladait
+                # deja, ca se voyait juste a peine. Vingt-quatre lignes le
+                # rendent flagrant.
+                fh.write(_en_crlf(msg))
                 fh.flush()
             except Exception:  # noqa: BLE001
                 pass
