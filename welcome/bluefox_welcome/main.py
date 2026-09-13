@@ -24,6 +24,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import seat_credentials
 from .apply import (
     apply_bitwarden_prefs,
     apply_brave_policy,
@@ -276,10 +277,34 @@ def _apply_from_policy(tenant: dict, prov: dict, nc_creds) -> None:
 
 
 def _run_provisioned_flow(tenant: dict, prov: dict) -> int:
-    """Minimal firstboot for a device-flow install: identity + session prefs are
-    already known from the staged policy, so the only interaction is the one NC
-    SSO (Login Flow v2 — the mount credential cannot come from the device-flow
-    token, see auth/nc_login_flow.py). Everything else applies on Terminer."""
+    """Premier demarrage d'une install par flux d'appareil.
+
+    ⚠️ CE COMMENTAIRE DISAIT LE CONTRAIRE JUSQU'AU 2026-09-12. Il affirmait que
+    « le justificatif de montage ne peut pas venir du jeton du flux d'appareil,
+    voir auth/nc_login_flow.py » — et cette phrase justifiait de redemander un
+    SSO a la personne qui venait d'autoriser l'installation trente secondes
+    plus tot. C'est faux : l'echange de jetons RFC 8693 permet exactement ca,
+    et le %pre s'en sert desormais pour frapper le mot de passe d'application
+    avant meme que la machine ait redemarre.
+
+    Donc : si l'installation a depose des identifiants, il n'y a plus AUCUNE
+    interaction — on applique et on sort. Sinon on garde le parcours SSO par
+    navigateur, inchange, comme repli."""
+    creds = seat_credentials.lire()
+    if creds:
+        LOG.info("identifiants Nextcloud deposes par l'installation : "
+                 "aucune connexion a redemander")
+        _apply_from_policy(tenant, prov, creds)
+        seat_credentials.effacer()
+        return 0
+    return _run_provisioned_flow_sso(tenant, prov)
+
+
+def _run_provisioned_flow_sso(tenant: dict, prov: dict) -> int:
+    """Le repli : une page, un SSO Nextcloud par navigateur. C'etait le seul
+    chemin avant le 2026-09-12 ; il reste celui des postes dont la politique
+    ne porte pas services.nextcloud.oidc_client_id, et celui de tout echec de
+    l'echange cote installation."""
     try:
         from PyQt6.QtWidgets import (
             QApplication, QWizard, QWizardPage, QLabel, QPushButton, QVBoxLayout,

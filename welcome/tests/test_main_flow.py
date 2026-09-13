@@ -80,3 +80,46 @@ def test_provisioned_flow_headless_applies_without_mount():
     assert rc == 0
     apply_.assert_called_once()
     assert apply_.call_args.kwargs.get("nc_creds", "missing") is None
+
+
+# ---------------------------------------------------------------------------
+# Identifiants deposes par l'installation : plus aucun SSO a refaire (#22436)
+# ---------------------------------------------------------------------------
+# Jusqu'au 2026-09-12, le premier demarrage redemandait un SSO Nextcloud a la
+# personne qui venait d'autoriser l'installation. Le commentaire qui justifiait
+# cette etape affirmait que le justificatif de montage ne pouvait pas venir du
+# jeton du flux d'appareil. C'etait faux : l'echange RFC 8693 le permet.
+
+
+def test_identifiants_deposes_suppriment_toute_interaction():
+    with mock.patch.object(main.seat_credentials, "lire",
+                           return_value=("Olivier", "mdp-application")) as lire, \
+         mock.patch.object(main.seat_credentials, "effacer") as effacer, \
+         mock.patch.object(main, "_apply_from_policy") as applique, \
+         mock.patch.object(main, "_run_provisioned_flow_sso") as sso:
+        rc = main._run_provisioned_flow({"slug": "bf"}, POLICY)
+    assert rc == 0
+    lire.assert_called_once()
+    sso.assert_not_called()          # aucune page, aucun navigateur
+    applique.assert_called_once()
+    assert applique.call_args.args[2] == ("Olivier", "mdp-application")
+    effacer.assert_called_once()     # consomme, pas conserve
+
+
+def test_sans_identifiants_le_parcours_sso_reste_le_repli():
+    with mock.patch.object(main.seat_credentials, "lire", return_value=None), \
+         mock.patch.object(main, "_apply_from_policy") as applique, \
+         mock.patch.object(main, "_run_provisioned_flow_sso",
+                           return_value=0) as sso:
+        rc = main._run_provisioned_flow({"slug": "bf"}, POLICY)
+    assert rc == 0
+    sso.assert_called_once()
+    applique.assert_not_called()
+
+
+def test_le_depot_n_est_pas_efface_quand_il_n_a_pas_servi():
+    with mock.patch.object(main.seat_credentials, "lire", return_value=None), \
+         mock.patch.object(main.seat_credentials, "effacer") as effacer, \
+         mock.patch.object(main, "_run_provisioned_flow_sso", return_value=0):
+        main._run_provisioned_flow({"slug": "bf"}, POLICY)
+    effacer.assert_not_called()

@@ -207,6 +207,12 @@ modules:
         # garde a vie la politique du jour de son installation. Conditionnee a
         # /etc/bluefox/machine.json, donc inerte sur un poste non enrole.
         - bluefox-policy-sync.timer
+        # Remise des identifiants Nextcloud au siege (#22436). Le %pre les
+        # frappe pendant que le porteur de l'operateur vaut encore, le %post
+        # les depose en 0600 root ; l'uid du siege vient de l'annuaire et
+        # n'est connaissable qu'ici. Conditionnee au fichier, donc inerte sur
+        # un poste qui n'en a pas.
+        - bluefox-seat-credentials.service
         # ⚠️ RENVERSEMENT ASSUME (2026-09-03), dont la JUSTIFICATION A CHANGE
         # le 2026-09-11. tailscaled etait MASQUE, avec la consigne
         # « l'utilisateur doit l'activer consciemment ». Le demasquage a ete

@@ -954,3 +954,181 @@ class TestEcritureConsole:
 
     def test_le_journal_ne_recoit_pas_les_sequences_ansi(self):
         assert bp._sans_ansi("\x1b[30;47mx\x1b[0m") == "x"
+
+
+# ===========================================================================
+# Identifiants Nextcloud obtenus en arriere-plan (#22436)
+# ===========================================================================
+
+POLITIQUE_NC = {
+    "schema": "bf-policy/v2",
+    "user": {"login": "olivier@bluefoxconsultant.com"},
+    "services": {"nextcloud": {
+        "url": "https://nextcloud.exemple.com/",
+        "oidc_client_id": "uK6cwJwhy",
+    }},
+}
+ENV_NC = {
+    "BFOS_OIDC_TOKEN_URL": "https://auth.exemple.com/application/o/token/",
+    "BFOS_OIDC_CLIENT_ID": "blue-fox-os",
+}
+
+
+def _ocs(data, statuscode=200):
+    return json.dumps({"ocs": {"meta": {"status": "ok",
+                                        "statuscode": statuscode,
+                                        "message": "OK"},
+                               "data": data}})
+
+
+class TestEchangeDeJeton:
+    def test_envoie_bien_un_echange_rfc8693(self):
+        vu = {}
+
+        def post(url, data, timeout=30):
+            vu["url"] = url
+            vu["data"] = data
+            return 200, json.dumps({"access_token": "JETON-NC"})
+
+        jeton = bp.echanger_jeton(ENV_NC["BFOS_OIDC_TOKEN_URL"], "blue-fox-os",
+                                  "JETON-INSTALL", "uK6cwJwhy", post=post)
+        assert jeton == "JETON-NC"
+        assert vu["data"]["grant_type"] == \
+            "urn:ietf:params:oauth:grant-type:token-exchange"
+        assert vu["data"]["subject_token"] == "JETON-INSTALL"
+        assert vu["data"]["audience"] == "uK6cwJwhy"
+
+    def test_refus_http(self):
+        with pytest.raises(bp.ProvisionError):
+            bp.echanger_jeton("u", "c", "t", "a",
+                              post=lambda *a, **k: (400, '{"error":"invalid_target"}'))
+
+    def test_reponse_sans_jeton(self):
+        with pytest.raises(bp.ProvisionError):
+            bp.echanger_jeton("u", "c", "t", "a",
+                              post=lambda *a, **k: (200, "{}"))
+
+
+class TestChargeOCS:
+    def test_un_refus_rendu_en_200_reste_un_refus(self):
+        """⚠️ Le piege. OCS rend un echec dans le CORPS avec un 200 HTTP tout
+        autant qu'avec un 401 : lire le code d'etat seul ferait prendre un
+        refus pour un succes, et frapper un mot de passe inexistant."""
+        raw = json.dumps({"ocs": {"meta": {"status": "failure",
+                                           "statuscode": 997,
+                                           "message": "Current user is not logged in"},
+                                  "data": []}})
+        with pytest.raises(bp.ProvisionError) as e:
+            bp._charge_ocs(raw)
+        assert "997" in str(e.value)
+
+    def test_100_et_200_passent(self):
+        assert bp._charge_ocs(_ocs({"id": "Olivier"}, 100)) == {"id": "Olivier"}
+        assert bp._charge_ocs(_ocs({"id": "Olivier"}, 200)) == {"id": "Olivier"}
+
+
+class TestIdentifiantsNextcloud:
+    def _get(self, reponses):
+        appels = []
+
+        def get(url, token, timeout=30):
+            appels.append((url, token))
+            for motif, rep in reponses.items():
+                if motif in url:
+                    return rep
+            raise AssertionError(f"URL inattendue : {url}")
+
+        get.appels = appels
+        return get
+
+    def test_parcours_complet(self, tmp_path):
+        cible = tmp_path / "nc.json"
+        get = self._get({
+            "cloud/user": (200, _ocs({"id": "Olivier"})),
+            "getapppassword": (200, _ocs({"apppassword": "MDP-APPLICATION"})),
+        })
+        stage = bp.obtenir_identifiants_nextcloud(
+            "JETON-INSTALL", POLITIQUE_NC, env=ENV_NC,
+            post=lambda *a, **k: (200, json.dumps({"access_token": "JETON-NC"})),
+            get=get, path=str(cible))
+        assert stage == {"login": "Olivier",
+                         "app_password": "MDP-APPLICATION",
+                         "url": "https://nextcloud.exemple.com"}
+        assert json.loads(cible.read_text())["app_password"] == "MDP-APPLICATION"
+        # un mot de passe d'application ne se depose pas en lisible par tous
+        assert oct(os.stat(cible).st_mode & 0o777) == "0o600"
+        # les deux appels portent le jeton ECHANGE, pas celui de l'installation
+        assert {t for _, t in get.appels} == {"JETON-NC"}
+
+    def test_le_login_vient_de_nextcloud_pas_de_la_politique(self, tmp_path):
+        """⚠️ L'annuaire sert « Olivier », la politique porte « olivier@... ».
+        Deviner la casse suffirait a ecrire un rclone.conf qui ne monte rien."""
+        cible = tmp_path / "nc.json"
+        stage = bp.obtenir_identifiants_nextcloud(
+            "T", POLITIQUE_NC, env=ENV_NC,
+            post=lambda *a, **k: (200, json.dumps({"access_token": "J"})),
+            get=self._get({"cloud/user": (200, _ocs({"id": "Olivier"})),
+                           "getapppassword": (200, _ocs({"apppassword": "P"}))}),
+            path=str(cible))
+        assert stage["login"] == "Olivier"          # et non "olivier"
+
+    def test_sans_client_id_on_ne_demande_rien(self, tmp_path):
+        cible = tmp_path / "nc.json"
+        politique = json.loads(json.dumps(POLITIQUE_NC))
+        del politique["services"]["nextcloud"]["oidc_client_id"]
+        messages = []
+        stage = bp.obtenir_identifiants_nextcloud(
+            "T", politique, env=ENV_NC, out=messages.append,
+            post=lambda *a, **k: pytest.fail("aucun appel ne doit partir"),
+            path=str(cible))
+        assert stage is None
+        assert not cible.exists()
+        assert "oidc_client_id" in " ".join(messages)
+
+    def test_ne_leve_jamais(self, tmp_path):
+        """C'est un after_policy : run() documente que rien n'a le droit d'en
+        remonter. Une exception ici jetterait une politique deja en main."""
+        messages = []
+        def post_qui_explose(*a, **k):
+            raise RuntimeError("reseau coupe")
+        stage = bp.obtenir_identifiants_nextcloud(
+            "T", POLITIQUE_NC, env=ENV_NC, out=messages.append,
+            post=post_qui_explose, path=str(tmp_path / "nc.json"))
+        assert stage is None
+        assert "SSO" in " ".join(messages)
+
+    def test_un_refus_de_nextcloud_ne_stage_rien(self, tmp_path):
+        cible = tmp_path / "nc.json"
+        stage = bp.obtenir_identifiants_nextcloud(
+            "T", POLITIQUE_NC, env=ENV_NC,
+            post=lambda *a, **k: (200, json.dumps({"access_token": "J"})),
+            get=self._get({"cloud/user": (401, _ocs([], 997))}),
+            path=str(cible))
+        assert stage is None
+        assert not cible.exists()
+
+
+class TestApresPolitique:
+    """Les deux etapes du crochet sont independantes : un enrolement rate ne
+    doit pas couter les identifiants Nextcloud, ni l'inverse."""
+
+    def test_les_deux_etapes_partent(self):
+        vu = []
+        import unittest.mock as mock
+        with mock.patch.object(bp, "stage_enrolment",
+                               side_effect=lambda *a, **k: vu.append("enrol")), \
+             mock.patch.object(bp, "obtenir_identifiants_nextcloud",
+                               side_effect=lambda *a, **k: vu.append("nc")):
+            bp._apres_politique("T", POLITIQUE_NC, out=lambda m: None)
+        assert vu == ["enrol", "nc"]
+
+    def test_un_enrolement_rate_ne_coute_pas_les_identifiants(self):
+        vu = []
+        import unittest.mock as mock
+        # stage_enrolment ne leve pas par contrat ; on verifie qu'un retour
+        # None (echec) laisse bien passer l'etape suivante.
+        with mock.patch.object(bp, "stage_enrolment", return_value=None), \
+             mock.patch.object(bp, "obtenir_identifiants_nextcloud",
+                               side_effect=lambda *a, **k: vu.append("nc")):
+            bp._apres_politique("T", POLITIQUE_NC, out=lambda m: None)
+        assert vu == ["nc"]

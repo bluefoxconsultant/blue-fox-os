@@ -5,7 +5,8 @@
   "services": {
     "nextcloud": {
       "url": "https://nextcloud.bluefoxconsultant.com",
-      "talk_enabled": true
+      "talk_enabled": true,
+      "oidc_client_id": "uK6cwJwhyMHq6YfHFs7EDHKXNlo45OvLeEfVTmjy"
     },
     "odoo": {
       "url": "https://bluefoxconsultant.com"
@@ -51,10 +52,30 @@
     "sddm_theme": "blue-fox"
   },
   "bookmarks": [
-    {"title": "Nextcloud", "url": "https://nextcloud.bluefoxconsultant.com", "pinned": true},
-    {"title": "Odoo", "url": "https://bluefoxconsultant.com", "pinned": true},
-    {"title": "Vaultwarden", "url": "https://vault.bluefoxconsultant.com", "pinned": true},
-    {"title": "Cal.com", "url": "https://calcom.bluefoxconsultant.com", "pinned": false},
-    {"title": "Authentik", "url": "https://auth.bluefoxconsultant.com", "pinned": false}
+    {
+      "title": "Nextcloud",
+      "url": "https://nextcloud.bluefoxconsultant.com",
+      "pinned": true
+    },
+    {
+      "title": "Odoo",
+      "url": "https://bluefoxconsultant.com",
+      "pinned": true
+    },
+    {
+      "title": "Vaultwarden",
+      "url": "https://vault.bluefoxconsultant.com",
+      "pinned": true
+    },
+    {
+      "title": "Cal.com",
+      "url": "https://calcom.bluefoxconsultant.com",
+      "pinned": false
+    },
+    {
+      "title": "Authentik",
+      "url": "https://auth.bluefoxconsultant.com",
+      "pinned": false
+    }
   ]
 }

@@ -136,6 +136,22 @@ for ROOT in /mnt/sysroot /mnt/sysimage; do
       chmod 600 "$ROOT/etc/bluefox/machine.json" 2>/dev/null || true
     fi
 
+    # --- Identifiants Nextcloud obtenus en %pre (#22436) ---------------------
+    # Frappes pendant que le porteur de l'operateur valait encore, pour que le
+    # premier demarrage n'ait pas a redemander un SSO a la personne qui vient
+    # d'autoriser l'installation. Absent = degradation prevue : l'agent
+    # d'accueil retombe sur le parcours navigateur d'avant.
+    #
+    # 0600 root ICI, puis remis a l'usager du siege au premier demarrage par
+    # bluefox-seat-credentials.service : l'uid vient de l'annuaire et n'est pas
+    # connaissable a cet instant. L'agent tourne EN TANT QUE l'usager ; un
+    # 0644 le rendrait lisible par n'importe quel compte de la machine.
+    if [ -f /tmp/bfos-nc-credentials.json ]; then
+      cp /tmp/bfos-nc-credentials.json \
+         "$ROOT/var/lib/bluefox-welcome/nc-credentials.json" 2>/dev/null || true
+      chmod 600 "$ROOT/var/lib/bluefox-welcome/nc-credentials.json" 2>/dev/null || true
+    fi
+
     # --- BFOSL4 : l'etat de l'installateur, grave dans le systeme installe ---
     # ⚠️ CES LECTURES NE SE FONT QU'ICI. Le %pre a tourne, le systeme n'a pas
     # encore redemarre : c'est le seul instant ou le swap de l'installateur et

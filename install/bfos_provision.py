@@ -1021,6 +1021,162 @@ def _console_writer():
     return write
 
 
+# =========================================================================
+# Identifiants Nextcloud obtenus en arriere-plan (#22436)
+# =========================================================================
+# Avant : au premier demarrage, l'agent ouvrait un navigateur, l'usager
+# refaisait un SSO Nextcloud (Login Flow v2) et on en tirait un mot de passe
+# d'application. Une deuxieme authentification pour la meme personne, a la
+# meme minute, apres celle qui vient d'autoriser l'installation.
+#
+# Maintenant : pendant que le porteur de l'operateur est encore en main, on
+# l'echange (RFC 8693) contre un jeton destine au fournisseur Nextcloud, et on
+# s'en sert une fois pour frapper un mot de passe d'application durable. Le
+# jeton echange vit une heure ; le mot de passe d'application, lui, survit et
+# se revoque depuis Nextcloud comme n'importe quel autre appareil.
+#
+# Degradation, pas panne : sans oidc_client_id dans la politique, sans reseau,
+# sur un refus d'Authentik ou de Nextcloud, on ne stage rien et l'agent
+# retombe sur le parcours SSO d'avant. C'est une etape en moins, pas une
+# etape dont tout depend.
+
+NC_CREDENTIALS_JSON = "/tmp/bfos-nc-credentials.json"
+_GRANT_ECHANGE = "urn:ietf:params:oauth:grant-type:token-exchange"
+_TYPE_JETON_ACCES = "urn:ietf:params:oauth:token-type:access_token"
+
+
+def _get_ocs(url, token, timeout=30):
+    """GET sur l'API OCS de Nextcloud. L'en-tete OCS-APIRequest n'est pas
+    decorative : sans elle Nextcloud refuse la requete."""
+    req = urllib.request.Request(url)
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("Accept", "application/json")
+    req.add_header("OCS-APIRequest", "true")
+    req.add_header("User-Agent", "Blue Fox OS (poste de siege)")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.status, resp.read().decode()
+
+
+def echanger_jeton(token_url, client_id, jeton, audience, post=_post_form):
+    """RFC 8693 : troque le jeton de l'installation contre un jeton destine a
+    un autre fournisseur, sans rien redemander a personne.
+
+    ⚠️ Authentik refuse l'echange (invalid_target / target_not_federated) tant
+    que le fournisseur CIBLE ne declare pas federer avec le demandeur. Cote
+    Authentik c'est jwt_federation_providers sur le fournisseur Nextcloud, pose
+    par le plan nextcloud-bf-federation.yaml. La confiance se donne ; elle ne
+    se suppose pas, et aucune variante de parametres ne la remplace.
+    """
+    try:
+        status, raw = post(token_url, {
+            "grant_type": _GRANT_ECHANGE,
+            "client_id": client_id,
+            "subject_token": jeton,
+            "subject_token_type": _TYPE_JETON_ACCES,
+            "audience": audience,
+            "scope": SCOPE,
+        })
+    except Exception as exc:  # noqa: BLE001
+        raise ProvisionError(f"token exchange request failed: {exc}") from exc
+    if status != 200:
+        raise ProvisionError(f"token exchange HTTP {status}")
+    try:
+        d = json.loads(raw)
+    except ValueError as exc:
+        raise ProvisionError(f"token exchange bad JSON: {exc}") from exc
+    jeton_echange = d.get("access_token")
+    if not jeton_echange:
+        raise ProvisionError("token exchange returned no access_token")
+    return jeton_echange
+
+
+def _charge_ocs(raw):
+    """Extrait `data` d'une reponse OCS apres avoir verifie son statut INTERNE.
+
+    ⚠️ OCS rend un echec dans le corps avec un 200 HTTP tout autant qu'avec un
+    401 : se fier au code HTTP seul, c'est prendre un refus pour un succes.
+    """
+    try:
+        d = json.loads(raw)
+    except ValueError as exc:
+        raise ProvisionError(f"OCS bad JSON: {exc}") from exc
+    meta = ((d.get("ocs") or {}).get("meta") or {})
+    code = meta.get("statuscode")
+    if code not in (100, 200):
+        raise ProvisionError(f"OCS refused ({code}): {meta.get('message', '')}")
+    return (d.get("ocs") or {}).get("data") or {}
+
+
+def obtenir_identifiants_nextcloud(token, policy, env=None, out=None,
+                                   post=_post_form, get=_get_ocs, path=None):
+    """Frappe un mot de passe d'application Nextcloud pour le siege.
+
+    Ne leve jamais : c'est un `after_policy`, et `run()` documente que rien
+    n'y a le droit de remonter. Retourne le dict stage, ou None.
+    """
+    out = out or (lambda msg: None)
+    try:
+        return _obtenir_identifiants_nextcloud(
+            token, policy, env=env, out=out, post=post, get=get, path=path)
+    except Exception as exc:  # noqa: BLE001 — le contrat est : ne jamais lever
+        out(f"[bfos] les identifiants Nextcloud n'ont pas pu etre obtenus "
+            f"({exc}) ; l'agent d'accueil proposera le parcours SSO habituel.\n")
+        return None
+
+
+def _obtenir_identifiants_nextcloud(token, policy, env=None, out=None,
+                                    post=_post_form, get=_get_ocs, path=None):
+    """Le corps de obtenir_identifiants_nextcloud. A part, pour que le garde
+    ci-dessus soit le seul chemin d'entree — comme pour l'enrolement."""
+    env = env if env is not None else os.environ
+    out = out or (lambda msg: None)
+    path = path or NC_CREDENTIALS_JSON
+
+    nc = ((policy.get("services") or {}).get("nextcloud") or {})
+    nc_url = (nc.get("url") or "").rstrip("/")
+    audience = nc.get("oidc_client_id") or ""
+    token_url = env.get("BFOS_OIDC_TOKEN_URL", "")
+    client_id = env.get("BFOS_OIDC_CLIENT_ID", "")
+
+    if not (nc_url and audience and token_url and client_id):
+        manquant = [nom for nom, val in (
+            ("services.nextcloud.url", nc_url),
+            ("services.nextcloud.oidc_client_id", audience),
+            ("BFOS_OIDC_TOKEN_URL", token_url),
+            ("BFOS_OIDC_CLIENT_ID", client_id)) if not val]
+        out("[bfos] identifiants Nextcloud non demandes : "
+            f"{', '.join(manquant)} absent(s).\n")
+        return None
+
+    jeton_nc = echanger_jeton(token_url, client_id, token, audience, post=post)
+
+    # On demande d'abord QUI Nextcloud voit. Deux raisons : le porteur est
+    # valide avant qu'on frappe quoi que ce soit, et l'identifiant Nextcloud
+    # n'est pas celui de la politique — l'annuaire sert « Olivier » la ou la
+    # politique porte « olivier@... ». Deviner la casse suffirait a ecrire un
+    # rclone.conf qui ne monte rien.
+    status, raw = get(f"{nc_url}/ocs/v2.php/cloud/user?format=json", jeton_nc)
+    if status != 200:
+        raise ProvisionError(f"Nextcloud refused the bearer (HTTP {status})")
+    login = (_charge_ocs(raw) or {}).get("id") or ""
+    if not login:
+        raise ProvisionError("Nextcloud returned no user id")
+
+    status, raw = get(f"{nc_url}/ocs/v2.php/core/getapppassword?format=json",
+                      jeton_nc)
+    if status != 200:
+        raise ProvisionError(f"getapppassword HTTP {status}")
+    mot_de_passe = (_charge_ocs(raw) or {}).get("apppassword") or ""
+    if not mot_de_passe:
+        raise ProvisionError("getapppassword returned no password")
+
+    stage = {"login": login, "app_password": mot_de_passe, "url": nc_url}
+    write_private(path, json.dumps(stage))
+    out(f"[bfos] Nextcloud : mot de passe d'application obtenu pour {login} "
+        "(aucun mot de passe n'a ete demande).\n")
+    return stage
+
+
 def run(env=None, post=_post_form, get=_get, sleep=time.sleep, out=None,
         after_policy=None):
     """Full device flow → policy fetch. Returns the policy dict or raises.
@@ -1180,11 +1336,21 @@ def _stage_enrolment(token, policy, env=None, out=None, post=_post_json,
     return machine
 
 
+def _apres_politique(token, policy, out):
+    """Tout ce qui exige le porteur de l'operateur, pendant qu'il vaut encore.
+
+    Les deux etapes sont independantes et aucune ne leve : un enrolement rate
+    ne doit pas couter les identifiants Nextcloud, et l'inverse non plus.
+    """
+    stage_enrolment(token, policy, out=out)
+    obtenir_identifiants_nextcloud(token, policy, out=out)
+
+
 def main(argv=None):
     out = _console_writer()
     try:
         policy = run(out=out,
-                     after_policy=lambda tok, pol: stage_enrolment(
+                     after_policy=lambda tok, pol: _apres_politique(
                          tok, pol, out=out))
         out("[bfos] policy received for user "
             f"{policy.get('user', {}).get('login', '?')}\n")

@@ -210,6 +210,12 @@ modules:
         - tailscaled.service
         - bluefox-tpm-enroll.service   # auto-deverrouillage LUKS TPM2, pilote par la policy
         - bluefox-policy-sync.timer    # re-tirage quotidien de la politique (#23909)
+        # Remise des identifiants Nextcloud au siege (#22436). Le %pre les
+        # frappe pendant que le porteur de l'operateur vaut encore, le %post
+        # les depose en 0600 root ; l'uid du siege vient de l'annuaire et
+        # n'est connaissable qu'ici. Conditionnee au fichier, donc inerte sur
+        # un poste qui n'en a pas.
+        - bluefox-seat-credentials.service
         # iptsd ship une unite templated `iptsd@.service` lancee par udev
         # quand le device IPTS apparait au boot. Pas besoin de l'enable
         # explicitement.
