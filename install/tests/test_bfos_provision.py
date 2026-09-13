@@ -1637,3 +1637,54 @@ class TestRetourChariotConsole:
         journal = faux.buffer.getvalue().decode()
         assert "\x1b[" not in journal and "\r" not in journal
         assert "ligne1" in journal and "ligne2" in journal
+
+
+class TestPeripheriquesVirtuels:
+    """⚠️ Relevé sur l'installateur RÉEL le 2026-09-12, et ça a coûté un essai
+    complet. La sortie ci-dessous est celle de la VM, pas une invention."""
+
+    # lsblk dans Anaconda 44 :
+    #   loop0  7:0    0 708.7M  1 loop /run/rootfsbase
+    #   sr0   11:0    1   5.6G  1 rom  /run/install/repo
+    #   zram0 251:0   0   7.7G  0 disk [SWAP]
+    #   vda   253:0   0    40G  0 disk
+    REEL = json.dumps({"blockdevices": [
+        {"name": "loop0", "path": "/dev/loop0", "type": "loop",
+         "size": 743075840, "rm": False},
+        {"name": "sr0", "path": "/dev/sr0", "type": "rom",
+         "size": 6012928000, "rm": True},
+        {"name": "zram0", "path": "/dev/zram0", "type": "disk",
+         "size": 8267825152, "rm": False, "children": []},
+        {"name": "vda", "path": "/dev/vda", "type": "disk",
+         "size": 42949672960, "rm": False, "children": []},
+    ]})
+
+    def test_zram_n_est_pas_un_disque(self):
+        d = bp.inspecter_disques(self.REEL)
+        assert [x["path"] for x in d] == ["/dev/vda"]
+
+    def test_le_disque_vierge_de_la_VM_redevient_zero_touche(self):
+        """C'est le cas qui a échoué : Anaconda affichait « Kickstart
+        insufficient » et attendait quelqu'un, sur un disque vide."""
+        plan = bp.choisir_plan(bp.inspecter_disques(self.REEL),
+                               lambda c, f: None)
+        assert plan["mode"] == "disque_entier"
+        assert plan["disque"] == "/dev/vda"
+
+    def test_les_autres_virtuels_aussi(self):
+        arbre = json.dumps({"blockdevices": [
+            {"name": n, "path": f"/dev/{n}", "type": "disk",
+             "size": 10 * 1024**3, "rm": False}
+            for n in ("ram0", "loop3", "nbd0", "zram1")
+        ] + [{"name": "sda", "path": "/dev/sda", "type": "disk",
+              "size": 500 * 1024**3, "rm": False}]})
+        assert [x["path"] for x in bp.inspecter_disques(arbre)] == ["/dev/sda"]
+
+    def test_un_vrai_disque_dont_le_nom_ressemble_n_est_pas_ecarte(self):
+        """`ram` sans chiffre, ou un nom qui contient « loop », restent des
+        cibles valables : l'ancre du motif est volontairement stricte."""
+        arbre = json.dumps({"blockdevices": [
+            {"name": "nvme0n1", "path": "/dev/nvme0n1", "type": "disk",
+             "size": 500 * 1024**3, "rm": False},
+        ]})
+        assert len(bp.inspecter_disques(arbre)) == 1

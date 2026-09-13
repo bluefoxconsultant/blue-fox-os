@@ -933,6 +933,20 @@ def _ko(raison):
     return {"mode": "interactif", "raison": raison}
 
 
+# ⚠️ MESURE EN VM LE 2026-09-12, et ca a coute un essai complet.
+# `lsblk` type « disk » des peripheriques qui n'en sont pas. Dans
+# l'installateur Anaconda, zram0 — le swap compresse, 7,7 Gio, NON amovible —
+# apparait exactement comme un vrai disque :
+#
+#   zram0  251:0  0  7.7G  0 disk [SWAP]
+#   vda    253:0  0   40G  0 disk
+#
+# Le code a donc vu DEUX disques fixes sur une VM qui n'en avait qu'un, et il
+# a fait ce qu'on lui demande en cas de doute : poser la question. Le
+# comportement etait juste, la donnee ne l'etait pas.
+_NOMS_VIRTUELS = re.compile(r"^(zram|ram|loop|fd|nbd)\d+$")
+
+
 def inspecter_disques(lsblk_json):
     """Normalise la sortie de `lsblk -b -J`. Fonction pure, testable sans disque."""
     try:
@@ -943,6 +957,9 @@ def inspecter_disques(lsblk_json):
     for noeud in arbre.get("blockdevices") or []:
         if noeud.get("type") != "disk":
             continue
+        nom = (noeud.get("name") or "").strip()
+        if _NOMS_VIRTUELS.match(nom):
+            continue   # RAM, boucle : jamais une cible d'installation
         partitions = [{
             "path": e.get("path") or "",
             "taille": int(e.get("size") or 0),
