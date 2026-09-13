@@ -45,12 +45,16 @@ modules:
                                  # cf. scripts/generate_kde_theme.py emit_plymouth_theme)
     # Lexend : pas de paquet en repos Fedora, ship via files/usr/share/fonts/lexend/
     remove:
-      # ⚠️ Retiré le 2026-09-11 : plasma-welcome redemande langue, clavier,
-      # fuseau et thème alors que la politique les fixe déjà — et le choix de
-      # l'usager se fait écraser, ce qui donne un réglage qui ne prend pas.
-      # On retire le PAQUET plutôt que de couper un module KDED dont
-      # l'identifiant vit dans des métadonnées Qt6 en CBOR : une coupure
-      # devinée ne couperait rien, en silence.
+      # ⚠️ Retiré le 2026-09-11 : plasma-welcome rouvre sa visite guidée DANS
+      # la session et réécrit le thème que la politique fixe déjà. On retire le
+      # PAQUET plutôt que de couper un module KDED dont l'identifiant vit dans
+      # des métadonnées Qt6 en CBOR : une coupure devinée ne couperait rien, en
+      # silence.
+      #
+      # ⚠️ L'assistant du PREMIER DÉMARRAGE est un autre paquet, `plasma-setup`,
+      # qui tourne avant le gestionnaire de connexion et que ce retrait n'a
+      # jamais touché (mesuré le 2026-09-13). Il se coupe par le drapeau
+      # files/etc/plasma-setup-done, et chaque recipe tenant l'affirme au build.
       - plasma-welcome
       - firefox                  # remplacé par Brave Flatpak
       - firefox-langpacks

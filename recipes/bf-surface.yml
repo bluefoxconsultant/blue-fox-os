@@ -178,11 +178,21 @@ modules:
       # symptome que #23906. On l'affirme donc ici, ou l'echec coute un build
       # et pas une installation complete. Chemins releves sur Fedora 44.
       - for F in /usr/sbin/sssd /usr/lib64/sssd/libsss_ldap.so /usr/lib64/security/pam_sss.so /usr/lib64/security/pam_oddjob_mkhomedir.so /usr/sbin/oddjobd /usr/lib/systemd/system/sssd.service /usr/lib/systemd/system/oddjobd.service; do [ -e "$F" ] || { echo "ERREUR - $F absent, le mode login sssd n'ouvrirait aucune session"; exit 1; }; done; authselect list | grep -qw sssd || { echo "ERREUR - profil authselect sssd absent de l'image"; exit 1; }
-      # Le Centre d'accueil de KDE doit avoir DISPARU (#2026-09-11) : tant
-      # qu'il est la, il redemande langue, clavier, fuseau et theme que la
+      # Le Centre d'accueil de KDE doit avoir DISPARU (#2026-09-11). Il
+      # rouvre sa visite guidee DANS la session et reecrit le theme que la
       # politique fixe deja. `rpm -q` est le seul controle qui tranche — son
       # module KDED ne se coupe pas par un reglage devinable.
+      #
+      # ⚠️ CE N EST PAS LUI QUI OUVRE L ASSISTANT DU PREMIER DEMARRAGE
+      # (mesure le 2026-09-13 sur l image publiee, rev. 9d81537). Ca, c est
+      # `plasma-setup`, un AUTRE paquet, qui tourne AVANT le gestionnaire de
+      # connexion et ne depend que d un drapeau. Retirer plasma-welcome ne l a
+      # jamais touche. On pose donc le drapeau par le module `files`, et on
+      # affirme ici LES DEUX MOITIES du mecanisme : le drapeau existe, et
+      # l unite se garde toujours sur ce chemin. Si une version future deplace
+      # le drapeau, le build echoue au lieu de rendre l assistant en silence.
       - rpm -q plasma-welcome >/dev/null 2>&1 && { echo "ERREUR - plasma-welcome est encore dans l image, il reposera les questions de la politique"; exit 1; } || true
+      - U=/usr/lib/systemd/system/plasma-setup.service; if [ -e "$U" ]; then grep -q '^ConditionPathExists=!/etc/plasma-setup-done$' "$U" || { echo "ERREUR - plasma-setup.service ne se garde plus sur /etc/plasma-setup-done, relire l unite avant de publier"; exit 1; }; [ -f /etc/plasma-setup-done ] || { echo "ERREUR - /etc/plasma-setup-done absent, l assistant OOBE de KDE s ouvrirait avant SDDM"; exit 1; }; fi
 
   - type: systemd
     system:
