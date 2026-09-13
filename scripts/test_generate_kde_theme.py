@@ -387,3 +387,59 @@ def test_emit_all_ships_both_wallpaper_surfaces(tmp_path: Path):
     out = gkt.emit_all({"slug": "bf", "branding": {}}, tmp_path)
     assert out["plasmalogin_config"].exists()
     assert out["kscreenlocker"].exists()
+
+
+def test_aucun_artefact_genere_ne_salit_git_status(tmp_path: Path):
+    """Tout ce que ce script ecrit sous files/ doit etre ignore par git.
+
+    🔴 Vecu le 2026-09-13, et ca a coute une passe de publication. L'emetteur
+    plasmalogin a remplace les emetteurs SDDM, mais `.gitignore` couvrait
+    `files/etc/sddm.conf.d/` et pas `files/etc/plasmalogin.conf.d/`. Le premier
+    locataire de la passe a donc laisse un repertoire non suivi derriere lui,
+    et `publish-image.sh` — qui refuse a juste titre de publier depuis un arbre
+    sale — a rejete les DEUX locataires suivants.
+
+    ⚠️ Le premier locataire, lui, a REUSSI. L'echec ne ressemblait donc pas a
+    une regression de code mais a un caprice de machine, et c'est ce qui rend
+    ce defaut cher : il se declare loin de sa cause.
+
+    Le garde-fou vaut pour tout emetteur futur : on ne verifie pas une ligne
+    connue de .gitignore, on verifie CE QUI EST REELLEMENT ECRIT.
+    """
+    import fnmatch
+
+    gkt.emit_all({"slug": "bf", "branding": {}}, tmp_path)
+
+    racine = Path(__file__).resolve().parents[1]
+    regles = [
+        l.strip().lstrip("/")
+        for l in (racine / ".gitignore").read_text().splitlines()
+        if l.strip() and not l.startswith("#") and not l.startswith("!")
+    ]
+
+    def couvert(rel: str) -> bool:
+        """`rel` est ignore si une regle le designe, ou designe un de ses
+        repertoires parents — c'est la semantique que git applique."""
+        prefixes = [rel]
+        parent = Path(rel).parent
+        while str(parent) not in (".", "/"):
+            prefixes.append(str(parent))
+            parent = parent.parent
+        for regle in regles:
+            nu = regle.rstrip("/")
+            for chemin in prefixes:
+                if chemin == nu or fnmatch.fnmatch(chemin, nu):
+                    return True
+        return False
+
+    nus = [
+        "files/" + str(c.relative_to(tmp_path))
+        for c in sorted(tmp_path.rglob("*"))
+        if (c.is_file() or c.is_symlink()) and not couvert(
+            "files/" + str(c.relative_to(tmp_path)))
+    ]
+
+    assert not nus, (
+        "artefacts generes que .gitignore ne couvre pas — ils saliront "
+        f"`git status` et feront refuser la publication : {nus}"
+    )
