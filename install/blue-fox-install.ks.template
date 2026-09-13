@@ -97,7 +97,30 @@ export BFOS_FALLBACK_TIMEZONE="{{TIMEZONE}}"
 # suite de ce bloc meurt pour n'importe quelle raison, Anaconda lit ce
 # fichier-ci et demande la phrase de passe comme il l'a toujours fait.
 # bfos_provision.py ne le reecrit qu'apres confirmation d'Odoo (#23940).
-printf '%s\n' 'autopart --type=btrfs --encrypted --nohome' > /tmp/bfos-autopart.ks
+# ⚠️ CE FILET A CHANGE DE NATURE LE 2026-09-12, ET C'EST DELIBERE.
+#
+# Il portait `autopart --type=btrfs --encrypted --nohome`, c'est-a-dire
+# EFFACER LE DISQUE. Sur une machine vierge c'etait le bon defaut. Sur une
+# machine qui porte deja Windows ou un autre Linux, c'etait une perte de
+# donnees des que le %pre mourait en chemin — et le %pre a le droit de mourir,
+# c'est tout l'interet d'avoir un filet. Ce filet n'en etait un que pour la
+# moitie des machines.
+#
+# Le defaut est donc renverse : AUCUNE ligne de partitionnement. Anaconda
+# ouvre son volet et demande. C'est le seul etat qui ne peut rien detruire.
+# bfos_provision.py le remplace apres avoir INSPECTE les disques : disque
+# vierge -> autopart comme avant ; systeme present avec de la place ->
+# retrecissement et cohabitation ; doute quelconque -> on laisse ceci.
+#
+# CE QUE CA COUTE, dit franchement : si le %pre meurt sur une machine vierge,
+# l'installation n'est plus zero-touche, elle attend quelqu'un. On echange de
+# la robustesse d'automatisation contre l'impossibilite d'effacer le systeme
+# de quelqu'un. Une question posee se rattrape ; un disque efface, non.
+# Le texte evite volontairement tout caractere de section : ce fichier est
+# relu par le parseur de kickstart, et un mot-clef de section dans un
+# commentaire est un pari inutile a prendre.
+printf '%s\n' '# Partitionnement non decide : la preparation a echoue avant cette etape.' \
+    > /tmp/bfos-autopart.ks
 chmod 600 /tmp/bfos-autopart.ks
 # Meme filet pour le compte de secours. Anaconda REFUSE de commencer quand root
 # est verrouille et qu'aucun usager n'existe : sans cette ligne, il ouvre son

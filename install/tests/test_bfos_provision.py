@@ -11,6 +11,26 @@ DEVICE_URL = "https://auth.example.com/application/o/device/"
 TOKEN_URL = "https://auth.example.com/application/o/token/"
 POLICY_URL = "https://example.com/api/v1/policy/me"
 
+# Ces tests decrivent un DISQUE VIERGE. Depuis #22419 le defaut n'est plus
+# celui-la : sur une machine qui porte deja un systeme, le plan devient
+# « interactif » et rien n'est ni tire ni depose. Le dire explicitement plutot
+# que de dependre des disques de la machine qui fait tourner les tests.
+PLAN_VIERGE = {"mode": "disque_entier", "disque": "/dev/sda"}
+
+# Le prealable ci-dessous remplace bp.plan_par_defaut. Les tests qui veulent
+# eprouver la VRAIE fonction passent par cette reference, prise a l'import.
+PLAN_PAR_DEFAUT_REEL = bp.plan_par_defaut
+
+
+@pytest.fixture(autouse=True)
+def _disque_vierge(monkeypatch):
+    """Sans ce prealable, l'inspection tournerait sur les VRAIS disques de la
+    machine qui execute les tests : le resultat dependrait du poste, et sur un
+    portable qui porte un systeme il deviendrait « interactif » — donc des
+    tests d'escrow rouges pour une raison qui n'a rien a voir avec l'escrow.
+    Un test qui a besoin d'un autre plan le passe explicitement."""
+    monkeypatch.setattr(bp, "plan_par_defaut", lambda *a, **k: dict(PLAN_VIERGE))
+
 
 def _http_error(code, body):
     return urllib.error.HTTPError(
@@ -447,8 +467,7 @@ def test_stage_enrolment_writes_the_passphrase_once_odoo_confirms(tmp_path):
     autopart = tmp_path / "autopart.ks"
     bp.write_autopart(path=str(autopart))          # ce que fait le %pre
     said = []
-    machine = bp.stage_enrolment(
-        "TOK", POLICY_ESCROW, env={"BFOS_ENROLL_URL": ENROLL_URL},
+    machine = bp.stage_enrolment("TOK", POLICY_ESCROW, env={"BFOS_ENROLL_URL": ENROLL_URL},
         post=_enrol_escrow_ok, path=str(tmp_path / "machine.json"),
         autopart_path=str(autopart), out=said.append)
 
@@ -489,8 +508,7 @@ def test_no_path_seals_a_disk_against_everyone(tmp_path):
     for label, post in scenarios.items():
         autopart = tmp_path / f"autopart-{abs(hash(label))}.ks"
         bp.write_autopart(path=str(autopart))      # ce que fait le %pre
-        bp.stage_enrolment(
-            "TOK", POLICY_ESCROW, env={"BFOS_ENROLL_URL": ENROLL_URL},
+        bp.stage_enrolment("TOK", POLICY_ESCROW, env={"BFOS_ENROLL_URL": ENROLL_URL},
             post=post, path=str(tmp_path / f"machine-{abs(hash(label))}.json"),
             autopart_path=str(autopart))
         assert autopart.read_text().strip() == bp.AUTOPART_BASE, (
@@ -501,8 +519,7 @@ def test_stage_enrolment_says_why_the_deposit_was_refused(tmp_path):
     autopart = tmp_path / "autopart.ks"
     bp.write_autopart(path=str(autopart))
     said = []
-    bp.stage_enrolment(
-        "TOK", POLICY_ESCROW, env={"BFOS_ENROLL_URL": ENROLL_URL},
+    bp.stage_enrolment("TOK", POLICY_ESCROW, env={"BFOS_ENROLL_URL": ENROLL_URL},
         post=_enrol_escrow_refused, path=str(tmp_path / "machine.json"),
         autopart_path=str(autopart), out=said.append)
     joined = "".join(said)
@@ -525,8 +542,7 @@ def test_stage_enrolment_never_raises_even_if_the_autopart_write_fails(
 
     monkeypatch.setattr(bp, "write_autopart", boom)
     said = []
-    got = bp.stage_enrolment(
-        "TOK", POLICY_ESCROW, env={"BFOS_ENROLL_URL": ENROLL_URL},
+    got = bp.stage_enrolment("TOK", POLICY_ESCROW, env={"BFOS_ENROLL_URL": ENROLL_URL},
         post=_enrol_escrow_ok, path=str(tmp_path / "machine.json"),
         autopart_path=str(tmp_path / "autopart.ks"), out=said.append)
     assert got is None
@@ -536,8 +552,7 @@ def test_stage_enrolment_never_raises_even_if_the_autopart_write_fails(
 def test_stage_enrolment_never_raises_on_a_malformed_policy(tmp_path):
     """`policies` non-mapping : .get dessus levait, et emportait tout."""
     said = []
-    got = bp.stage_enrolment(
-        "TOK", {"schema": "bf-policy/v2", "policies": ["disk_escrow"]},
+    got = bp.stage_enrolment("TOK", {"schema": "bf-policy/v2", "policies": ["disk_escrow"]},
         env={"BFOS_ENROLL_URL": ENROLL_URL}, post=_enrol_escrow_ok,
         path=str(tmp_path / "machine.json"),
         autopart_path=str(tmp_path / "autopart.ks"), out=said.append)
@@ -567,8 +582,7 @@ def test_run_keeps_the_fetched_policy_when_the_seam_explodes():
            "BFOS_OIDC_CLIENT_ID": "blue-fox-os", "BFOS_POLICY_URL": POLICY_URL}
     policy = bp.run(
         env=env, post=post, get=get, sleep=lambda s: None, out=lambda m: None,
-        after_policy=lambda tok, pol: bp.stage_enrolment(
-            tok, pol, env={"BFOS_ENROLL_URL": ENROLL_URL},
+        after_policy=lambda tok, pol: bp.stage_enrolment(tok, pol, env={"BFOS_ENROLL_URL": ENROLL_URL},
             post=exploding_post))
     assert policy["user"]["login"] == "olivier"
 
@@ -596,8 +610,7 @@ def test_lost_reply_does_not_claim_the_deposit_failed(tmp_path):
         raise OSError("timed out")
 
     said = []
-    bp.stage_enrolment(
-        "TOK", POLICY_ESCROW, env={"BFOS_ENROLL_URL": ENROLL_URL},
+    bp.stage_enrolment("TOK", POLICY_ESCROW, env={"BFOS_ENROLL_URL": ENROLL_URL},
         post=dead_socket, path=str(tmp_path / "machine.json"),
         autopart_path=str(tmp_path / "autopart.ks"), out=said.append)
     joined = "".join(said)
@@ -620,12 +633,29 @@ def _template_text():
     return (here / "blue-fox-install.ks.template").read_text()
 
 
-def test_the_template_net_matches_autopart_base_word_for_word():
-    expected = f"printf '%s\\n' '{bp.AUTOPART_BASE}' > /tmp/bfos-autopart.ks"
-    assert expected in _template_text(), (
-        "le filet du %pre et AUTOPART_BASE ont diverge : les machines dont le "
-        "depot reussit et celles qui retombent sur la saisie manuelle "
-        "n'auraient plus le meme format de disque")
+def test_le_filet_du_gabarit_ne_peut_rien_detruire():
+    """⚠️ CE TEST A CHANGE DE SENS LE 2026-09-12.
+
+    Il exigeait que le filet du %pre soit exactement AUTOPART_BASE, pour que
+    les machines dont le depot reussit et celles qui retombent sur la saisie
+    manuelle aient le meme format de disque. Cette exigence supposait un
+    disque a nous : elle signifiait « efface le disque quoi qu'il arrive ».
+    Sur une machine qui porte Windows, elle decrivait une perte de donnees.
+
+    L'invariant est renverse : le filet ecrit AVANT que quoi que ce soit
+    puisse echouer ne doit contenir AUCUNE directive de partitionnement.
+    C'est bfos_provision.py, apres inspection des disques, qui a le droit d'y
+    mettre un autopart — jamais le gabarit d'avance.
+    """
+    texte = _template_text()
+    i = texte.index("> /tmp/bfos-autopart.ks")
+    debut = texte.rindex("printf", 0, i)
+    ligne = texte[debut:i]
+    for interdit in ("autopart", "clearpart", "zerombr", "part ", "--resize"):
+        assert interdit not in ligne, (
+            f"le filet ecrit {interdit!r} avant toute inspection : sur une "
+            "machine qui porte deja un systeme, c'est une perte de donnees")
+    assert "#" in ligne, "le filet doit ecrire un commentaire, pas du vide"
 
 
 def test_the_template_carries_no_bare_autopart_line():
@@ -1132,3 +1162,326 @@ class TestApresPolitique:
                                side_effect=lambda *a, **k: vu.append("nc")):
             bp._apres_politique("T", POLITIQUE_NC, out=lambda m: None)
         assert vu == ["nc"]
+
+
+# ===========================================================================
+# Cohabitation avec un systeme deja present (#22419)
+# ===========================================================================
+# Regle de lecture de ces tests : le seul resultat SUR est « interactif ».
+# Chaque cas ou l'on ne sait pas doit y retomber. Un test qui verrait
+# « cohabitation » la ou l'information manque decrit une perte de donnees.
+
+GIO = 1024 ** 3
+
+
+def _lsblk(disques):
+    return json.dumps({"blockdevices": disques})
+
+
+def _disque(path="/dev/sda", taille=512 * GIO, rm=False, parts=()):
+    return {"path": path, "name": path.split("/")[-1], "type": "disk",
+            "size": taille, "rm": rm,
+            "children": [dict(c, type="part") for c in parts]}
+
+
+def _part(path, taille, fstype="", parttypename=""):
+    return {"path": path, "name": path.split("/")[-1], "size": taille,
+            "fstype": fstype, "parttypename": parttypename}
+
+
+ESP = _part("/dev/sda1", 512 * 1024 * 1024, "vfat", "EFI System")
+
+
+class TestInspecterDisques:
+    def test_normalise_lsblk(self):
+        d = bp.inspecter_disques(_lsblk([_disque(parts=[ESP])]))
+        assert len(d) == 1
+        assert d[0]["path"] == "/dev/sda"
+        assert d[0]["partitions"][0]["fstype"] == "vfat"
+
+    def test_json_casse_leve(self):
+        with pytest.raises(bp.ProvisionError):
+            bp.inspecter_disques("{ pas du json")
+
+
+class TestChoisirPlan:
+    def _mesure(self, valeur):
+        return lambda chemin, fstype: valeur
+
+    def test_disque_vierge_reste_zero_touche(self):
+        d = bp.inspecter_disques(_lsblk([_disque()]))
+        assert bp.choisir_plan(d, self._mesure(None))["mode"] == "disque_entier"
+
+    def test_deux_disques_fixes_on_demande(self):
+        """Se tromper de disque efface le mauvais. Pas d'heuristique ici."""
+        d = bp.inspecter_disques(_lsblk([_disque("/dev/sda"), _disque("/dev/sdb")]))
+        p = bp.choisir_plan(d, self._mesure(None))
+        assert p["mode"] == "interactif" and "2 disques" in p["raison"]
+
+    def test_la_cle_usb_d_installation_ne_compte_pas(self):
+        d = bp.inspecter_disques(_lsblk([
+            _disque("/dev/sda"), _disque("/dev/sdb", 32 * GIO, rm=True)]))
+        assert bp.choisir_plan(d, self._mesure(None))["mode"] == "disque_entier"
+
+    def test_disque_trop_petit(self):
+        d = bp.inspecter_disques(_lsblk([_disque(taille=16 * GIO)]))
+        p = bp.choisir_plan(d, self._mesure(None))
+        assert p["mode"] == "interactif" and "minimum" in p["raison"]
+
+    def test_windows_avec_de_la_place(self):
+        parts = [ESP, _part("/dev/sda2", 400 * GIO, "ntfs")]
+        d = bp.inspecter_disques(_lsblk([_disque(parts=parts)]))
+        p = bp.choisir_plan(d, self._mesure(100 * GIO))
+        assert p["mode"] == "cohabitation"
+        assert p["partition"] == "/dev/sda2"
+        assert p["nouvelle_taille"] == 100 * GIO + bp.VOISIN_MARGE
+        assert p["libere"] == 400 * GIO - (100 * GIO + bp.VOISIN_MARGE)
+        assert p["esp"] == "/dev/sda1"       # on REUTILISE l'ESP existante
+
+    def test_windows_presque_plein_on_demande(self):
+        parts = [ESP, _part("/dev/sda2", 400 * GIO, "ntfs")]
+        d = bp.inspecter_disques(_lsblk([_disque(parts=parts)]))
+        p = bp.choisir_plan(d, self._mesure(390 * GIO))
+        assert p["mode"] == "interactif"
+
+    def test_mesure_impossible_on_demande(self):
+        """⚠️ Ne pas savoir vaut REFUS. Une estimation ici mord dans les
+        donnees de quelqu'un."""
+        parts = [ESP, _part("/dev/sda2", 400 * GIO, "ntfs")]
+        d = bp.inspecter_disques(_lsblk([_disque(parts=parts)]))
+        p = bp.choisir_plan(d, self._mesure(None))
+        assert p["mode"] == "interactif" and "indeterminable" in p["raison"]
+
+    def test_mesure_incoherente_on_demande(self):
+        parts = [ESP, _part("/dev/sda2", 400 * GIO, "ntfs")]
+        d = bp.inspecter_disques(_lsblk([_disque(parts=parts)]))
+        for absurde in (0, -1, 500 * GIO):
+            p = bp.choisir_plan(d, self._mesure(absurde))
+            assert p["mode"] == "interactif", absurde
+
+    def test_xfs_ne_retrecit_pas(self):
+        parts = [ESP, _part("/dev/sda2", 400 * GIO, "xfs")]
+        d = bp.inspecter_disques(_lsblk([_disque(parts=parts)]))
+        p = bp.choisir_plan(d, self._mesure(100 * GIO))
+        assert p["mode"] == "interactif" and "retrecissable" in p["raison"]
+
+    def test_btrfs_traite_comme_non_retrecissable(self):
+        """btrfs SAIT retrecir, mais pas par ce chemin. Tenter a moitie serait
+        pire que refuser."""
+        parts = [ESP, _part("/dev/sda2", 400 * GIO, "btrfs")]
+        d = bp.inspecter_disques(_lsblk([_disque(parts=parts)]))
+        assert bp.choisir_plan(d, self._mesure(100 * GIO))["mode"] == "interactif"
+
+    def test_choisit_la_plus_grosse_retrecissable(self):
+        parts = [ESP, _part("/dev/sda2", 80 * GIO, "ext4"),
+                 _part("/dev/sda3", 400 * GIO, "ntfs")]
+        d = bp.inspecter_disques(_lsblk([_disque(parts=parts)]))
+        assert bp.choisir_plan(d, self._mesure(50 * GIO))["partition"] == "/dev/sda3"
+
+
+class TestRenderPartitionnement:
+    DESTRUCTEURS = ("autopart", "clearpart --all", "clearpart --linux",
+                    "part ", "--resize", "zerombr")
+
+    def test_interactif_ne_peut_rien_detruire(self):
+        """Le test qui compte le plus de tout ce fichier."""
+        rendu = bp.render_partitionnement(
+            {"mode": "interactif", "raison": "deux disques"})
+        for ligne in rendu.splitlines():
+            assert ligne.startswith("#"), f"ligne active en mode sur : {ligne!r}"
+        for mot in self.DESTRUCTEURS:
+            assert mot not in rendu.replace("#", "")
+        assert "deux disques" in rendu      # la raison est dite
+
+    def test_disque_entier_identique_a_avant(self):
+        rendu = bp.render_partitionnement({"mode": "disque_entier",
+                                           "disque": "/dev/sda"}, "SECRET")
+        assert rendu.strip() == \
+            "autopart --type=btrfs --encrypted --nohome --passphrase=SECRET"
+
+    def test_disque_entier_sans_chiffrement(self):
+        rendu = bp.render_partitionnement({"mode": "disque_entier",
+                                           "disque": "/dev/sda"}, chiffrer=False)
+        assert "--encrypted" not in rendu and "--passphrase" not in rendu
+
+    def _plan(self, esp="/dev/sda1"):
+        return {"mode": "cohabitation", "disque": "/dev/sda",
+                "partition": "/dev/sda2", "taille_actuelle": 400 * GIO,
+                "nouvelle_taille": 120 * GIO, "libere": 280 * GIO, "esp": esp}
+
+    def test_cohabitation_n_efface_rien(self):
+        rendu = bp.render_partitionnement(self._plan(), "SECRET")
+        assert "clearpart --none" in rendu
+        assert "clearpart --all" not in rendu and "zerombr" not in rendu
+        assert f"--onpart=/dev/sda2 --resize --size={120 * 1024}" in rendu
+
+    def test_l_esp_du_voisin_n_est_pas_reformatee(self):
+        """⚠️ Formater l'ESP existante effacerait l'amorceur du voisin : sa
+        partition serait intacte et son systeme indemarrable."""
+        rendu = bp.render_partitionnement(self._plan(), "SECRET")
+        assert "part /boot/efi --onpart=/dev/sda1 --noformat" in rendu
+
+    def test_sans_esp_on_en_cree_une(self):
+        rendu = bp.render_partitionnement(self._plan(esp=""), "SECRET")
+        assert "part /boot/efi --fstype=efi --size=600" in rendu
+        assert "--noformat" not in rendu
+
+    def test_la_phrase_ne_va_que_sur_le_volume_chiffre(self):
+        rendu = bp.render_partitionnement(self._plan(), "SECRET")
+        porteuses = [l for l in rendu.splitlines() if "--passphrase=SECRET" in l]
+        assert len(porteuses) == 1
+        assert porteuses[0].startswith("part btrfs.bfos --grow --encrypted")
+
+    def test_plan_inconnu_leve(self):
+        with pytest.raises(bp.ProvisionError):
+            bp.render_partitionnement({"mode": "n_importe_quoi"})
+
+
+class TestTailleMinimaleFs:
+    def test_ext4_convertit_les_blocs_en_octets(self):
+        def run(cmd):
+            class R: pass
+            r = R(); r.returncode = 0
+            if cmd[0] == "resize2fs":
+                r.stdout = "Estimated minimum size of the filesystem: 1250000\n"
+            else:
+                r.stdout = "Block size:               4096\n"
+            return r
+        assert bp.taille_minimale_fs("/dev/sda2", "ext4", run=run) == 1250000 * 4096
+
+    def test_ntfs_lit_les_octets(self):
+        def run(cmd):
+            class R: pass
+            r = R(); r.returncode = 0
+            r.stdout = "You might resize at 107374182400 bytes or 107374 MB\n"
+            return r
+        assert bp.taille_minimale_fs("/dev/sda2", "ntfs", run=run) == 107374182400
+
+    def test_outil_en_echec_rend_none(self):
+        def run(cmd):
+            class R: pass
+            r = R(); r.returncode = 1; r.stdout = ""
+            return r
+        assert bp.taille_minimale_fs("/dev/sda2", "ntfs", run=run) is None
+
+    def test_outil_absent_rend_none_sans_lever(self):
+        def run(cmd):
+            raise FileNotFoundError("ntfsresize")
+        assert bp.taille_minimale_fs("/dev/sda2", "ntfs", run=run) is None
+
+    def test_fs_inconnu_rend_none(self):
+        assert bp.taille_minimale_fs("/dev/sda2", "zfs", run=lambda c: None) is None
+
+
+class TestSequestreEtCohabitation:
+    """⚠️ La règle née de #22419 : en partitionnement interactif, c'est ANACONDA
+    qui demandera la phrase à l'opérateur. Celle qu'on tirerait n'ouvrirait
+    rien. Déposer quand même donnerait à Odoo une clé qui n'est pas celle du
+    disque — pire que pas de clé, parce qu'on la croirait bonne le jour où
+    elle servirait."""
+
+    PLAN_INTERACTIF = {"mode": "interactif", "raison": "2 disques fixes"}
+
+    def _capture_post(self, vu):
+        def post(url, payload, token, timeout=30):
+            vu.update(payload)
+            return _enrol_escrow_ok(url, payload, token, timeout)
+        return post
+
+    def test_plan_interactif_ne_depose_aucune_phrase(self, tmp_path):
+        autopart = tmp_path / "autopart.ks"
+        vu, dit = {}, []
+        bp.stage_enrolment(
+            "TOK", POLICY_ESCROW, env={"BFOS_ENROLL_URL": ENROLL_URL},
+            post=self._capture_post(vu), path=str(tmp_path / "machine.json"),
+            autopart_path=str(autopart), out=dit.append,
+            plan=dict(self.PLAN_INTERACTIF))
+        assert "disk_passphrase" not in vu, "une phrase a ete deposee a tort"
+        assert any("aucune phrase" in m for m in dit)
+        assert any("2 disques fixes" in m for m in dit)   # la raison est dite
+
+    def test_plan_interactif_n_ecrit_rien_de_destructif(self, tmp_path):
+        autopart = tmp_path / "autopart.ks"
+        bp.stage_enrolment(
+            "TOK", POLICY_ESCROW, env={"BFOS_ENROLL_URL": ENROLL_URL},
+            post=_enrol_escrow_ok, path=str(tmp_path / "machine.json"),
+            autopart_path=str(autopart), plan=dict(self.PLAN_INTERACTIF))
+        for ligne in autopart.read_text().splitlines():
+            assert ligne.startswith("#"), ligne
+
+    def test_cohabitation_sequestre_normalement(self, tmp_path):
+        """Le voisin est préservé ET le disque BFOS reste séquestré : les deux
+        garanties tiennent ensemble, elles ne s'excluent pas."""
+        autopart = tmp_path / "autopart.ks"
+        plan = {"mode": "cohabitation", "disque": "/dev/sda",
+                "partition": "/dev/sda2", "taille_actuelle": 400 * GIO,
+                "nouvelle_taille": 120 * GIO, "libere": 280 * GIO,
+                "esp": "/dev/sda1"}
+        vu = {}
+        machine = bp.stage_enrolment(
+            "TOK", POLICY_ESCROW, env={"BFOS_ENROLL_URL": ENROLL_URL},
+            post=self._capture_post(vu), path=str(tmp_path / "machine.json"),
+            autopart_path=str(autopart), plan=plan)
+        rendu = autopart.read_text()
+        assert machine["disk_escrowed"] is True
+        assert "disk_passphrase" in vu
+        assert "clearpart --none" in rendu          # rien n'est efface
+        assert "--noformat" in rendu                # l'amorceur du voisin survit
+        phrase = [l for l in rendu.splitlines() if "--passphrase=" in l]
+        assert len(phrase) == 1 and "--encrypted" in phrase[0]
+
+    def test_le_garde_transmet_bien_le_plan(self, tmp_path):
+        """⚠️ stage_enrolment est un garde mince qui delegue. Ajouter un
+        parametre au garde sans le passer au corps donne un UnboundLocalError
+        avale par le « ne jamais lever » : tout parait marcher, et le plan est
+        silencieusement ignore."""
+        autopart = tmp_path / "autopart.ks"
+        bp.stage_enrolment(
+            "TOK", POLICY_ESCROW, env={"BFOS_ENROLL_URL": ENROLL_URL},
+            post=_enrol_escrow_ok, path=str(tmp_path / "machine.json"),
+            autopart_path=str(autopart), plan=dict(self.PLAN_INTERACTIF))
+        # si le plan n'etait pas transmis, le prealable rendrait un disque
+        # vierge et on trouverait un autopart ici.
+        assert "autopart" not in autopart.read_text()
+
+
+class TestInterrupteurCohabitation:
+    """Les deux moitiés du changement sont livrées séparément : ne plus
+    effacer à l'aveugle est vrai tout de suite ; rétrécir le voisin attend
+    d'avoir touché un vrai disque."""
+
+    def _lsblk_windows(self):
+        return _lsblk([_disque(parts=[ESP, _part("/dev/sda2", 400 * GIO, "ntfs")])])
+
+    def _run(self, sortie):
+        def run(cmd):
+            class R: pass
+            r = R(); r.returncode = 0; r.stdout = sortie
+            return r
+        return run
+
+    def test_par_defaut_la_cohabitation_demande(self, monkeypatch):
+        monkeypatch.delenv("BFOS_COHABITATION", raising=False)
+        monkeypatch.setattr(bp, "taille_minimale_fs",
+                            lambda c, f, **k: 100 * GIO)
+        p = PLAN_PAR_DEFAUT_REEL(run=self._run(self._lsblk_windows()))
+        assert p["mode"] == "interactif"
+        assert "BFOS_COHABITATION" in p["raison"]
+        assert "280 Gio liberables" in p["raison"]   # on DIT ce qu'on refuse
+
+    def test_activee_elle_cohabite(self, monkeypatch):
+        monkeypatch.setenv("BFOS_COHABITATION", "1")
+        monkeypatch.setattr(bp, "taille_minimale_fs",
+                            lambda c, f, **k: 100 * GIO)
+        p = PLAN_PAR_DEFAUT_REEL(run=self._run(self._lsblk_windows()))
+        assert p["mode"] == "cohabitation" and p["partition"] == "/dev/sda2"
+
+    def test_le_disque_vierge_reste_zero_touche_dans_les_deux_cas(self, monkeypatch):
+        monkeypatch.delenv("BFOS_COHABITATION", raising=False)
+        p = PLAN_PAR_DEFAUT_REEL(run=self._run(_lsblk([_disque()])))
+        assert p["mode"] == "disque_entier"
+
+    def test_lsblk_absent_ne_leve_pas(self):
+        def run(cmd):
+            raise FileNotFoundError("lsblk")
+        assert PLAN_PAR_DEFAUT_REEL(run=run)["mode"] == "interactif"

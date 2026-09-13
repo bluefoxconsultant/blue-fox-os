@@ -878,25 +878,284 @@ def decider_chiffrement(out, tpm=None, lire=None) -> tuple:
     return True, False
 
 
-def write_autopart(passphrase=None, path=None, chiffrer=True):
-    """Write the autopart line Anaconda includes, and lock it down.
+# =========================================================================
+# Cohabitation avec un systeme deja present (#22419)
+# =========================================================================
+# Jusqu'ici l'installation supposait un disque a elle. Le filet ecrit d'avance
+# par le kickstart etait `autopart`, c'est-a-dire EFFACER LE DISQUE : sur une
+# machine vierge c'est le bon defaut, sur une machine qui porte Windows c'est
+# une perte de donnees si le %pre meurt en chemin. Le filet n'en etait un que
+# pour la moitie des machines.
+#
+# Le defaut est donc renverse : le filet ne fait plus RIEN de destructif
+# (aucune ligne de partitionnement = Anaconda pose la question), et c'est
+# l'inspection qui a le droit de le renforcer. Une inspection qui echoue, un
+# disque qu'on ne comprend pas, un doute quelconque : on demande a l'humain.
+#
+# ⚠️ CE CHEMIN N'A JAMAIS TOUCHE UN VRAI DISQUE PORTANT UN AUTRE SYSTEME.
+# La decision et le rendu sont testes unitairement ; le retrecissement lui-meme
+# doit etre eprouve sur une VM jetable avec Windows installe AVANT d'etre
+# lache sur une machine de client.
 
-    No passphrase: the prompting form, byte-identical to what the template
-    carried before this existed. With one: the same line plus --passphrase.
-    0600 because for the length of the install that file IS the disk key.
+_GIO = 1024 ** 3
+BFOS_MINI_CONFORT = 64 * _GIO   # ce qu'on veut pour BFOS
+BFOS_MINI_DUR = 40 * _GIO       # sous ce seuil on ne s'installe pas du tout
+VOISIN_MARGE = 20 * _GIO        # ce qu'on laisse RESPIRER au systeme existant
+
+# Ce qu'on sait retrecir avec un outil present dans le runtime d'Anaconda.
+# xfs ne retrecit pas, point. btrfs le peut mais demande un montage et une
+# sequence a lui : hors portee de cette version, donc traite comme non
+# retrecissable plutot que tente a moitie.
+FS_RETRECISSABLES = ("ext2", "ext3", "ext4", "ntfs")
+
+
+def _ko(raison):
+    return {"mode": "interactif", "raison": raison}
+
+
+def inspecter_disques(lsblk_json):
+    """Normalise la sortie de `lsblk -b -J`. Fonction pure, testable sans disque."""
+    try:
+        arbre = json.loads(lsblk_json)
+    except ValueError as exc:
+        raise ProvisionError(f"lsblk illisible : {exc}") from exc
+    disques = []
+    for noeud in arbre.get("blockdevices") or []:
+        if noeud.get("type") != "disk":
+            continue
+        partitions = [{
+            "path": e.get("path") or "",
+            "taille": int(e.get("size") or 0),
+            "fstype": (e.get("fstype") or "").lower(),
+            "label": e.get("label") or "",
+            "parttypename": (e.get("parttypename") or "").lower(),
+        } for e in (noeud.get("children") or []) if e.get("type") == "part"]
+        disques.append({
+            "path": noeud.get("path") or "",
+            "taille": int(noeud.get("size") or 0),
+            "amovible": bool(noeud.get("rm")),
+            "partitions": partitions,
+        })
+    return disques
+
+
+def _esp(partitions):
+    """La partition systeme EFI, si elle existe. On la REUTILISE plutot que
+    d'en creer une seconde : deux ESP sur un disque, c'est un amorcage qui
+    part une fois sur deux du mauvais cote."""
+    for p in partitions:
+        if p["fstype"] == "vfat" and "efi" in p["parttypename"]:
+            return p
+    return None
+
+
+def choisir_plan(disques, taille_min_fs, mini=None, marge=None):
+    """Decide comment partitionner. Ne touche a rien : rend un plan.
+
+    `taille_min_fs(chemin, fstype)` rend la taille minimale en octets a
+    laquelle le systeme de fichiers accepte de descendre, ou None s'il ne sait
+    pas. Ne PAS savoir vaut refus : on ne devine pas la place libre sur le
+    disque de quelqu'un.
+    """
+    mini = mini if mini is not None else BFOS_MINI_CONFORT
+    marge = marge if marge is not None else VOISIN_MARGE
+
+    fixes = [d for d in disques if not d["amovible"] and d["taille"] > 0]
+    if not fixes:
+        return _ko("aucun disque fixe detecte")
+    if len(fixes) > 1:
+        # Plusieurs disques : lequel est « le » disque ? Se tromper efface le
+        # mauvais. C'est une question pour un humain, pas une heuristique.
+        return _ko(f"{len(fixes)} disques fixes — le choix revient a l'operateur")
+
+    disque = fixes[0]
+    if disque["taille"] < BFOS_MINI_DUR:
+        return _ko(f"disque de {disque['taille'] // _GIO} Gio, minimum "
+                   f"{BFOS_MINI_DUR // _GIO} Gio")
+
+    occupees = [p for p in disque["partitions"] if p["taille"] > 0]
+    if not occupees:
+        # Disque vierge : le zero-touche garde tout son sens.
+        return {"mode": "disque_entier", "disque": disque["path"]}
+
+    # Un systeme est la. On cherche la plus grosse partition retrecissable.
+    candidates = [p for p in occupees if p["fstype"] in FS_RETRECISSABLES]
+    if not candidates:
+        types = ", ".join(sorted({p["fstype"] or "?" for p in occupees}))
+        return _ko(f"rien de retrecissable sur ce disque (systemes de "
+                   f"fichiers presents : {types})")
+
+    cible = max(candidates, key=lambda p: p["taille"])
+    plancher = taille_min_fs(cible["path"], cible["fstype"])
+    if plancher is None:
+        return _ko(f"place libre de {cible['path']} indeterminable")
+    if plancher <= 0 or plancher > cible["taille"]:
+        return _ko(f"mesure incoherente sur {cible['path']}")
+
+    # On laisse au voisin son contenu PLUS une marge : retrecir au ras du
+    # minimum rend un systeme qui ne peut plus rien ecrire, donc une machine
+    # qu'on a techniquement preservee et pratiquement cassee.
+    nouvelle_taille = plancher + marge
+    libere = cible["taille"] - nouvelle_taille
+    if libere < BFOS_MINI_DUR:
+        return _ko(
+            f"retrecir {cible['path']} ne libererait que {max(libere, 0) // _GIO} Gio "
+            f"(minimum {BFOS_MINI_DUR // _GIO} Gio)")
+    if libere < mini:
+        out_mini = mini // _GIO
+        return _ko(f"seulement {libere // _GIO} Gio liberables, {out_mini} Gio "
+                   "souhaites — l'operateur tranche")
+
+    return {
+        "mode": "cohabitation",
+        "disque": disque["path"],
+        "partition": cible["path"],
+        "taille_actuelle": cible["taille"],
+        "nouvelle_taille": nouvelle_taille,
+        "libere": libere,
+        "esp": (_esp(occupees) or {}).get("path", ""),
+    }
+
+
+def taille_minimale_fs(chemin, fstype, run=None):
+    """Plancher de retrecissement, en octets, ou None si on ne sait pas.
+
+    ⚠️ Ne jamais rendre une estimation. Un chiffre invente ici se traduit par
+    un retrecissement qui mord dans les donnees de quelqu'un.
+    """
+    import subprocess
+    run = run or (lambda cmd: subprocess.run(
+        cmd, capture_output=True, text=True, timeout=120))
+    try:
+        if fstype in ("ext2", "ext3", "ext4"):
+            # `resize2fs -P` rend « Estimated minimum size of the filesystem:
+            # <N> » en BLOCS ; il faut la taille de bloc pour convertir.
+            r = run(["resize2fs", "-P", chemin])
+            if r.returncode != 0:
+                return None
+            m = re.search(r":\s*(\d+)", r.stdout)
+            if not m:
+                return None
+            blocs = int(m.group(1))
+            rb = run(["dumpe2fs", "-h", chemin])
+            mb = re.search(r"Block size:\s*(\d+)", rb.stdout or "")
+            if rb.returncode != 0 or not mb:
+                return None
+            return blocs * int(mb.group(1))
+        if fstype == "ntfs":
+            r = run(["ntfsresize", "--info", "--force", chemin])
+            if r.returncode != 0:
+                return None
+            # « You might resize at 12345678901 bytes or 12346 MB »
+            m = re.search(r"resize at\s+(\d+)\s+bytes", r.stdout or "")
+            return int(m.group(1)) if m else None
+    except Exception:  # noqa: BLE001 — ne pas savoir = refuser, jamais lever
+        return None
+    return None
+
+
+def render_partitionnement(plan, passphrase=None, chiffrer=True):
+    """Rend les lignes de partitionnement pour le %include d'Anaconda.
+
+    Mode « interactif » : un fichier de COMMENTAIRES seulement. Aucune ligne
+    de partitionnement = Anaconda ouvre son volet et demande. C'est le seul
+    etat qui ne peut rien detruire, donc le seul defaut acceptable.
+    """
+    mode = plan.get("mode")
+    if mode == "interactif":
+        return ("# Partitionnement laisse a l'operateur.\n"
+                f"# Raison : {plan.get('raison', 'inconnue')}\n")
+
+    chiffre = " --encrypted" if chiffrer else ""
+    phrase = f" --passphrase={passphrase}" if (chiffrer and passphrase) else ""
+
+    if mode == "disque_entier":
+        return f"autopart --type=btrfs{chiffre} --nohome{phrase}\n"
+
+    if mode == "cohabitation":
+        mo = plan["nouvelle_taille"] // (1024 * 1024)
+        lignes = [
+            "# Cohabitation : on retrecit le systeme existant, on ne l'efface pas.",
+            f"# {plan['partition']} : {plan['taille_actuelle'] // _GIO} Gio -> "
+            f"{plan['nouvelle_taille'] // _GIO} Gio, "
+            f"{plan['libere'] // _GIO} Gio liberes pour Blue Fox OS.",
+            # Pas de clearpart : --none dit explicitement « ne rien effacer ».
+            "clearpart --none",
+            f"part --onpart={plan['partition']} --resize --size={mo}",
+        ]
+        if plan.get("esp"):
+            # ⚠️ --noformat : formater l'ESP existante effacerait l'amorceur du
+            # systeme voisin, donc le rendrait indemarrable tout en ayant
+            # « preserve » sa partition.
+            lignes.append(f"part /boot/efi --onpart={plan['esp']} --noformat "
+                          "--fstype=efi")
+        else:
+            lignes.append("part /boot/efi --fstype=efi --size=600")
+        lignes += [
+            "part /boot --fstype=ext4 --size=1024",
+            f"part btrfs.bfos --grow{chiffre}{phrase}",
+            "btrfs none --label=bfos btrfs.bfos",
+            "btrfs / --subvol --name=root LABEL=bfos",
+            "btrfs /var --subvol --name=var LABEL=bfos",
+        ]
+        return "\n".join(lignes) + "\n"
+
+    raise ProvisionError(f"plan de partitionnement inconnu : {mode!r}")
+
+
+def plan_par_defaut(run=None):
+    """Inspecte les disques reels et decide. Ne leve jamais : ne pas savoir
+    inspecter, c'est un cas de plus ou l'operateur tranche."""
+    import subprocess
+    run = run or (lambda cmd: subprocess.run(
+        cmd, capture_output=True, text=True, timeout=60))
+    try:
+        r = run(["lsblk", "-b", "-J", "-o",
+                 "NAME,PATH,TYPE,SIZE,FSTYPE,LABEL,RM,PARTTYPENAME"])
+        if r.returncode != 0:
+            return _ko("lsblk en echec")
+        plan = choisir_plan(inspecter_disques(r.stdout), taille_minimale_fs)
+        # ⚠️ INTERRUPTEUR, et pourquoi il existe.
+        # Ce changement en porte deux : ne plus effacer un disque a l'aveugle
+        # (gain de surete, vrai des maintenant), et retrecir le voisin pour
+        # cohabiter (code qui n'a JAMAIS touche un vrai disque portant un autre
+        # systeme). Les livrer ensemble ferait dependre le premier du second.
+        # Par defaut la cohabitation retombe donc sur la question a l'operateur
+        # — ce qui reste tres au-dessus de l'ancien comportement, qui effacait.
+        # A basculer a 1 une fois le retrecissement eprouve sur une VM jetable
+        # avec Windows installe, pas sur une machine de client.
+        if plan.get("mode") == "cohabitation" and not _env_drapeau(
+                "BFOS_COHABITATION", False):
+            return _ko(
+                f"cohabitation possible sur {plan['partition']} "
+                f"({plan['libere'] // _GIO} Gio liberables) mais le "
+                "retrecissement automatique n'est pas encore active "
+                "(BFOS_COHABITATION) — l'operateur tranche")
+        return plan
+    except Exception as exc:  # noqa: BLE001
+        return _ko(f"inspection impossible ({exc})")
+
+
+def write_autopart(passphrase=None, path=None, chiffrer=True, plan=None):
+    """Ecrit le partitionnement qu'Anaconda %include, et le verrouille.
+
+    Trois issues possibles, dans l'ordre de surete decroissante :
+      - « interactif » : que des commentaires, Anaconda pose la question ;
+      - « cohabitation » : on retrecit le voisin, on ne l'efface pas ;
+      - « disque_entier » : l'ancien comportement, sur un disque vierge.
+
+    0600, parce que pour la duree de l'installation ce fichier EST la cle du
+    disque. Pas de `except OSError: pass` sur le chmod : un chmod avale en
+    silence laissait la cle en 0644 sans que rien ne le dise.
     """
     path = path or AUTOPART_INCLUDE
+    if plan is None:
+        plan = plan_par_defaut()
     if not chiffrer:
-        # Aucune phrase ici, et il ne faut surtout pas en accepter une : un
-        # appelant qui passerait les deux se contredit.
-        write_private(path, AUTOPART_CLAIR + "\n")
-        return path
-    line = AUTOPART_BASE
-    if passphrase:
-        line = f"{AUTOPART_BASE} --passphrase={passphrase}"
-    # Pas de `except OSError: pass` ici : un chmod avalé en silence laissait la
-    # clé du disque en 0644 sans que rien ne le dise.
-    write_private(path, line + "\n")
+        # Un appelant qui passerait les deux se contredit : on n'accepte pas
+        # de phrase ici.
+        passphrase = None
+    write_private(path, render_partitionnement(plan, passphrase, chiffrer))
     return path
 
 
@@ -1208,7 +1467,7 @@ def run(env=None, post=_post_form, get=_get, sleep=time.sleep, out=None,
 
 def stage_enrolment(token, policy, env=None, out=None, post=_post_json,
                     path=None, autopart_path=None, gen=None, decider=None,
-                    marqueur_tpm=None, compte_path=None):
+                    marqueur_tpm=None, compte_path=None, plan=None):
     """Enrol this machine, stage the secret, and settle the disk passphrase.
 
     ⚠️ This is the `after_policy` seam, and `run()` documents that it must not
@@ -1239,7 +1498,7 @@ def stage_enrolment(token, policy, env=None, out=None, post=_post_json,
                                 path=path, autopart_path=autopart_path,
                                 gen=gen, decider=decider,
                                 marqueur_tpm=marqueur_tpm,
-                                compte_path=compte_path)
+                                compte_path=compte_path, plan=plan)
     except Exception as exc:  # noqa: BLE001 — the contract is: never raise
         out(f"[bfos] the enrolment step failed ({exc}); the policy already "
             "fetched is kept and the install goes on. Anaconda will ask for "
@@ -1249,7 +1508,7 @@ def stage_enrolment(token, policy, env=None, out=None, post=_post_json,
 
 def _stage_enrolment(token, policy, env=None, out=None, post=_post_json,
                      path=None, autopart_path=None, gen=None, decider=None,
-                     marqueur_tpm=None, compte_path=None):
+                     marqueur_tpm=None, compte_path=None, plan=None):
     """The body of stage_enrolment. Kept apart so the guard above is the only
     way in, and so nothing added here can quietly break the no-raise contract.
     """
@@ -1268,8 +1527,23 @@ def _stage_enrolment(token, policy, env=None, out=None, post=_post_json,
     # fiche machine d'Odoo mentirait sur ce que porte la machine.
     decider = decider or decider_chiffrement
     chiffrer, enroler_tpm = decider(out)
-    if not chiffrer:
-        write_autopart(path=autopart_path, chiffrer=False)
+
+    # Le plan de partitionnement se decide ICI, une seule fois, et il commande
+    # le sequestre. ⚠️ En mode « interactif » c'est ANACONDA qui demandera une
+    # phrase a l'operateur : celle qu'on tirerait n'ouvrirait rien. Deposer
+    # quand meme donnerait a Odoo une cle qui n'est pas celle du disque — pire
+    # que pas de cle du tout, parce qu'on la croirait bonne le jour ou elle
+    # servirait.
+    plan = plan if plan is not None else plan_par_defaut()
+    if plan.get("mode") == "interactif":
+        out("[bfos] partitionnement laisse a l'operateur "
+            f"({plan.get('raison', 'raison inconnue')}) ; aucune phrase de "
+            "disque n'est tiree ni deposee : celle qu'Anaconda demandera sera "
+            "la vraie, et elle n'appartiendra qu'a la personne presente.\n")
+        write_autopart(path=autopart_path, chiffrer=chiffrer, plan=plan)
+        chiffrer = False          # coupe le sequestre plus bas, sans le dupliquer
+    elif not chiffrer:
+        write_autopart(path=autopart_path, chiffrer=False, plan=plan)
 
     passphrase = ""
     if chiffrer and escrow_requested(policy):
@@ -1297,7 +1571,7 @@ def _stage_enrolment(token, policy, env=None, out=None, post=_post_json,
 
     if passphrase:
         if machine.get("disk_escrowed"):
-            write_autopart(passphrase, path=autopart_path)
+            write_autopart(passphrase, path=autopart_path, plan=plan)
             out("[bfos] disk passphrase drawn and deposited in Odoo; this "
                 "install will not ask for one\n")
             # Le compte de secours prend la MEME phrase. Ecrit ici et pas
