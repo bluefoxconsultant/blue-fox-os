@@ -845,6 +845,22 @@ def escrow_requested(policy) -> bool:
     return bool(block.get("enabled")) and bool(block.get("available"))
 
 
+def secours_voulu(policy):
+    """Le compte de secours est-il voulu par la politique ?
+
+    Cle `install.login.break_glass`, pilotee par bf_policy (2026-09-14).
+    ⚠️ ABSENTE = OUI. Une politique anterieure a cette cle ne doit pas perdre en
+    silence un chemin de recuperation : seule une politique qui dit
+    EXPLICITEMENT non retire le compte. Cette fonction existe a l'identique
+    dans bfos_provision.py et bfos_apply.py — deux scripts embarques separement
+    dans le kickstart, qui ne peuvent pas s'importer l'un l'autre. Un test
+    exige qu'ils tranchent pareil.
+    """
+    login = (((policy or {}).get("install") or {}).get("login") or {})
+    valeur = login.get("break_glass")
+    return True if valeur is None else bool(valeur)
+
+
 def write_compte(passphrase=None, path=None, nom=COMPTE_SECOURS, out=None):
     """Ecrit la ligne `user` que le %include du kickstart lit.
 
@@ -1802,9 +1818,19 @@ def _stage_enrolment(token, policy, env=None, out=None, post=_post_json,
             # ailleurs : seul ce point sait qu'Odoo la detient, donc qu'elle
             # sera revelable. Un compte ouvert sur une phrase perdue serait
             # une porte murée.
-            write_compte(passphrase, path=compte_path, out=out)
-            out(f"[bfos] compte de secours {COMPTE_SECOURS} ouvert sur la "
-                "phrase du disque (revelable dans Odoo)\n")
+            if secours_voulu(policy):
+                write_compte(passphrase, path=compte_path, out=out)
+                out(f"[bfos] compte de secours {COMPTE_SECOURS} ouvert sur la "
+                    "phrase du disque (revelable dans Odoo)\n")
+            else:
+                # La forme VERROUILLEE ecrite par le kickstart reste en place :
+                # elle satisfait Anaconda, qui refuse de commencer quand root
+                # est verrouille et qu'aucun usager n'existe. On n'y ecrit
+                # surtout PAS la phrase du disque — inutile de la poser dans
+                # /etc/shadow d'un compte que le %post va supprimer.
+                out(f"[bfos] la politique refuse le compte de secours : "
+                    f"{COMPTE_SECOURS} reste verrouille le temps de "
+                    "l'installation, et sera supprime au %post\n")
             if enroler_tpm:
                 # Le %post --nochroot lit ce marqueur ET la phrase dans
                 # /tmp/bfos-autopart.ks. Un marqueur explicite plutot qu'une

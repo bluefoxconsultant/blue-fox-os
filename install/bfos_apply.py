@@ -262,6 +262,9 @@ _SECRETS_DE_POLITIQUE = (("install", "login", "bind_password"),)
 
 PUBLIC_JSON = "/var/lib/bluefox-welcome/policy-public.json"
 
+# Meme nom que COMPTE_SECOURS dans bfos_provision.py, qui le cree au %pre.
+COMPTE_SECOURS = "bfos-secours"
+
 
 def render_public_policy(policy) -> str:
     """Rend la politique EXPURGEE, destinee a l'agent d'accueil.
@@ -289,6 +292,22 @@ def render_public_policy(policy) -> str:
         if isinstance(noeud, dict):
             noeud.pop(chemin[-1], None)
     return json.dumps(public, indent=2, ensure_ascii=False) + "\n"
+
+
+def secours_voulu(policy):
+    """Le compte de secours est-il voulu par la politique ?
+
+    Cle `install.login.break_glass`, pilotee par bf_policy (2026-09-14).
+    ⚠️ ABSENTE = OUI. Une politique anterieure a cette cle ne doit pas perdre en
+    silence un chemin de recuperation : seule une politique qui dit
+    EXPLICITEMENT non retire le compte. Cette fonction existe a l'identique
+    dans bfos_provision.py et bfos_apply.py — deux scripts embarques separement
+    dans le kickstart, qui ne peuvent pas s'importer l'un l'autre. Un test
+    exige qu'ils tranchent pareil.
+    """
+    login = (((policy or {}).get("install") or {}).get("login") or {})
+    valeur = login.get("break_glass")
+    return True if valeur is None else bool(valeur)
 
 
 def render_seat_sudoers(policy) -> str:
@@ -387,6 +406,25 @@ def apply(policy, root="/", run=subprocess.run, writer=None):
     if install.get("root") == "locked":
         record("root-lock", lambda: run(
             _chroot(root, ["passwd", "-l", "root"]), check=False))
+
+    # Compte de secours refuse par la politique (2026-09-14, demande d'Olivier
+    # pour BF). Le %pre l'a laisse VERROUILLE pour satisfaire Anaconda, qui
+    # refuse de commencer sans usager quand root est verrouille ; on le retire
+    # ici, installation faite.
+    #
+    # ⚠️ GARDE : on ne le retire QUE si la connexion passe par l'annuaire. En
+    # mode local, avec root verrouille, le supprimer laisserait une machine
+    # sans AUCUNE porte d'entree — pas un choix de politique, une machine
+    # murée. Dans ce cas on le garde, et on le dit.
+    if not secours_voulu(policy):
+        if login.get("mode") == "sssd":
+            record("secours-retire", lambda: run(
+                _chroot(root, ["userdel", "-r", COMPTE_SECOURS]), check=False))
+        else:
+            record("secours-garde", lambda: print(
+                f"[bfos-apply] la politique refuse {COMPTE_SECOURS}, mais la "
+                "connexion n'est pas en mode sssd : le retirer laisserait la "
+                "machine sans aucune porte d'entree. Compte conserve."))
 
     if login.get("mode") == "sssd":
         # Une politique en mode sssd sans URI d'annuaire ou sans identite de

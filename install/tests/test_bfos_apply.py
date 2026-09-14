@@ -404,3 +404,71 @@ def test_apply_ecrit_la_copie_expurgee_aussi_en_mode_local(tmp_path):
     p = {**POLICY, "install": {**POLICY["install"], "login": {"mode": "local"}}}
     ba.apply(p, root=str(tmp_path), run=lambda argv, check=False: None)
     assert (tmp_path / "var/lib/bluefox-welcome/policy-public.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Compte de secours optionnel (2026-09-14, demande d'Olivier pour BF)
+# ---------------------------------------------------------------------------
+import copy as _copy
+
+
+def _avec_secours(valeur, mode="sssd"):
+    p = _copy.deepcopy(POLICY)
+    p["install"]["login"]["mode"] = mode
+    if valeur is not None:
+        p["install"]["login"]["break_glass"] = valeur
+    return p
+
+
+def _userdels(policy, tmp_path):
+    calls = []
+    ba.apply(policy, root=str(tmp_path),
+             run=lambda argv, check=False: calls.append(argv))
+    return [c for c in calls if "userdel" in c]
+
+
+class TestSecoursVoulu:
+    def test_absent_vaut_oui(self):
+        """⚠️ Une politique d'avant cette cle ne perd pas son chemin de
+        recuperation en silence."""
+        assert ba.secours_voulu(_avec_secours(None)) is True
+
+    def test_explicite(self):
+        assert ba.secours_voulu(_avec_secours(True)) is True
+        assert ba.secours_voulu(_avec_secours(False)) is False
+
+    def test_politique_vide(self):
+        assert ba.secours_voulu({}) is True
+        assert ba.secours_voulu(None) is True
+
+    def test_les_deux_scripts_tranchent_pareil(self):
+        """Deux scripts embarques separement, qui ne peuvent pas s'importer :
+        s'ils divergeaient, le %pre ouvrirait un compte que le %post garde,
+        ou l'inverse."""
+        import bfos_provision as bp
+        for v in (None, True, False):
+            for mode in ("sssd", "local"):
+                pol = _avec_secours(v, mode)
+                assert ba.secours_voulu(pol) == bp.secours_voulu(pol), (v, mode)
+
+
+class TestRetraitDuCompteDeSecours:
+    def test_refuse_en_sssd_il_est_retire(self, tmp_path):
+        dels = _userdels(_avec_secours(False, "sssd"), tmp_path)
+        assert len(dels) == 1
+        assert dels[0][-1] == "bfos-secours"
+        assert "-r" in dels[0]
+
+    def test_voulu_il_est_conserve(self, tmp_path):
+        assert _userdels(_avec_secours(True), tmp_path) == []
+
+    def test_absent_il_est_conserve(self, tmp_path):
+        assert _userdels(_avec_secours(None), tmp_path) == []
+
+    def test_refuse_en_mode_local_il_est_garde_quand_meme(self, tmp_path, capsys):
+        """⚠️ LE GARDE. En mode local, root verrouille, retirer le compte de
+        secours laisserait une machine sans AUCUNE porte d'entree. Ce n'est
+        plus un choix de politique, c'est une machine muree."""
+        dels = _userdels(_avec_secours(False, "local"), tmp_path)
+        assert dels == []
+        assert "Compte conserve" in capsys.readouterr().out

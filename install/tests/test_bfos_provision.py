@@ -1773,3 +1773,41 @@ class TestApplicationsAuPremierDemarrage:
         texte = _template_text()
         assert texte.index("bfos_apply.py /var/lib/bluefox-welcome/provisioning.json") \
             < texte.index("timeout 1800 /usr/bin/system-flatpak-setup")
+
+
+class TestSecoursAuPre:
+    """Au %pre, un compte refuse reste verrouille et ne recoit JAMAIS la phrase
+    du disque — inutile de l'ecrire dans /etc/shadow d'un compte supprime au
+    %post."""
+
+    def _politique(self, valeur):
+        p = json.loads(json.dumps(POLICY_ESCROW))
+        p.setdefault("install", {}).setdefault("login", {})
+        if valeur is not None:
+            p["install"]["login"]["break_glass"] = valeur
+        return p
+
+    def _compte(self, tmp_path, valeur):
+        compte = tmp_path / "compte.ks"
+        compte.write_text("user --name=bfos-secours --groups=wheel --lock\n")
+        dit = []
+        bp.stage_enrolment(
+            "TOK", self._politique(valeur), env={"BFOS_ENROLL_URL": ENROLL_URL},
+            post=_enrol_escrow_ok, path=str(tmp_path / "machine.json"),
+            autopart_path=str(tmp_path / "autopart.ks"),
+            compte_path=str(compte), out=dit.append)
+        return compte.read_text(), dit
+
+    def test_refuse_il_reste_verrouille_sans_phrase(self, tmp_path):
+        ligne, dit = self._compte(tmp_path, False)
+        assert "--lock" in ligne
+        assert "--password" not in ligne
+        assert any("refuse le compte de secours" in m for m in dit)
+
+    def test_voulu_il_s_ouvre_sur_la_phrase(self, tmp_path):
+        ligne, _ = self._compte(tmp_path, True)
+        assert "--password=" in ligne
+
+    def test_absent_il_s_ouvre_comme_avant(self, tmp_path):
+        ligne, _ = self._compte(tmp_path, None)
+        assert "--password=" in ligne
