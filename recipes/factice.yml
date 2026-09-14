@@ -20,7 +20,17 @@ modules:
 
   - type: rpm-ostree
     repos:
-      - https://pkgs.tailscale.com/stable/fedora/tailscale.repo
+      # ⚠️ Fichier .repo VERSIONNE (files/rpm-ostree/tailscale.repo) plutot
+      # que telecharge a chaque construction (2026-09-14). pkgs.tailscale.com
+      # coupe ~1 connexion TLS sur 4 depuis charizard, et le module rpm-ostree
+      # le tirait par `curl --retry 5` — mais --retry ne reessaie PAS une
+      # erreur TLS (code 35) : il faudrait --retry-all-errors. Une coupure
+      # tuait donc la construction entiere, et elle a tue bf, bf-surface et
+      # factice tour a tour. Une entree sans http(s):// est COPIEE depuis
+      # $CONFIG_DIRECTORY/rpm-ostree/ par le module : aucun reseau. Les
+      # paquets, eux, restent tires par dnf, qui reessaie, et verifies
+      # (gpgcheck=1, repo_gpgcheck=1).
+      - tailscale.repo
     install:
       - tailscale
       - rclone           # P4.1 : rclone mount NC via systemd --user (BFOSP3)
