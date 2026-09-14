@@ -19,6 +19,7 @@ un échec d'une intégration ne bloque pas les autres ; tout résultat est journ
 """
 import argparse
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -210,6 +211,11 @@ def _wire_nc_login_poll(page, btn, status, nc_url, on_success):
     return timer
 
 
+def _euid() -> int:
+    """Isole pour les tests : on ne peut pas devenir root dans un test."""
+    return os.geteuid()
+
+
 def cli() -> int:
     parser = argparse.ArgumentParser(prog="bluefox-welcome")
     parser.add_argument("--service-mode", action="store_true",
@@ -219,6 +225,26 @@ def cli() -> int:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
+
+    # ⚠️ JAMAIS EN ROOT (mesure en VM le 2026-09-14).
+    # firstboot.service lancait cet agent en root, au demarrage, avant toute
+    # session. Root trouvait les identifiants Nextcloud deposes par
+    # l'installation, appliquait theme, fond d'ecran, montages rclone, comptes
+    # KDE et PWA dans SON profil — Path.home() vaut /root —, ecrivait
+    # /root/.config/bluefox-welcome/done, puis EFFACAIT les identifiants.
+    # Quand l'usager ouvrait sa session, il n'y avait plus rien a faire : fond
+    # d'ecran Fedora, pas de mode sombre, pas de montage.
+    #
+    # L'unite est retiree des recettes, mais un garde dans l'agent vaut mieux
+    # qu'une absence dans une recette : n'importe quel lanceur futur, une
+    # commande tapee avec sudo, reproduirait le defaut. On refuse AVANT de lire
+    # la politique et AVANT de toucher aux identifiants, qui ne se reposent pas.
+    if _euid() == 0:
+        LOG.error("bluefox-welcome ne tourne pas en root : tout ce qu'il "
+                  "applique vit dans le profil de l'usager, et il consommerait "
+                  "des identifiants deposes pour une seule session. Il demarre "
+                  "de lui-meme a l'ouverture de session (/etc/xdg/autostart).")
+        return 1
 
     if args.reset:
         for flag in (DONE_FLAG,):

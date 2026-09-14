@@ -4,6 +4,7 @@ main.py imports PyQt6 only inside the flow functions, so these stay Qt-free:
 the dispatch tests mock the two flow functions, and the apply tests mock
 _finalize_and_apply.
 """
+import sys
 from unittest import mock
 
 from bluefox_welcome import main
@@ -123,3 +124,46 @@ def test_le_depot_n_est_pas_efface_quand_il_n_a_pas_servi():
          mock.patch.object(main, "_run_provisioned_flow_sso", return_value=0):
         main._run_provisioned_flow({"slug": "bf"}, POLICY)
     effacer.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Jamais en root (mesure en VM le 2026-09-14)
+# ---------------------------------------------------------------------------
+# firstboot.service lancait l'agent en root avant toute session. Root
+# consommait les identifiants Nextcloud et appliquait le profil dans /root :
+# fond d'ecran Fedora, pas de mode sombre, pas de montage pour l'usager.
+
+
+def test_en_root_l_agent_refuse_avant_de_toucher_a_quoi_que_ce_soit(monkeypatch):
+    monkeypatch.setattr(main, "_euid", lambda: 0)
+    monkeypatch.setattr(sys, "argv", ["bluefox-welcome", "--service-mode"])
+    with mock.patch.object(main, "load_provisioning") as politique, \
+         mock.patch.object(main.seat_credentials, "lire") as lire, \
+         mock.patch.object(main.seat_credentials, "effacer") as effacer, \
+         mock.patch.object(main, "run_wizard") as assistant:
+        rc = main.cli()
+    assert rc == 1
+    politique.assert_not_called()     # ne lit meme pas la politique
+    lire.assert_not_called()
+    effacer.assert_not_called()       # ⚠️ les identifiants ne se reposent pas
+    assistant.assert_not_called()
+
+
+def test_en_root_le_drapeau_termine_n_est_pas_ecrit(monkeypatch, tmp_path):
+    drapeau = tmp_path / "done"
+    monkeypatch.setattr(main, "_euid", lambda: 0)
+    monkeypatch.setattr(main, "DONE_FLAG", drapeau)
+    monkeypatch.setattr(sys, "argv", ["bluefox-welcome"])
+    main.cli()
+    assert not drapeau.exists()
+
+
+def test_en_usager_l_agent_poursuit(monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "_euid", lambda: 1000)
+    monkeypatch.setattr(main, "DONE_FLAG", tmp_path / "done")
+    monkeypatch.setattr(sys, "argv", ["bluefox-welcome", "--service-mode"])
+    with mock.patch.object(main, "load_tenant", return_value={"slug": "bf"}), \
+         mock.patch.object(main, "load_provisioning", return_value=POLICY), \
+         mock.patch.object(main, "run_wizard", return_value=0) as assistant:
+        assert main.cli() == 0
+    assistant.assert_called_once()

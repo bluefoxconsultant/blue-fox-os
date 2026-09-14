@@ -223,7 +223,12 @@ modules:
       enabled:
         - rpm-ostreed-automatic.timer
         - bluefox-rebase.service   # premier rebase apres install KS, conditionne au sentinelle
-        - firstboot.service        # P4.1 : welcome wizard au premier boot, conditionne au sentinelle /var/lib/bluefox-welcome/done
+        # ⚠️ firstboot.service RETIRE le 2026-09-14. Il lancait l'agent d'accueil
+        # EN TANT QUE ROOT, au demarrage, avant toute session : l'agent trouvait
+        # les identifiants Nextcloud, appliquait theme, fond d'ecran, montages et
+        # PWA dans /root, puis effacait les identifiants. La session de l'usager
+        # n'avait plus rien a faire. Le lanceur /etc/xdg/autostart suffit, et
+        # l'unite le documentait elle-meme sans en tirer la consequence.
         # Auto-deverrouillage LUKS par TPM2, pilote par la policy Odoo
         # (policies.tpm_autounlock). Inerte tant que le champ est a faux, donc
         # sans effet sur les machines existantes. Doit rester une unite ROOT :

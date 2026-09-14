@@ -42,10 +42,6 @@ CalDAV, CardDAV, et l'imprimante réseau.
 %pyproject_install
 %pyproject_save_files bluefox_welcome
 
-# Service systemd
-mkdir -p %{buildroot}%{_unitdir}
-install -m 0644 firstboot.service %{buildroot}%{_unitdir}/firstboot.service
-
 # Marqueur d'état
 mkdir -p %{buildroot}%{_localstatedir}/lib/bluefox-welcome
 
@@ -53,17 +49,7 @@ mkdir -p %{buildroot}%{_localstatedir}/lib/bluefox-welcome
 %license LICENSE
 %doc README.md
 %{_bindir}/bluefox-welcome
-%{_unitdir}/firstboot.service
 %dir %{_localstatedir}/lib/bluefox-welcome
-
-%post
-%systemd_post firstboot.service
-
-%preun
-%systemd_preun firstboot.service
-
-%postun
-%systemd_postun_with_restart firstboot.service
 
 %changelog
 * Tue Apr 28 2026 Olivier Morneau <olivier@bluefoxconsultant.com> - 0.2.0-1

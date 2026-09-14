@@ -149,7 +149,12 @@ modules:
     system:
       enabled:
         - rpm-ostreed-automatic.timer
-        - firstboot.service        # P4.1 : welcome wizard au premier boot
+        # ⚠️ firstboot.service RETIRE le 2026-09-14. Il lancait l'agent d'accueil
+        # EN TANT QUE ROOT, au demarrage, avant toute session : l'agent trouvait
+        # les identifiants Nextcloud, appliquait theme, fond d'ecran, montages et
+        # PWA dans /root, puis effacait les identifiants. La session de l'usager
+        # n'avait plus rien a faire. Le lanceur /etc/xdg/autostart suffit, et
+        # l'unite le documentait elle-meme sans en tirer la consequence.
       masked:
         - tailscaled.service
 
