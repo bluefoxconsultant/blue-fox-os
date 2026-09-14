@@ -1870,6 +1870,56 @@ def _apres_politique(token, policy, out):
     obtenir_identifiants_nextcloud(token, policy, out=out)
 
 
+def assurer_plan_de_partitionnement(out=None, path=None, plan_fn=None):
+    """Garantit qu'un plan de partitionnement est ecrit, quoi qu'il arrive.
+
+    ⚠️ LE DEFAUT QUE CETTE FONCTION FERME (mesure en VM le 2026-09-14).
+    Le plan etait ecrit dans _stage_enrolment, et DEUX chemins le sautaient :
+      1. le flux d'appareil echoue — un code non autorise dans les dix minutes,
+         cas NORMAL et non une panne — : main() part sur la politique de repli
+         sans jamais appeler _stage_enrolment ;
+      2. le flux reussit mais aucune adresse d'enrolement n'est derivable :
+         _stage_enrolment sort par `return None` AVANT de calculer le plan.
+    Dans les deux cas le filet du kickstart — un simple commentaire depuis
+    qu'il ne peut plus effacer un disque — restait tel quel, et Anaconda
+    affichait « Kickstart insufficient » sur un disque VIERGE.
+
+    Or l'inspection des disques n'a besoin d'aucune autorisation : seule la
+    phrase du disque en depend. On decide donc OU s'installer dans tous les
+    cas ; sans phrase sequestree, Anaconda demandera la phrase, ce qui est le
+    comportement documente quand le sequestre n'aboutit pas.
+
+    N'ecrase JAMAIS un plan reel : si le fichier porte deja une directive
+    active (celle du sequestre, avec sa phrase, ou un choix explicite de ne
+    pas chiffrer), on n'y touche pas. Un plan « interactif » delibere ne porte
+    que des commentaires ; le recalculer rend le meme resultat sur les memes
+    disques, donc c'est sans effet. Ne leve jamais : main() ne doit pas
+    avorter l'installation.
+    """
+    out = out or (lambda _m: None)
+    path = path or AUTOPART_INCLUDE
+    try:
+        with open(path, encoding="utf-8") as fh:
+            actives = [l for l in fh.read().splitlines()
+                       if l.strip() and not l.lstrip().startswith("#")]
+        if actives:
+            return False
+    except OSError:
+        pass
+    try:
+        plan = (plan_fn or plan_par_defaut)()
+        write_autopart(path=path, chiffrer=True, plan=plan)
+        out(f"[bfos] partitionnement decide sans flux d'appareil abouti : "
+            f"{plan.get('mode')}"
+            + (f" ({plan.get('raison')})" if plan.get("raison") else "")
+            + " ; la phrase du disque sera demandee a l'installation\n")
+        return True
+    except Exception as exc:  # noqa: BLE001 — ne jamais avorter l'installation
+        out(f"[bfos] partitionnement non decide ({exc}) ; Anaconda "
+            "demandera ou s'installer\n")
+        return False
+
+
 def main(argv=None):
     out = _console_writer()
     try:
@@ -1884,6 +1934,8 @@ def main(argv=None):
     # The staged policy carries the operator login + LDAP endpoints (no token),
     # so keep it owner-only rather than the installer's default umask (0o644).
     write_private(STAGED_JSON, json.dumps(policy))
+    # Toujours, reussite comme repli : voir assurer_plan_de_partitionnement.
+    assurer_plan_de_partitionnement(out=out)
     return 0
 
 

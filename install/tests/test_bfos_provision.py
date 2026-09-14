@@ -1811,3 +1811,74 @@ class TestSecoursAuPre:
     def test_absent_il_s_ouvre_comme_avant(self, tmp_path):
         ligne, _ = self._compte(tmp_path, None)
         assert "--password=" in ligne
+
+
+class TestPartitionnementToujoursDecide:
+    """⚠️ Mesure en VM le 2026-09-14 : un code d'appareil non autorise dans les
+    dix minutes laissait Anaconda sur « Kickstart insufficient », sur un disque
+    VIERGE. Le plan n'etait ecrit que dans _stage_enrolment, que deux chemins
+    sautaient."""
+
+    FILET = "# Partitionnement non decide : la preparation a echoue avant cette etape.\n"
+    VIERGE = {"mode": "disque_entier", "disque": "/dev/vda"}
+
+    def test_le_filet_seul_est_remplace_par_un_plan(self, tmp_path):
+        f = tmp_path / "autopart.ks"
+        f.write_text(self.FILET)
+        assert bp.assurer_plan_de_partitionnement(
+            path=str(f), plan_fn=lambda: dict(self.VIERGE)) is True
+        assert f.read_text().strip() == "autopart --type=btrfs --encrypted --nohome"
+
+    def test_sans_phrase_anaconda_la_demandera(self, tmp_path):
+        """Sans sequestre abouti, pas de phrase dans la ligne : c'est le
+        comportement documente, la personne presente choisit la sienne."""
+        f = tmp_path / "autopart.ks"
+        f.write_text(self.FILET)
+        bp.assurer_plan_de_partitionnement(path=str(f), plan_fn=lambda: dict(self.VIERGE))
+        assert "--passphrase" not in f.read_text()
+
+    def test_n_ecrase_jamais_le_plan_du_sequestre(self, tmp_path):
+        """⚠️ Le plan ecrit par le sequestre porte la phrase qu'Odoo detient.
+        L'ecraser par une ligne sans phrase ferait demander une AUTRE phrase,
+        et Odoo detiendrait une cle qui n'ouvre rien."""
+        f = tmp_path / "autopart.ks"
+        f.write_text("autopart --type=btrfs --encrypted --nohome --passphrase=SECRET\n")
+        assert bp.assurer_plan_de_partitionnement(
+            path=str(f), plan_fn=lambda: dict(self.VIERGE)) is False
+        assert "--passphrase=SECRET" in f.read_text()
+
+    def test_n_ecrase_pas_un_choix_de_ne_pas_chiffrer(self, tmp_path):
+        f = tmp_path / "autopart.ks"
+        f.write_text("autopart --type=btrfs --nohome\n")
+        bp.assurer_plan_de_partitionnement(path=str(f), plan_fn=lambda: dict(self.VIERGE))
+        assert f.read_text().strip() == "autopart --type=btrfs --nohome"
+
+    def test_fichier_absent_il_est_ecrit(self, tmp_path):
+        f = tmp_path / "absent.ks"
+        assert bp.assurer_plan_de_partitionnement(
+            path=str(f), plan_fn=lambda: dict(self.VIERGE)) is True
+        assert "autopart" in f.read_text()
+
+    def test_ne_leve_jamais(self, tmp_path):
+        def explose():
+            raise RuntimeError("lsblk en feu")
+        f = tmp_path / "autopart.ks"
+        f.write_text(self.FILET)
+        dit = []
+        assert bp.assurer_plan_de_partitionnement(
+            path=str(f), plan_fn=explose, out=dit.append) is False
+        assert any("non decide" in m for m in dit)
+
+    def test_main_decide_meme_quand_le_flux_d_appareil_echoue(self, tmp_path, monkeypatch):
+        """Le chemin exact de l'essai en VM : code expire, repli sur la
+        politique par defaut — et le plan doit quand meme etre ecrit."""
+        f = tmp_path / "autopart.ks"
+        f.write_text(self.FILET)
+        monkeypatch.setattr(bp, "AUTOPART_INCLUDE", str(f))
+        monkeypatch.setattr(bp, "STAGED_JSON", str(tmp_path / "staged.json"))
+        monkeypatch.setattr(bp, "_console_writer", lambda: (lambda m: None))
+        def run_qui_expire(**k):
+            raise bp.ProvisionError("token error: expired_token")
+        monkeypatch.setattr(bp, "run", run_qui_expire)
+        assert bp.main() == 0
+        assert f.read_text().strip() == "autopart --type=btrfs --encrypted --nohome"
