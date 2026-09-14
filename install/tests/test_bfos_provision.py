@@ -1,5 +1,6 @@
 import io
 import json
+import re
 import os
 import urllib.error
 
@@ -1688,3 +1689,87 @@ class TestPeripheriquesVirtuels:
              "size": 500 * 1024**3, "rm": False},
         ]})
         assert len(bp.inspecter_disques(arbre)) == 1
+
+
+class TestEcranAuxCouleursDeMarque:
+    """QR brande (2026-09-14) : renard ASCII et cyan de marque dans le panneau.
+
+    Deux garanties ne doivent pas ceder a l'habillage : le QR reste noir sur
+    blanc, et la mise en page se mesure sans les sequences ANSI."""
+
+    D = {"verification_uri": "https://auth.bluefoxconsultant.com/device",
+         "verification_uri_complete":
+             "https://auth.bluefoxconsultant.com/device?code=587428573",
+         "user_code": "587428573"}
+
+    def test_la_couleur_de_marque_est_presente(self):
+        e = bp.composer_ecran(self.D)
+        assert bp._MARQUE in e
+        assert "BLUE FOX OS" in bp._sans_ansi(e)
+
+    def test_le_qr_n_est_jamais_teinte(self):
+        """⚠️ Un QR colore se lit moins bien. Aucune ligne qui porte l'encre
+        noire-sur-blanc du QR ne doit porter aussi le cyan de marque AVANT la
+        fin du QR."""
+        for ligne in bp.composer_ecran(self.D).split("\n"):
+            if bp._QR_ENCRE in ligne:
+                qr = ligne.split(bp._QR_FIN, 1)[0]
+                assert bp._MARQUE not in qr, "le QR a ete teinte"
+
+    def test_les_couleurs_ne_font_pas_basculer_en_pile(self):
+        """Compter les sequences ANSI dans la largeur ferait croire que le
+        panneau deborde, et empilerait l'ecran sans raison."""
+        plat = [bp._sans_ansi(l) for l in bp.composer_ecran(self.D).split("\n")]
+        cote_a_cote = [l for l in plat if "Balayez" in l and "█" in l or
+                       ("Balayez" in l and l.startswith(" "))]
+        assert any("Balayez" in l for l in plat)
+        assert max(len(l) for l in plat if l) <= 78
+        assert len([l for l in plat if l or True]) <= 25
+
+    def test_le_renard_est_en_ascii_pur(self):
+        """Les symboles hors ASCII non eprouves dans la police de la console
+        s'afficheraient en losange a point d'interrogation."""
+        for ligne in bp._RENARD:
+            assert ligne.isascii(), ligne
+
+    def test_la_largeur_visible_ignore_les_couleurs(self):
+        assert bp._largeur_visible(bp._MARQUE + "abc" + bp._FIN) == 3
+
+
+class TestApplicationsAuPremierDemarrage:
+    """Les Flatpak s'installent pendant l'installation (2026-09-14)."""
+
+    def _sections(self):
+        texte = _template_text()
+        return re.findall(r"^%post([^\n]*)\n(.*?)^%end", texte, re.M | re.S)
+
+    def _section_flatpak(self):
+        for entete, corps in self._sections():
+            if "system-flatpak-setup" in corps:
+                return entete, corps
+        return None, None
+
+    def test_une_section_installe_les_applications(self):
+        entete, corps = self._section_flatpak()
+        assert corps is not None, "aucune section %post n'installe les Flatpak"
+
+    def test_un_echec_flathub_ne_coute_jamais_la_machine(self):
+        """⚠️ Le coeur du sujet. Le %post voisin porte --erroronfail : une
+        erreur y fait avorter l'installation ENTIERE. Un telechargement Flathub
+        rate ne doit jamais couter une machine — le minuteur du demarrage
+        rattrape ce qui manque, puisque le script est idempotent."""
+        entete, _ = self._section_flatpak()
+        assert "--erroronfail" not in entete, \
+            "la section Flatpak ferait echouer l'installation sur un reseau lent"
+
+    def test_la_section_est_plafonnee_dans_le_temps(self):
+        _, corps = self._section_flatpak()
+        assert re.search(r"\btimeout\s+\d+\s+/usr/bin/system-flatpak-setup", corps), \
+            "sans plafond, un Flathub qui traine figerait Anaconda"
+
+    def test_elle_passe_apres_l_ecriture_de_la_liste_de_la_politique(self):
+        """bfos_apply.py ecrit la liste de la politique dans /etc ; installer
+        avant, ce serait installer la liste de l'image seule."""
+        texte = _template_text()
+        assert texte.index("bfos_apply.py /var/lib/bluefox-welcome/provisioning.json") \
+            < texte.index("timeout 1800 /usr/bin/system-flatpak-setup")

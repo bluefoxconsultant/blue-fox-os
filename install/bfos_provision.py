@@ -577,8 +577,37 @@ _HAUTEUR_MAX = 24
 _ECART = 2  # colonnes entre le QR et le texte
 
 
+# Couleurs de marque en console. La console du noyau n'a que 16 couleurs : le
+# bleu Blue Fox #29ABE2 n'y existe pas, et le plus proche est le cyan VIF.
+# `1;36` (gras + cyan) plutot que `96` : le cyan vif en 90-97 depend de la
+# version du noyau, le gras-cyan rend vif sur TOUTES les consoles.
+_MARQUE = "\x1b[1;36m"
+_GRAS = "\x1b[1m"
+_FIN = "\x1b[0m"
+
+# Renard en caracteres ASCII purs. Les demi-blocs du QR sont eprouves dans la
+# police de la console ; les symboles comme les triangles ne le sont pas, et un
+# glyphe manquant s'affiche en losange a point d'interrogation. On reste donc
+# sur l'ASCII, qui s'affiche partout.
+_RENARD = (
+    r" /\     /\ ",
+    r"/  \___/  \ ",
+    r"\  o   o  / ",
+    r" \___v___/ ",
+)
+
+
+def _largeur_visible(ligne):
+    """Largeur a l'ecran, sans les sequences ANSI. Les compter gonflerait la
+    mesure et ferait basculer l'ecran en pile sans raison."""
+    return len(_sans_ansi(ligne))
+
+
 def _panneau(uri, code):
-    return [
+    renard = [_MARQUE + r + _FIN for r in _RENARD]
+    renard[1] += _GRAS + "   BLUE FOX OS" + _FIN
+    renard[2] += "   autorisation"
+    return renard + [
         "",
         "Cette machine demande a rejoindre",
         "votre organisation.",
@@ -587,13 +616,10 @@ def _panneau(uri, code):
         "    l'appareil photo du telephone.",
         "",
         "2.  Ou ouvrez cette adresse :",
-        "",
-        "  " + _hote_lisible(uri),
+        "  " + _MARQUE + _hote_lisible(uri) + _FIN,
         "",
         "3.  Puis entrez ce code :",
-        "",
-        "  " + _grouper_code(code),
-        "",
+        "  " + _GRAS + _grouper_code(code) + _FIN,
         "",
         "L'installation se poursuivra au nom",
         "de qui autorise.",
@@ -621,12 +647,13 @@ def composer_ecran(d, qr=True):
 
     # Cote a cote seulement si les deux colonnes tiennent vraiment. Une URL
     # plus longue donnerait un QR de version superieure, donc plus large.
-    besoin = largeur_qr + _ECART + max(len(x) for x in droite)
+    besoin = largeur_qr + _ECART + max(_largeur_visible(x) for x in droite)
     cote_a_cote = bool(gauche) and besoin <= _LARGEUR
 
     titre = " BLUE FOX OS "
     queue = " autorisation "
-    lignes = [titre + "-" * max(1, _LARGEUR - len(titre) - len(queue)) + queue]
+    regle = "-" * max(1, _LARGEUR - len(titre) - len(queue))
+    lignes = [_MARQUE + titre + _FIN + regle + queue]
 
     if cote_a_cote:
         for i in range(max(len(gauche), len(droite))):

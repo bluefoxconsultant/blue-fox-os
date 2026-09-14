@@ -369,3 +369,42 @@ fi
 # desormais bluefox-rebase lui-meme qui compare avant d'agir.
 touch /var/lib/bluefox-welcome/needs-rebase
 %end
+
+# ---------------------------------------------------------------------------
+# Applications installees PENDANT l'installation (#22436, 2026-09-14)
+# ---------------------------------------------------------------------------
+# Exigence d'Olivier : « il faut que les installations soient completees au
+# first boot ». Jusqu'ici les Flatpak arrivaient APRES le demarrage, par le
+# minuteur de system-flatpak-setup, en arriere-plan et sans aucun signe
+# visible. Un usager qui ouvrait sa session tout de suite trouvait une machine
+# sans navigateur, sans Nextcloud, sans Bitwarden — et concluait a une panne.
+#
+# On appelle ICI le meme script que le demarrage, plutot que de reimplementer
+# l'installation : meme liste (celle de l'image combinee a celle de la
+# politique, que bfos_apply.py vient d'ecrire dans /etc), meme depot Flathub
+# (preconfigure dans /etc/flatpak/remotes.d/), memes retraits.
+#
+# ⚠️ POURQUOI UN %post A PART, SANS --erroronfail. Le bloc precedent echoue
+# l'installation entiere sur la moindre erreur. Un telechargement Flathub qui
+# rate — reseau lent, Flathub indisponible — ne doit JAMAIS couter une
+# machine : le script est idempotent (il n'installe que ce qui manque, par
+# `comm -23` entre la liste voulue et `flatpak list`), donc le minuteur au
+# demarrage rattrape exactement ce qui n'est pas passe ici. Ce bloc accelere ;
+# il ne remplace pas le filet.
+#
+# Plafonne a 30 minutes : 1 a 2 Go de runtimes et d'applications au premier
+# passage. Au-dela on rend la main a Anaconda plutot que de le figer.
+%post --log=/var/log/bfos-flatpaks-install.log
+echo "[bfos-flatpaks] debut $(date -Is)"
+if [ -x /usr/bin/system-flatpak-setup ]; then
+  if timeout 1800 /usr/bin/system-flatpak-setup; then
+    echo "[bfos-flatpaks] termine"
+  else
+    echo "[bfos-flatpaks] incomplet (code $?) : le minuteur du demarrage rattrapera ce qui manque"
+  fi
+else
+  echo "[bfos-flatpaks] system-flatpak-setup absent de l'image : rien a faire ici"
+fi
+flatpak list --system --app --columns=application 2>/dev/null | sed 's/^/[bfos-flatpaks] installe : /'
+echo "[bfos-flatpaks] fin $(date -Is)"
+%end
