@@ -219,7 +219,8 @@ def _euid() -> int:
 def cli() -> int:
     parser = argparse.ArgumentParser(prog="bluefox-welcome")
     parser.add_argument("--service-mode", action="store_true",
-                        help="Lance par firstboot.service ; check etat avant wizard.")
+                        help="Accepte pour compatibilite avec le lanceur de session ; "
+                             "sans effet (firstboot.service est retire).")
     parser.add_argument("--reset", action="store_true",
                         help="Dev only : retire les flags d'etat et relance le wizard.")
     args = parser.parse_args()

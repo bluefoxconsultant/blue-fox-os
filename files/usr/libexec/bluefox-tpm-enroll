@@ -4,7 +4,10 @@
 #
 # POURQUOI UN SERVICE ROOT ET PAS UN apply_* DE L'AGENT WELCOME
 # `systemd-cryptenroll` doit tourner en root, alors que l'agent welcome tourne
-# en tant que l'utilisateur fraichement cree (cf. firstboot.service). Passer par
+# en tant que l'usager, dans sa session (lanceur /etc/xdg/autostart).
+# ⚠️ CE COMMENTAIRE CITAIT firstboot.service COMME PREUVE, jusqu'au 2026-09-14 —
+# et c'est precisement cette unite qui lancait l'agent EN ROOT, avant toute
+# session. Elle est retiree ; l'affirmation est desormais vraie. Passer par
 # pkexec depuis Qt donnerait une elevation sans tty, et systemd-cryptenroll a
 # besoin de lire la phrase de passe existante. On reste donc dans une unite
 # root, qui demande la phrase via `systemd-ask-password` — l'agent de mot de

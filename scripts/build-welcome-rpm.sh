@@ -104,7 +104,6 @@ mkdir -p "$STAGE"
 cp -a "$WELCOME_DIR/bluefox_welcome" "$STAGE/"
 cp -a "$WELCOME_DIR/pyproject.toml" "$STAGE/"
 cp -a "$WELCOME_DIR/README.md" "$STAGE/"
-cp -a "$WELCOME_DIR/firstboot.service" "$STAGE/"
 # Le spec reference %license LICENSE — on copie le LICENSE root du repo.
 cp -a "$REPO_ROOT/LICENSE" "$STAGE/LICENSE"
 
