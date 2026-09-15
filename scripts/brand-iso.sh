@@ -67,7 +67,10 @@ WORKDIR="$(cd "$(dirname "$0")/.." && pwd)"
 # Titres volontairement SANS accents : la console GRUB en mode texte ne rend
 # pas les caracteres non-ASCII de façon fiable selon le micrologiciel.
 BF_PARAMS="inst.profile=blue-fox-os inst.keymap=ca inst.lang=fr_CA.UTF-8"
-ZEROTOUCH_DEFAULT_DOMAIN="bluefoxconsultant.com"
+# Domaine propose, pre-rempli, a la question « a quelle organisation ? » de
+# l'amorce (Entree seule le prend). Surchargeable pour une ISO dont la
+# proposition serait un client : ZEROTOUCH_DEFAULT_DOMAIN=client.com.
+ZEROTOUCH_DEFAULT_DOMAIN="${ZEROTOUCH_DEFAULT_DOMAIN:-bluefoxconsultant.com}"
 
 log()  { echo "[brand-iso] $*"; }
 die()  { echo "[brand-iso] ERREUR: $*" >&2; exit 1; }
@@ -81,9 +84,18 @@ command -v xorriso >/dev/null 2>&1 || die "xorriso introuvable.
 command -v mcopy >/dev/null 2>&1 || die "mcopy (mtools) introuvable — requis pour
     editer le grub.cfg a l'interieur de /images/efiboot.img.
     Arch/Garuda : sudo pacman -S --needed mtools"
+command -v python3 >/dev/null 2>&1 || die "python3 introuvable — requis pour rendre
+    le kickstart d'amorce (scripts/render_amorce_ks.py)."
 
 TMPDIR="$(mktemp -d)"
 trap 'chmod -R u+w "${TMPDIR}" 2>/dev/null; rm -rf "${TMPDIR}"' EXIT
+
+# Kickstart d'amorce : c'est lui que l'entree zero-touch demarre. Rendu AVANT
+# de toucher a l'ISO, pour qu'un echec de rendu ne laisse rien a moitie fait.
+AMORCE_KS="${TMPDIR}/bfos-amorce.ks"
+python3 "${WORKDIR}/scripts/render_amorce_ks.py" \
+    --domaine-defaut "${ZEROTOUCH_DEFAULT_DOMAIN}" > "${AMORCE_KS}" \
+    || die "rendu du kickstart d'amorce impossible"
 
 # Volume id : on le lit pour verifier, jamais pour le changer.
 read_volid() {
@@ -124,13 +136,15 @@ patch_menu() {
     sed -i -E "s|submenu 'Troubleshooting -->'|submenu 'Depannage -->'|" "$cfg"
 }
 
-# Entree zero-touch (BFOSD10) : elle va chercher le kickstart servi par
-# bf_zerotouch_install. On la CONSTRUIT A PARTIR des lignes linux/initrd de la
-# premiere entree d'origine — jamais de zero — pour heriter du bon nom de
+# Entree zero-touch (BFOSD10) : elle demarre sur le kickstart d'amorce depose
+# dans l'ISO (/bfos-amorce.ks), qui demande le domaine de l'organisation A
+# L'ECRAN, le verifie, puis enchaine sur le kickstart que cette organisation
+# sert (bf_zerotouch_install). On la CONSTRUIT A PARTIR des lignes linux/initrd
+# de la premiere entree d'origine — jamais de zero — pour heriter du bon nom de
 # commande et du bon inst.stage2.
 #
-# ⚠️ AUCUNE INVITE : le domaine est pose en dur (#23940, 2026-09-01)
-# ------------------------------------------------------------------
+# ⚠️ AUCUNE INVITE DANS GRUB (#23940, 2026-09-01) — la question vit dans l'amorce
+# -------------------------------------------------------------------------------
 # Cette entree a longtemps demande le domaine par `read bf_domain`. Elle n'a
 # JAMAIS pu demarrer en UEFI, donc sur aucune vraie machine :
 #
@@ -146,27 +160,35 @@ patch_menu() {
 # En BIOS ca passait, read.mod etant sur le media. D'ou un defaut invisible tant
 # que personne n'avait demarre l'entree pour de vrai.
 #
-# Pointer une autre organisation reste possible : « e » au menu, editer la ligne
-# set bf_domain, Ctrl-X. C'est le seul cas ou la saisie servait.
+# Du 2026-09-01 au 2026-09-15, le domaine est reste en dur dans le menu, et une
+# autre organisation passait par « e ». La question est maintenant posee par
+# l'amorce, dans l'installateur, ou le reseau permet de VERIFIER la reponse
+# avant de s'en servir. Imposer un domaine sans question reste possible : « e »,
+# ajouter bfos.domaine=<domaine> a la ligne linux, Ctrl-X.
 prepend_zerotouch_entry() {
     local cfg="$1"
     local linux_line initrd_line cmd
 
     # Idempotence : un second passage sur une ISO deja brandee prendrait la
     # ligne linux de l'entree zero-touch elle-meme comme modele, et empilerait
-    # un doublon portant deja ${bf_domain}. On retire donc l'entree existante
+    # un doublon portant deja l'amorce. On retire donc l'entree existante
     # avant de reconstruire, et on choisit un modele qui n'est pas elle.
+    # (Une ISO brandee avant l'amorce porte encore bf_domain : meme traitement.)
     if grep -q "menuentry 'Installer Blue Fox OS (zero-touch)'" "$cfg"; then
+        # Les lignes vides qui suivent l'entree partent avec elle : sinon chaque
+        # passage en ajoutait une (le menu du 2026-09-11 en portait quatre).
         awk '
             /^menuentry .Installer Blue Fox OS \(zero-touch\)./ { skip = 1; next }
-            skip && /^\}/                                       { skip = 0; next }
-            !skip                                               { print }
+            skip && /^\}/                                       { skip = 0; vide = 1; next }
+            skip                                                { next }
+            vide && /^[[:space:]]*$/                            { next }
+                                                                { vide = 0; print }
         ' "$cfg" > "${cfg}.sanszt" && mv "${cfg}.sanszt" "$cfg"
         log "  entree zero-touch precedente retiree (reconstruction)"
     fi
 
-    linux_line="$(grep -m1 -E '^[[:space:]]*linux(efi)?[[:space:]]+/images/pxeboot/vmlinuz' "$cfg" \
-        | grep -v 'bf_domain' || true)"
+    linux_line="$(grep -E '^[[:space:]]*linux(efi)?[[:space:]]+/images/pxeboot/vmlinuz' "$cfg" \
+        | grep -v -E 'bf_domain|bfos-amorce' | head -1 || true)"
     initrd_line="$(grep -m1 -E '^[[:space:]]*initrd(efi)?[[:space:]]+' "$cfg" || true)"
     if [ -z "${linux_line}" ] || [ -z "${initrd_line}" ]; then
         log "  pas d'entree modele exploitable — zero-touch non ajoutee"
@@ -174,21 +196,27 @@ prepend_zerotouch_entry() {
     fi
     cmd="$(echo "${linux_line}" | awk '{print $1}')"
 
-    # Remplace le kickstart embarque par celui servi par le domaine saisi.
-    local zt_linux
-    zt_linux="$(echo "${linux_line}" \
-        | sed -E "s|inst\.ks=[^[:space:]]+|inst.ks=https://\\\${bf_domain}/blue-fox-install.ks|")"
-    # Si l'entree modele n'avait pas d'inst.ks, on l'ajoute.
-    echo "${zt_linux}" | grep -q 'inst\.ks=' \
-        || zt_linux="${zt_linux} inst.ks=https://\${bf_domain}/blue-fox-install.ks"
-    # Le zero-touch a besoin du reseau.
-    echo "${zt_linux}" | grep -q '(^| )ip=' || zt_linux="${zt_linux} ip=dhcp"
+    # Le kickstart de l'entree devient l'amorce, lue sur le MEME volume que le
+    # stage2 : on reprend le jeton hd:LABEL=... d'inst.stage2 tel quel, echappes
+    # compris, plutot que de le reconstruire depuis le volid (voir point 2).
+    local stage2 zt_linux
+    stage2="$(echo "${linux_line}" | grep -oE 'inst\.stage2=hd:LABEL=[^[:space:]]+' \
+        | head -1 | sed -E 's|^inst\.stage2=||' || true)"
+    if [ -z "${stage2}" ]; then
+        log "  pas d'inst.stage2=hd:LABEL= dans l'entree modele — zero-touch non ajoutee"
+        return 0
+    fi
+    zt_linux="$(echo "${linux_line}" | sed -E 's|[[:space:]]+inst\.ks=[^[:space:]]+||g')"
+    zt_linux="${zt_linux} inst.ks=${stage2}:/bfos-amorce.ks"
+    # Le zero-touch a besoin du reseau, et l'amorce le trouve deja leve :
+    # rd.neednet, parce qu'un kickstart LOCAL ne le fait plus demander a dracut.
+    echo "${zt_linux}" | grep -qE '(^| )ip=' || zt_linux="${zt_linux} ip=dhcp"
+    echo "${zt_linux}" | grep -q 'rd\.neednet=' || zt_linux="${zt_linux} rd.neednet=1"
 
     {
         printf "menuentry 'Installer Blue Fox OS (zero-touch)' --class fedora --class gnu-linux {\n"
-        printf '    # Domaine en dur : `read` n%s existe pas dans le grub UEFI.\n' "'"
-        printf '    # Pour une autre organisation : « e » ici, editer, Ctrl-X.\n'
-        printf '    set bf_domain="%s"\n' "${ZEROTOUCH_DEFAULT_DOMAIN}"
+        printf '    # Le domaine de l%sorganisation est demande a l%secran, apres le demarrage.\n' "'" "'"
+        printf '    # Pour l%simposer sans question : e ici, ajouter bfos.domaine=<domaine>, Ctrl-X.\n' "'"
         printf '%s\n' "${zt_linux}"
         printf '%s\n' "${initrd_line}"
         printf "}\n\n"
@@ -234,6 +262,9 @@ else
 fi
 
 [ "${#MAPS[@]}" -gt 0 ] || die "aucun menu trouve dans ${ISO} — rien a brander"
+
+# L'amorce que l'entree zero-touch demarre, a la racine du volume.
+MAPS+=(-map "${AMORCE_KS}" /bfos-amorce.ks)
 
 # ── repack ──────────────────────────────────────────────────────────────────
 # `-boot_image any replay` preserve les signatures El Torito UEFI + MBR
@@ -297,12 +328,15 @@ verify_menu() {   # $1 = etiquette humaine, $2 = fichier
     machine. ISO non livrable."
     fi
 
-    # Le zero-touch ne vaut que s'il resout un domaine : ${bf_domain} vide
-    # donnerait inst.ks=https:///blue-fox-install.ks.
-    if grep -q 'bf_domain' "$cfg" && ! grep -qE '^[[:space:]]*set bf_domain="[^"]+"' "$cfg"; then
-        die "${name} : bf_domain est cite mais jamais pose a une valeur non vide.
-    Le kickstart serait demande a https:///blue-fox-install.ks."
-    fi
+    # L'entree zero-touch doit exister et demarrer sur l'amorce. Sans elle,
+    # l'ISO n'installe plus qu'en mode manuel, sans politique : c'est un echec
+    # de construction, pas une variante.
+    grep -q "menuentry 'Installer Blue Fox OS (zero-touch)'" "$cfg" \
+        || die "${name} : aucune entree zero-touch. ISO non livrable."
+    grep -qE 'inst\.ks=hd:LABEL=[^[:space:]]+:/bfos-amorce\.ks' "$cfg" \
+        || die "${name} : l'entree zero-touch ne demarre pas sur /bfos-amorce.ks."
+    ! grep -q 'bf_domain' "$cfg" \
+        || die "${name} : reste d'une entree d'avant l'amorce (bf_domain)."
 
     log "  ${name} : ${nlinux} entree(s), etiquettes ok, inst.profile ok, commandes ok"
 }
@@ -316,4 +350,10 @@ if xorriso -osirrox on -indev "${ISO}" -extract /images/efiboot.img \
     mcopy -i "${TMPDIR}/v-efi.img" ::/EFI/BOOT/grub.cfg "${TMPDIR}/v-efi.cfg" 2>/dev/null \
         && verify_menu "UEFI " "${TMPDIR}/v-efi.cfg"
 fi
+# Relue DANS l'ISO finale : inject-anaconda-product.sh repack apres nous, et un
+# menu qui cite /bfos-amorce.ks sans le fichier gele dracut ~3 min.
+xorriso -osirrox on -indev "${ISO}" -extract /bfos-amorce.ks "${TMPDIR}/v-amorce.ks" \
+        >/dev/null 2>&1 && cmp -s "${AMORCE_KS}" "${TMPDIR}/v-amorce.ks" \
+    || die "/bfos-amorce.ks absent de l'ISO finale, ou different de celui rendu."
+log "  amorce : /bfos-amorce.ks present, domaine propose ${ZEROTOUCH_DEFAULT_DOMAIN:-aucun}"
 log "verification passee — ISO livrable"

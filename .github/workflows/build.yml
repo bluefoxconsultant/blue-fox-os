@@ -71,6 +71,9 @@ jobs:
             > /tmp/zerotouch-rendered.ks
           python3 scripts/render_zerotouch_ks.py --slug bf-surface --generated-at "2026-01-01T00:00:00Z" \
             > /tmp/zerotouch-surface-rendered.ks
+          # L'amorce que brand-iso.sh depose dans l'ISO (entree zero-touch).
+          python3 scripts/render_amorce_ks.py --domaine-defaut bluefoxconsultant.com \
+            > /tmp/amorce-rendered.ks
 
       - name: ksvalidator (bf-os.ks + bib-config + zerotouch-rendered)
         run: |
@@ -89,6 +92,7 @@ jobs:
             ksvalidator /tmp/bib-rendered.ks
             ksvalidator /tmp/zerotouch-rendered.ks
             ksvalidator /tmp/zerotouch-surface-rendered.ks
+            ksvalidator /tmp/amorce-rendered.ks
           '
 
   test-wizard:
@@ -111,7 +115,11 @@ jobs:
         # durci, ordre des modules, provenance de la publication. Cible
         # scripts/tests/ et pas scripts/ : test_generate_kde_theme.py porte 3
         # echecs connus (symlink vs copie) qui rendraient la lane rouge.
-        run: pytest -q scripts/tests
+        # pykickstart : test_amorce_iso rejoue les deux passes d'Anaconda avec
+        # le vrai parseur, et se saute sans lui.
+        run: |
+          pip install --quiet pykickstart
+          pytest -q scripts/tests
 
   test-wizard-ui:
     # PyQt6 QWizard tests via the offscreen platform plugin (no X server, so

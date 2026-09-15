@@ -56,9 +56,16 @@ Tenants : `bf` (interne), `bf-surface` (même image + noyau linux-surface),
 
 ### Chemin zero-touch (celui qui provisionne)
 
-1. Démarrage sur l'ISO, entrée GRUB « zero-touch » : l'opérateur tape le
-   domaine de son organisation. L'entrée construit
-   `inst.ks=https://<domaine>/blue-fox-install.ks` à la volée.
+1. Démarrage sur l'ISO, entrée GRUB « zero-touch ». Elle démarre sur l'**amorce**
+   embarquée dans l'ISO (`/bfos-amorce.ks`, script `install/bfos_amorce.py`),
+   qui demande à l'écran le domaine de l'organisation (pré-rempli à
+   `bluefoxconsultant.com`), le **vérifie** (`https://<domaine>/blue-fox-install.ks`
+   doit répondre avec l'en-tête `x-bf-zerotouch-version`), affiche le nom de
+   l'organisation et attend une confirmation. Elle exécute ensuite les `%pre` du
+   kickstart de l'organisation et inclut le reste. GRUB ne peut pas poser la
+   question : `read` n'existe pas dans son binaire UEFI.
+   Sans question : `bfos.domaine=<domaine>` sur la ligne `linux` (« e » au menu).
+   Essais sur registre local : `bfos.ks=<url>`.
 2. Le kickstart est **servi par Odoo** (`bf_zerotouch_install`), rendu à partir
    de la fiche Policy du tenant. Un hôte inconnu obtient un 404 plutôt que la
    politique de quelqu'un d'autre.
