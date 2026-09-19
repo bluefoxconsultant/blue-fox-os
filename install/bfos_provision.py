@@ -689,12 +689,32 @@ def _env_drapeau(nom, defaut):
     return brut.strip().lower() not in ("0", "false", "no", "off")
 
 
+# Pannes reseau tolerees d'affilee pendant l'attente de l'autorisation.
+# ⚠️ POURQUOI CE COMPTEUR EXISTE (essai du 2026-09-19, VM reelle). La boucle
+# traitait TOUTE erreur non-HTTP comme fatale. Une seule connexion refusee
+# (Errno 111, un accident du chemin reseau : 40 requetes de suite depuis la
+# meme machine, hors VM, n'en ont produit aucune) a donc tue l'enrolement a la
+# 32e interrogation. L'operateur a autorise 35 secondes plus tard : son geste
+# est parti nulle part, l'installation est retombee sur les defauts de l'org,
+# et Anaconda a redemande la phrase du disque.
+#
+# Le bon comportement est celui de l'attente elle-meme : tant que le code n'est
+# pas expire, on REESSAIE. On n'abandonne que si le reseau ne revient pas du
+# tout, et on le dit alors clairement plutot que de citer la premiere erreur
+# venue. La limite est en pannes CONSECUTIVES : une reussite la remet a zero.
+_PANNES_TOLEREES = 10
+# Reprises du tirage de la politique, et pause entre elles.
+_REPRISES_RESEAU = 4
+_PAUSE_REPRISE_RESEAU = 5
+
+
 def poll_token(token_url, client_id, device_code, interval, expires_in,
-               post=_post_form, sleep=time.sleep, now=time.monotonic):
+               post=_post_form, sleep=time.sleep, now=time.monotonic, out=None):
     """Poll the token endpoint until the operator authorizes, or time out."""
     deadline = now() + min(int(expires_in), _MAX_WAIT)
     wait = max(int(interval), 1)
     grant = "urn:ietf:params:oauth:grant-type:device_code"
+    pannes = 0
     while now() < deadline:
         sleep(wait)
         try:
@@ -706,13 +726,24 @@ def poll_token(token_url, client_id, device_code, interval, expires_in,
         except urllib.error.HTTPError as exc:
             err = _error_code(exc)
             if err == "authorization_pending":
+                pannes = 0
                 continue
             if err == "slow_down":
                 wait += 5
+                pannes = 0
                 continue
             raise ProvisionError(f"token error: {err or exc.code}") from exc
         except Exception as exc:  # noqa: BLE001
-            raise ProvisionError(f"token request failed: {exc}") from exc
+            pannes += 1
+            if pannes >= _PANNES_TOLEREES:
+                raise ProvisionError(
+                    f"token request failed {pannes} times in a row, last: {exc}"
+                ) from exc
+            if out is not None:
+                out(f"[bfos] reseau indisponible ({exc}); nouvel essai "
+                    f"{pannes}/{_PANNES_TOLEREES}\n")
+            continue
+        pannes = 0
         try:
             d = json.loads(raw)
         except ValueError as exc:
@@ -746,11 +777,32 @@ def _valid_policy(d) -> bool:
             and isinstance(d.get("user"), dict))
 
 
-def fetch_policy(policy_url, token, get=_get):
-    try:
-        status, raw = get(policy_url, token)
-    except Exception as exc:  # noqa: BLE001
-        raise ProvisionError(f"policy fetch failed: {exc}") from exc
+def fetch_policy(policy_url, token, get=_get, sleep=time.sleep, out=None):
+    """Tire la politique fusionnee pour l'operateur qui vient d'autoriser.
+
+    ⚠️ Les reprises ne sont pas du confort : a ce point, la personne a DEJA
+    autorise sur son telephone. Perdre la politique sur une coupure d'une
+    seconde lui demanderait de tout recommencer, sans qu'elle sache pourquoi.
+    Une reponse HTTP, elle, est une reponse : on ne la rejoue pas.
+    """
+    dernier = None
+    for essai in range(1, _REPRISES_RESEAU + 1):
+        try:
+            status, raw = get(policy_url, token)
+            break
+        except urllib.error.HTTPError as exc:
+            # Une reponse du serveur reste une reponse : meme forme d'erreur
+            # qu'avant les reprises, pour que le journal se lise pareil.
+            raise ProvisionError(f"policy fetch HTTP {exc.code}") from exc
+        except Exception as exc:  # noqa: BLE001
+            dernier = exc
+            if essai == _REPRISES_RESEAU:
+                raise ProvisionError(f"policy fetch failed: {exc}") from exc
+            if out is not None:
+                out(f"[bfos] politique injoignable ({exc}); nouvel essai "
+                    f"{essai}/{_REPRISES_RESEAU}\n")
+            sleep(_PAUSE_REPRISE_RESEAU)
+    del dernier
     if status != 200:
         raise ProvisionError(f"policy fetch HTTP {status}")
     try:
@@ -1698,8 +1750,8 @@ def run(env=None, post=_post_form, get=_get, sleep=time.sleep, out=None,
     token = poll_token(
         token_url, client_id, d["device_code"],
         d.get("interval", 5), d.get("expires_in", 300),
-        post=post, sleep=sleep)
-    policy = fetch_policy(policy_url, token, get=get)
+        post=post, sleep=sleep, out=out)
+    policy = fetch_policy(policy_url, token, get=get, sleep=sleep, out=out)
     if after_policy is not None:
         after_policy(token, policy)
     return policy

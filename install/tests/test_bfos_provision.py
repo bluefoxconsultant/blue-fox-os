@@ -1882,3 +1882,91 @@ class TestPartitionnementToujoursDecide:
         monkeypatch.setattr(bp, "run", run_qui_expire)
         assert bp.main() == 0
         assert f.read_text().strip() == "autopart --type=btrfs --encrypted --nohome"
+
+
+# ---------------------------------------------------------------------------
+# Pannes reseau pendant l'attente de l'autorisation (essai du 2026-09-19)
+# ---------------------------------------------------------------------------
+def _refus():
+    raise urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+
+
+def test_une_connexion_refusee_ne_tue_plus_l_attente():
+    """Le defaut vecu : 32e interrogation refusee, autorisation 35 s plus tard,
+    enrolement perdu et Anaconda qui redemande la phrase du disque."""
+    horloge = Clock()
+    reponses = [_pending, _pending, _refus, _pending,
+                lambda: (200, json.dumps({"access_token": "TOK"}))]
+
+    def post(url, data):
+        return reponses.pop(0)()
+
+    dits = []
+    assert bp.poll_token("https://t", "cid", "dc", 5, 600, post=post,
+                         sleep=horloge.sleep, now=horloge.now,
+                         out=dits.append) == "TOK"
+    assert any("nouvel essai 1/" in d for d in dits)
+
+
+def test_le_reseau_absent_finit_par_etre_dit():
+    horloge = Clock()
+
+    def post(url, data):
+        _refus()
+
+    with pytest.raises(bp.ProvisionError, match="times in a row"):
+        bp.poll_token("https://t", "cid", "dc", 5, 3600, post=post,
+                      sleep=horloge.sleep, now=horloge.now)
+
+
+def test_le_compteur_de_pannes_se_remet_a_zero():
+    """Neuf pannes, une reponse, neuf pannes : ce n'est pas dix d'affilee."""
+    horloge = Clock()
+    suite = [_refus] * 9 + [_pending] + [_refus] * 9 + [
+        lambda: (200, json.dumps({"access_token": "TOK"}))]
+
+    def post(url, data):
+        return suite.pop(0)()
+
+    assert bp.poll_token("https://t", "cid", "dc", 1, 3600, post=post,
+                         sleep=horloge.sleep, now=horloge.now) == "TOK"
+
+
+def test_une_erreur_oauth_reste_fatale():
+    horloge = Clock()
+
+    def post(url, data):
+        raise _http_error(400, '{"error":"expired_token"}')
+
+    with pytest.raises(bp.ProvisionError, match="expired_token"):
+        bp.poll_token("https://t", "cid", "dc", 5, 600, post=post,
+                      sleep=horloge.sleep, now=horloge.now)
+
+
+def test_la_politique_se_retire_apres_une_coupure():
+    """A ce stade l'operateur a deja autorise : une coupure d'une seconde ne
+    doit pas lui faire tout recommencer."""
+    essais = []
+
+    def get(url, token, timeout=30):
+        essais.append(url)
+        if len(essais) < 3:
+            raise urllib.error.URLError(ConnectionRefusedError(111, "refused"))
+        return 200, json.dumps({"schema": "bf-policy/v2", "install": {}, "user": {}})
+
+    pauses = []
+    politique = bp.fetch_policy("https://p/me", "TOK", get=get, sleep=pauses.append)
+    assert politique["schema"] == "bf-policy/v2"
+    assert len(essais) == 3 and len(pauses) == 2
+
+
+def test_une_reponse_http_de_la_politique_ne_se_rejoue_pas():
+    essais = []
+
+    def get(url, token, timeout=30):
+        essais.append(url)
+        raise _http_error(403, '{"error":"forbidden"}')
+
+    with pytest.raises(bp.ProvisionError, match="HTTP 403"):
+        bp.fetch_policy("https://p/me", "TOK", get=get, sleep=lambda s: None)
+    assert len(essais) == 1
