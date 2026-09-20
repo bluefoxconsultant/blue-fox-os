@@ -61,6 +61,11 @@ modules:
       - sssd-ldap
       - oddjob
       - oddjob-mkhomedir
+      # Le renard dans le terminal (#25854). ⚠️ NI fastfetch NI neofetch ne sont
+      # dans kinoite-main : mesure du 2026-09-20 sur l'image publiée (`rpm -q`
+      # rend « not installed » pour les deux). La config émise dans /etc/skel
+      # n'aurait eu personne pour la lire.
+      - fastfetch
     remove:
       # ⚠️ RETIRE LE 2026-09-11, a la demande d'Olivier. plasma-welcome est le
       # Centre d'accueil de KDE : il redemande langue, clavier, fuseau ET

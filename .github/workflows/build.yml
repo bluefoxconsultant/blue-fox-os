@@ -118,7 +118,10 @@ jobs:
         # pykickstart : test_amorce_iso rejoue les deux passes d'Anaconda avec
         # le vrai parseur, et se saute sans lui.
         run: |
-          pip install --quiet pykickstart
+          # pykickstart : les deux passes d'Anaconda rejouees avec le vrai
+          # parseur. pillow : les paquets de papier peint, nommes par leur
+          # resolution parce que c'est le seul nom que KDE lit.
+          pip install --quiet pykickstart pillow
           pytest -q scripts/tests
 
   test-wizard-ui:

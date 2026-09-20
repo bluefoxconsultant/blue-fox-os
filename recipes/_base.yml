@@ -41,6 +41,11 @@ modules:
       - sssd-ldap
       - oddjob
       - oddjob-mkhomedir
+      # Le renard dans le terminal (#25854). ⚠️ NI fastfetch NI neofetch ne sont
+      # dans kinoite-main : mesure du 2026-09-20 sur l'image publiee (`rpm -q`
+      # rend « not installed » pour les deux). La config emise dans /etc/skel
+      # n'aurait eu personne pour la lire.
+      - fastfetch
                                  # (loading bar animée via Plymouth scripting,
                                  # cf. scripts/generate_kde_theme.py emit_plymouth_theme)
     # Lexend : pas de paquet en repos Fedora, ship via files/usr/share/fonts/lexend/

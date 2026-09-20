@@ -101,6 +101,11 @@ modules:
       - sssd-ldap
       - oddjob
       - oddjob-mkhomedir
+      # Le renard dans le terminal (#25854). ⚠️ NI fastfetch NI neofetch ne sont
+      # dans kinoite-main : mesure du 2026-09-20 sur l'image publiée (`rpm -q`
+      # rend « not installed » pour les deux). La config émise dans /etc/skel
+      # n'aurait eu personne pour la lire.
+      - fastfetch
       # Note : on n'installe PAS libwacom-surface car il conflicte avec
       # libwacom du stock Fedora qui est plus recent. La calibration pen
       # marche correctement avec libwacom stock + le kernel-surface ; on

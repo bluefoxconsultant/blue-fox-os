@@ -115,10 +115,21 @@ def test_le_drop_in_plasmalogin_copie_la_forme_des_cles_amont():
 def test_le_papier_peint_vise_un_paquet_kde_pas_un_fichier_nu():
     """Fedora pointe sur un REPERTOIRE de paquet de papier peint, et on en emet
     un dans emit_wallpaper_package(). Viser le .jpg nu marcherait peut-etre,
-    mais s'ecarterait de la forme qu'on sait bonne."""
+    mais s'ecarterait de la forme qu'on sait bonne.
+
+    ⚠️ Depuis le 2026-09-20 le paquet vise peut etre celui du bureau ou celui,
+    dedie, de l'ecran de connexion (#25854) — d'ou le nom calcule. Ce qui est
+    verifie ici reste le genre de valeur : un repertoire de paquet, pas un
+    fichier. Le choix entre les deux paquets, et le NOM des images qu'ils
+    portent (le seul que KDE lit), sont eprouves dans
+    scripts/tests/test_papier_peint_connexion.py.
+    """
     code = _code_seul(GENERATEUR.read_text())
-    assert 'f"file:///usr/share/wallpapers/{b[\'slug\']}/"' in code, (
-        "le papier peint du greeter doit designer le paquet KDE du locataire"
+    assert 'f"file:///usr/share/wallpapers/{nom}/"' in code, (
+        "le papier peint du greeter doit designer un paquet KDE, pas un fichier"
+    )
+    assert 'f"{b[\'slug\']}-login" if dedie.is_dir() else b["slug"]' in code, (
+        "le paquet dedie a la connexion doit primer quand il existe"
     )
 
 

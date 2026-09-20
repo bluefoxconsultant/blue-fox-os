@@ -121,6 +121,27 @@ else
     echo "[branded-iso] no wallpapers pack (${WALLPAPERS_SRC}/*.png) — welcome agent fallbacks to wallpaper.jpg"
 fi
 
+# 2bis. Papier peint de l'ecran de connexion (#25854) — sombre, pour que le
+# formulaire reste lisible. Absent, le greeter garde celui du bureau.
+LOGIN_SRC="${WORKDIR}/branding/login-wallpaper.png"
+if [ -f "$LOGIN_SRC" ]; then
+    cp "$LOGIN_SRC" "${FILES_DIR}/share/bluefox/branding/login-wallpaper.png"
+    echo "[branded-iso] papier peint de connexion: $(du -h "$LOGIN_SRC" | cut -f1)"
+else
+    echo "[branded-iso] pas de papier peint de connexion (${LOGIN_SRC}) — celui du bureau servira"
+fi
+
+# 2c. Logo ANSI du renard (#25854) — lu par fastfetch dans un terminal.
+# En couleurs vraies, donc reserve aux terminaux qui les rendent : la console
+# texte du noyau garde le petit renard cyan de l'installateur.
+ANSI_SRC="${WORKDIR}/branding/bluefoxos.ansi"
+if [ -f "$ANSI_SRC" ]; then
+    cp "$ANSI_SRC" "${FILES_DIR}/share/bluefox/branding/bluefoxos.ansi"
+    echo "[branded-iso] logo ANSI: $(wc -l < "$ANSI_SRC") lignes"
+else
+    echo "[branded-iso] pas de logo ANSI (${ANSI_SRC}) — fastfetch gardera le logo de Fedora"
+fi
+
 # 3. Copier la config dans /usr/share/bluefox/tenant.json (lue par welcome agent).
 cp "$TMP_CFG" "${FILES_DIR}/share/bluefox/tenant.json"
 

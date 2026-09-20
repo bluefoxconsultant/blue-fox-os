@@ -51,6 +51,10 @@ from bluefox_welcome.branding.colors import (  # noqa: E402
 LOG = logging.getLogger("generate_kde_theme")
 
 BRANDING_RUNTIME = "/usr/share/bluefox/branding"
+# Taille du logo ANSI (branding/bluefoxos.ansi), declaree parce que
+# fastfetch ne sait pas la mesurer sur un fichier a sequences.
+FASTFETCH_LOGO_WIDTH = 34
+FASTFETCH_LOGO_HEIGHT = 20
 
 
 def emit_color_scheme(b: dict, files_root: Path) -> Path:
@@ -92,9 +96,71 @@ def emit_wallpaper_package(b: dict, files_root: Path) -> Path:
         wallpaper_dst.unlink()
     if wallpaper_src.is_file():
         shutil.copy(wallpaper_src, wallpaper_dst)
+        _nommer_par_resolution(wallpaper_dst)
     else:
         LOG.warning("wallpaper source %s missing", wallpaper_src)
     LOG.info("emit wallpaper pkg %s", wallpaper_dst)
+    return base
+
+
+def _nommer_par_resolution(image: Path) -> Path | None:
+    """Depose a cote de l'image une copie nommee <largeur>x<hauteur>.
+
+    🔴 C'EST CE NOM-LA QUE KDE LIT, ET PAS L'AUTRE (mesure du 2026-09-20 dans
+    l'image publiee). Le greffon `org.kde.image` enumere `contents/images/` et
+    ne retient que les fichiers nommes par leur resolution — `5120x2880.jpg`
+    chez Volna, `1920x1080.png` ailleurs. Notre `wallpaper.jpg` n'etait donc
+    lu par personne : le paquet passait pour vide et l'ecran de connexion
+    retombait sur le papier peint de Fedora. Le drop-in etait bon, le paquet
+    etait la, et rien ne s'affichait.
+
+    On garde `wallpaper.jpg` : `/etc/xdg/kscreenlockerrc` le designe par son
+    chemin complet, et l'agent d'accueil aussi.
+    """
+    try:
+        from PIL import Image as PImage
+    except ImportError:  # pragma: no cover - Pillow est un prerequis du build
+        LOG.warning("Pillow absent : image non nommee par sa resolution")
+        return None
+    with PImage.open(image) as im:
+        largeur, hauteur = im.size
+    cible = image.with_name(f"{largeur}x{hauteur}{image.suffix}")
+    if cible != image:
+        shutil.copy(image, cible)
+    LOG.info("emit wallpaper resolution %s", cible)
+    return cible
+
+
+def emit_login_wallpaper_package(b: dict, files_root: Path) -> Path | None:
+    """Paquet de papier peint propre a l'ecran de connexion (#25854).
+
+    Le bureau et l'ecran de connexion ne montrent pas la meme image : celle-ci
+    est sombre, avec le monolithe, pour que le formulaire reste lisible.
+    Source : `branding/login-wallpaper.png`, deposee par build_branded_iso.sh.
+    Absente, on ne cree rien et le drop-in garde le paquet du bureau.
+    """
+    src = files_root / "usr/share/bluefox/branding/login-wallpaper.png"
+    if not src.is_file():
+        LOG.info("pas de papier peint de connexion dedie (%s)", src)
+        return None
+    base = files_root / "usr/share/wallpapers" / f"{b['slug']}-login"
+    images = base / "contents/images"
+    images.mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "KPackageStructure": "Wallpaper/Images",
+        "KPlugin": {
+            "Id": f"{b['slug']}-login",
+            "Name": f"{b['name']} — ecran de connexion",
+            "Authors": [{"Name": "Blue Fox", "Email": "info@bluefoxconsultant.com"}],
+            "Version": "1.0",
+            "Website": "https://bluefoxconsultant.com",
+        },
+    }
+    (base / "metadata.json").write_text(json.dumps(metadata, indent=2))
+    cible = images / "wallpaper.png"
+    shutil.copy(src, cible)
+    _nommer_par_resolution(cible)
+    LOG.info("emit login wallpaper pkg %s", base)
     return base
 
 
@@ -535,7 +601,10 @@ def emit_plasmalogin_config(b: dict, files_root: Path) -> Path:
     """
     target = files_root / "etc/plasmalogin.conf.d/10-bluefox.conf"
     target.parent.mkdir(parents=True, exist_ok=True)
-    paquet = f"file:///usr/share/wallpapers/{b['slug']}/"
+    # Le paquet dedie a la connexion s'il existe, celui du bureau sinon.
+    dedie = files_root / "usr/share/wallpapers" / f"{b['slug']}-login"
+    nom = f"{b['slug']}-login" if dedie.is_dir() else b["slug"]
+    paquet = f"file:///usr/share/wallpapers/{nom}/"
     conf = (
         f"# Genere par scripts/generate_kde_theme.py — tenant {b['slug']}.\n"
         f"# Surcharge /usr/lib/plasmalogin/defaults.conf, qui sert le papier\n"
@@ -689,6 +758,57 @@ def emit_neofetch_config(b: dict, files_root: Path) -> Path:
     return skel_dir
 
 
+def emit_fastfetch_config(b: dict, files_root: Path) -> Path:
+    """Logo du renard et bloc d'information pour fastfetch (#25854).
+
+    ⚠️ CE N'EST PAS NEOFETCH. Fedora 44 sert `fastfetch` ; neofetch n'est plus
+    maintenu et n'est pas dans l'image. On garde sa config a cote tant qu'elle
+    ne coute rien, mais c'est celle-ci qui s'affiche dans un terminal.
+
+    Le logo est `branding/bluefoxos.ansi`, en couleurs VRAIES (24 bits) :
+    Konsole les rend, la console texte du noyau non. La largeur et la hauteur
+    sont declarees ici parce que fastfetch mesure mal un fichier qui porte des
+    sequences d'echappement — sans elles, tout le bloc d'information se decale.
+    Le fichier absent, fastfetch retombe sur le logo de la distribution : pas
+    de logo casse, juste celui de Fedora.
+    """
+    logo = f"{BRANDING_RUNTIME}/bluefoxos.ansi"
+    skel_dir = files_root / "etc/skel/.config/fastfetch"
+    skel_dir.mkdir(parents=True, exist_ok=True)
+    config = {
+        "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
+        "logo": {
+            "type": "file-raw",
+            "source": logo,
+            "width": FASTFETCH_LOGO_WIDTH,
+            "height": FASTFETCH_LOGO_HEIGHT,
+            "padding": {"top": 1, "right": 3},
+        },
+        "display": {"separator": "  "},
+        "modules": [
+            {"type": "title", "format": "{user-name}@{host-name}"},
+            "separator",
+            {"type": "os", "key": "Systeme"},
+            {"type": "host", "key": "Locataire", "format": b["name"]},
+            {"type": "kernel", "key": "Noyau"},
+            {"type": "uptime", "key": "Allume depuis"},
+            {"type": "packages", "key": "Paquets"},
+            {"type": "shell", "key": "Interpreteur"},
+            {"type": "de", "key": "Bureau"},
+            {"type": "terminal", "key": "Terminal"},
+            {"type": "cpu", "key": "Processeur"},
+            {"type": "memory", "key": "Memoire"},
+            {"type": "disk", "key": "Disque"},
+            "break",
+            "colors",
+        ],
+    }
+    cible = skel_dir / "config.jsonc"
+    cible.write_text(json.dumps(config, indent=2, ensure_ascii=True) + "\n")
+    LOG.info("emit fastfetch config %s", cible)
+    return cible
+
+
 def emit_xdg_kdeglobals(b: dict, files_root: Path) -> Path:
     """System-wide defaults inherited by every new KDE session."""
     target = files_root / "etc/xdg/kdeglobals"
@@ -757,6 +877,7 @@ def emit_all(tenant: dict, files_root: Path) -> dict:
     return {
         "color_scheme": emit_color_scheme(b, files_root),
         "wallpaper_pkg": emit_wallpaper_package(b, files_root),
+        "login_wallpaper_pkg": emit_login_wallpaper_package(b, files_root),
         "look_and_feel": emit_look_and_feel(b, files_root),
         "sddm_config": emit_sddm_config(b, files_root),
         "sddm_breeze_override": emit_sddm_breeze_override(b, files_root),
@@ -769,6 +890,7 @@ def emit_all(tenant: dict, files_root: Path) -> dict:
         "skel_appletsrc": emit_skel_plasma_appletsrc(b, files_root),
         "icon_theme": emit_icon_theme(b, files_root),
         "neofetch": emit_neofetch_config(b, files_root),
+        "fastfetch": emit_fastfetch_config(b, files_root),
         "branding": b,
     }
 
