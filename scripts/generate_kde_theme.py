@@ -657,8 +657,15 @@ def emit_icon_theme(b: dict, files_root: Path) -> Path:
     index = (
         f"[Icon Theme]\n"
         f"Name=Blue Fox OS — {b['name']}\n"
-        f"Comment=Blue Fox icon overrides (inherits Breeze)\n"
-        f"Inherits=breeze,hicolor\n"
+        f"Comment=Blue Fox icon overrides (inherits Breeze dark)\n"
+        # 🔴 breeze-dark EN PREMIER (#25854, retour du 2026-09-20). On heritait
+        # de `breeze`, la variante CLAIRE, alors que notre schema de couleurs
+        # est sombre (BackgroundNormal 45,48,49). Les icones monochromes de la
+        # barre des taches — son, reseau, Bluetooth — sont dessinees sombres
+        # dans breeze : sur notre panneau sombre, elles disparaissaient.
+        # `breeze` reste derriere : une icone absente de la variante sombre s'y
+        # resout encore, plutot que de tomber sur le carre de hicolor.
+        f"Inherits=breeze-dark,breeze,hicolor\n"
         f"Directories=scalable/places\n"
         f"\n"
         f"[scalable/places]\n"
