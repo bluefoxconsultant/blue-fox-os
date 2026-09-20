@@ -1,0 +1,5 @@
+"""Make the install/ scripts importable by their module name for tests."""
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))

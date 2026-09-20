@@ -8,9 +8,9 @@ system_font}` (with BF canonical defaults if absent) and produces:
   <files>/usr/share/color-schemes/<slug>.colors
   <files>/usr/share/wallpapers/<slug>/{metadata.json,contents/images/...}
   <files>/usr/share/plasma/look-and-feel/<slug>/{metadata.json,contents/defaults}
-  <files>/usr/share/sddm/themes/<slug>/{theme.conf,Background.jpg,metadata.desktop}
   <files>/etc/xdg/kdeglobals
-  <files>/etc/sddm.conf.d/blue-fox.conf
+  <files>/etc/plasmalogin.conf.d/10-bluefox.conf   (Fedora 44 : plasmalogin)
+  <files>/etc/sddm.conf.d/blue-fox.conf            (Fedora 43 : sddm)
   <files>/etc/skel/.config/kdeglobals
   <files>/etc/skel/.config/plasma-org.kde.plasma.desktop-appletsrc
 
@@ -28,226 +28,47 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import shutil
 import sys
 from pathlib import Path
 
+# Single source of truth for the palette math lives in the welcome package
+# (bluefox_welcome/branding/colors.py) so the build-time bake and the firstboot
+# per-user accent override produce identical .colors files. The welcome/ tree
+# is a sibling of scripts/ in the repo checkout that runs this script, so add
+# it to sys.path; this is plain-python3 safe (colors.py is stdlib-only).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "welcome"))
+from bluefox_welcome.branding.colors import (  # noqa: E402
+    BF_FONT,
+    BF_PRIMARY,
+    BF_SECONDARY,
+    _hex_to_rgb,
+    _rgb,
+    build_color_scheme_text,
+    resolve_branding,
+)
+
 LOG = logging.getLogger("generate_kde_theme")
 
-BF_PRIMARY = "#29ABE1"
-BF_SECONDARY = "#2D3031"
-BF_FONT = "Lexend"
-
 BRANDING_RUNTIME = "/usr/share/bluefox/branding"
-
-
-def _hex_to_rgb(h: str) -> tuple[int, int, int]:
-    h = h.lstrip("#")
-    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-
-
-def _rgb(h: str) -> str:
-    return ",".join(str(c) for c in _hex_to_rgb(h))
-
-
-def _mix(h1: str, h2: str, t: float) -> str:
-    a = _hex_to_rgb(h1)
-    b = _hex_to_rgb(h2)
-    return "#{:02X}{:02X}{:02X}".format(
-        *(round(a[i] * (1 - t) + b[i] * t) for i in range(3))
-    )
-
-
-def _darker(h: str, t: float = 0.15) -> str:
-    return _mix(h, "#000000", t)
-
-
-def _lighter(h: str, t: float = 0.15) -> str:
-    return _mix(h, "#FFFFFF", t)
-
-
-def resolve_branding(tenant: dict) -> dict:
-    """Return a fully-populated branding dict, applying BF defaults."""
-    slug = tenant.get("slug", "bf")
-    branding = tenant.get("branding", {}) or {}
-    palette = branding.get("palette", {}) or {}
-    primary = palette.get("primary", BF_PRIMARY)
-    secondary = palette.get("secondary", BF_SECONDARY)
-    accent = palette.get("accent", primary)
-    return {
-        "slug": slug,
-        "name": tenant.get("name") or slug.upper(),
-        "primary": primary,
-        "secondary": secondary,
-        "accent": accent,
-        "boot_bg_color": branding.get("boot_bg_color") or secondary,
-        "system_font": branding.get("system_font") or BF_FONT,
-        "plasma_theme": branding.get("plasma_theme") or slug,
-        "sddm_theme": branding.get("sddm_theme") or slug,
-    }
+# Taille de repli du logo ANSI, si le fichier manque a la generation. Elle est
+# normalement MESUREE sur le fichier lui-meme : une taille declaree en dur se
+# desynchronise du dessin des la premiere retouche, et fastfetch decale alors
+# tout le bloc d'information sans rien dire.
+FASTFETCH_LOGO_WIDTH = 30
+FASTFETCH_LOGO_HEIGHT = 20
+_SGR = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def emit_color_scheme(b: dict, files_root: Path) -> Path:
     """Write /usr/share/color-schemes/<slug>.colors (KDE Plasma 6 dark scheme)."""
     target = files_root / "usr/share/color-schemes" / f"{b['slug']}.colors"
     target.parent.mkdir(parents=True, exist_ok=True)
-
-    bg = b["secondary"]
-    bg_alt = _lighter(bg, 0.07)
-    fg = "#EFF0F1"
-    fg_inactive = _darker(fg, 0.20)
-    accent = b["accent"]
-    accent_hover = _lighter(accent, 0.15)
-    # accent_text : variante claircie de l'accent, sûre pour du texte sur fond
-    # foncé. Le brand canon BF interdit explicitement l'accent #29ABE1 en
-    # foreground sur l'anthracite #2D3031 (contraste ~5.5:1, visuellement
-    # muddled). _lighter(accent, 0.40) → #7FCDED sur #2D3031 = 8.1:1 (WCAG AAA),
-    # passe ≥7:1 sur tous les BackgroundNormal de toutes les sections (Window,
-    # View légèrement éclaircie, Button éclairci, Header/Tooltip assombris).
-    # Réservé aux ForegroundActive / ForegroundLink / ForegroundVisited ;
-    # l'accent raw reste uniquement dans DecorationFocus / DecorationHover
-    # (borders/focus rings, pas du texte).
-    accent_text = _lighter(accent, 0.40)
-    accent_visited = _lighter(accent, 0.50)
-    selection_fg = "#FFFFFF"
-
-    sections = {
-        "ColorEffects:Disabled": {
-            "Color": "56,56,56",
-            "ColorAmount": "0",
-            "ColorEffect": "0",
-            "ContrastAmount": "0.65",
-            "ContrastEffect": "1",
-            "IntensityAmount": "0.10",
-            "IntensityEffect": "2",
-        },
-        "ColorEffects:Inactive": {
-            "ChangeSelectionColor": "true",
-            "Color": "112,111,110",
-            "ColorAmount": "0.025",
-            "ColorEffect": "2",
-            "ContrastAmount": "0.1",
-            "ContrastEffect": "2",
-            "Enable": "false",
-            "IntensityAmount": "0",
-            "IntensityEffect": "0",
-        },
-        "Colors:Button": {
-            "BackgroundAlternate": _rgb(_lighter(bg, 0.15)),
-            "BackgroundNormal": _rgb(_lighter(bg, 0.10)),
-            "DecorationFocus": _rgb(accent),
-            "DecorationHover": _rgb(accent_hover),
-            "ForegroundActive": _rgb(accent_text),
-            "ForegroundInactive": _rgb(fg_inactive),
-            "ForegroundLink": _rgb(accent_text),
-            "ForegroundNegative": "218,68,83",
-            "ForegroundNeutral": "246,116,0",
-            "ForegroundNormal": _rgb(fg),
-            "ForegroundPositive": "39,174,96",
-            "ForegroundVisited": _rgb(accent_visited),
-        },
-        "Colors:Selection": {
-            "BackgroundAlternate": _rgb(_darker(accent, 0.10)),
-            "BackgroundNormal": _rgb(accent),
-            "DecorationFocus": _rgb(accent),
-            "DecorationHover": _rgb(accent_hover),
-            "ForegroundActive": _rgb(selection_fg),
-            "ForegroundInactive": _rgb(selection_fg),
-            "ForegroundLink": _rgb(selection_fg),
-            "ForegroundNegative": "176,55,69",
-            "ForegroundNeutral": "198,92,0",
-            "ForegroundNormal": _rgb(selection_fg),
-            "ForegroundPositive": "23,104,57",
-            "ForegroundVisited": _rgb(selection_fg),
-        },
-        "Colors:Tooltip": {
-            "BackgroundAlternate": _rgb(_lighter(bg, 0.15)),
-            "BackgroundNormal": _rgb(_darker(bg, 0.05)),
-            "DecorationFocus": _rgb(accent),
-            "DecorationHover": _rgb(accent_hover),
-            "ForegroundActive": _rgb(accent_text),
-            "ForegroundInactive": _rgb(fg_inactive),
-            "ForegroundLink": _rgb(accent_text),
-            "ForegroundNegative": "218,68,83",
-            "ForegroundNeutral": "246,116,0",
-            "ForegroundNormal": _rgb(fg),
-            "ForegroundPositive": "39,174,96",
-            "ForegroundVisited": _rgb(accent_visited),
-        },
-        "Colors:View": {
-            "BackgroundAlternate": _rgb(_darker(bg, 0.05)),
-            # Pas d'éclaircissement de bg : préserve le contraste AAA du
-            # ForegroundActive/Link (accent_text) sur ce BG. Différenciation
-            # Window/View laissée à BackgroundAlternate qui assombrit pour les
-            # rows alternées (Dolphin, listes, content panes).
-            "BackgroundNormal": _rgb(bg),
-            "DecorationFocus": _rgb(accent),
-            "DecorationHover": _rgb(accent_hover),
-            "ForegroundActive": _rgb(accent_text),
-            "ForegroundInactive": _rgb(fg_inactive),
-            "ForegroundLink": _rgb(accent_text),
-            "ForegroundNegative": "218,68,83",
-            "ForegroundNeutral": "246,116,0",
-            "ForegroundNormal": _rgb(fg),
-            "ForegroundPositive": "39,174,96",
-            "ForegroundVisited": _rgb(accent_visited),
-        },
-        "Colors:Window": {
-            "BackgroundAlternate": _rgb(bg_alt),
-            "BackgroundNormal": _rgb(bg),
-            "DecorationFocus": _rgb(accent),
-            "DecorationHover": _rgb(accent_hover),
-            "ForegroundActive": _rgb(accent_text),
-            "ForegroundInactive": _rgb(fg_inactive),
-            "ForegroundLink": _rgb(accent_text),
-            "ForegroundNegative": "218,68,83",
-            "ForegroundNeutral": "246,116,0",
-            "ForegroundNormal": _rgb(fg),
-            "ForegroundPositive": "39,174,96",
-            "ForegroundVisited": _rgb(accent_visited),
-        },
-        "Colors:Header": {
-            "BackgroundAlternate": _rgb(_darker(bg, 0.10)),
-            "BackgroundNormal": _rgb(_darker(bg, 0.05)),
-            "DecorationFocus": _rgb(accent),
-            "DecorationHover": _rgb(accent_hover),
-            "ForegroundActive": _rgb(accent_text),
-            "ForegroundInactive": _rgb(fg_inactive),
-            "ForegroundLink": _rgb(accent_text),
-            "ForegroundNegative": "218,68,83",
-            "ForegroundNeutral": "246,116,0",
-            "ForegroundNormal": _rgb(fg),
-            "ForegroundPositive": "39,174,96",
-            "ForegroundVisited": _rgb(accent_visited),
-        },
-        "General": {
-            "ColorScheme": b["slug"],
-            "Name": b["name"],
-            "shadeSortColumn": "true",
-            "accentColor": _rgb(accent),
-        },
-        "KDE": {
-            "contrast": "4",
-        },
-        "WM": {
-            "activeBackground": _rgb(_darker(bg, 0.05)),
-            "activeBlend": _rgb(accent),
-            "activeForeground": _rgb(fg),
-            "inactiveBackground": _rgb(_darker(bg, 0.10)),
-            "inactiveBlend": _rgb(fg_inactive),
-            "inactiveForeground": _rgb(fg_inactive),
-        },
-    }
-
-    lines = []
-    for sect, kvs in sections.items():
-        lines.append(f"[{sect}]")
-        for k, v in kvs.items():
-            lines.append(f"{k}={v}")
-        lines.append("")
-    target.write_text("\n".join(lines))
+    target.write_text(build_color_scheme_text(b))
     LOG.info("emit color-scheme %s", target)
     return target
+
 
 
 def emit_wallpaper_package(b: dict, files_root: Path) -> Path:
@@ -279,9 +100,71 @@ def emit_wallpaper_package(b: dict, files_root: Path) -> Path:
         wallpaper_dst.unlink()
     if wallpaper_src.is_file():
         shutil.copy(wallpaper_src, wallpaper_dst)
+        _nommer_par_resolution(wallpaper_dst)
     else:
         LOG.warning("wallpaper source %s missing", wallpaper_src)
     LOG.info("emit wallpaper pkg %s", wallpaper_dst)
+    return base
+
+
+def _nommer_par_resolution(image: Path) -> Path | None:
+    """Depose a cote de l'image une copie nommee <largeur>x<hauteur>.
+
+    🔴 C'EST CE NOM-LA QUE KDE LIT, ET PAS L'AUTRE (mesure du 2026-09-20 dans
+    l'image publiee). Le greffon `org.kde.image` enumere `contents/images/` et
+    ne retient que les fichiers nommes par leur resolution — `5120x2880.jpg`
+    chez Volna, `1920x1080.png` ailleurs. Notre `wallpaper.jpg` n'etait donc
+    lu par personne : le paquet passait pour vide et l'ecran de connexion
+    retombait sur le papier peint de Fedora. Le drop-in etait bon, le paquet
+    etait la, et rien ne s'affichait.
+
+    On garde `wallpaper.jpg` : `/etc/xdg/kscreenlockerrc` le designe par son
+    chemin complet, et l'agent d'accueil aussi.
+    """
+    try:
+        from PIL import Image as PImage
+    except ImportError:  # pragma: no cover - Pillow est un prerequis du build
+        LOG.warning("Pillow absent : image non nommee par sa resolution")
+        return None
+    with PImage.open(image) as im:
+        largeur, hauteur = im.size
+    cible = image.with_name(f"{largeur}x{hauteur}{image.suffix}")
+    if cible != image:
+        shutil.copy(image, cible)
+    LOG.info("emit wallpaper resolution %s", cible)
+    return cible
+
+
+def emit_login_wallpaper_package(b: dict, files_root: Path) -> Path | None:
+    """Paquet de papier peint propre a l'ecran de connexion (#25854).
+
+    Le bureau et l'ecran de connexion ne montrent pas la meme image : celle-ci
+    est sombre, avec le monolithe, pour que le formulaire reste lisible.
+    Source : `branding/login-wallpaper.png`, deposee par build_branded_iso.sh.
+    Absente, on ne cree rien et le drop-in garde le paquet du bureau.
+    """
+    src = files_root / "usr/share/bluefox/branding/login-wallpaper.png"
+    if not src.is_file():
+        LOG.info("pas de papier peint de connexion dedie (%s)", src)
+        return None
+    base = files_root / "usr/share/wallpapers" / f"{b['slug']}-login"
+    images = base / "contents/images"
+    images.mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "KPackageStructure": "Wallpaper/Images",
+        "KPlugin": {
+            "Id": f"{b['slug']}-login",
+            "Name": f"{b['name']} — ecran de connexion",
+            "Authors": [{"Name": "Blue Fox", "Email": "info@bluefoxconsultant.com"}],
+            "Version": "1.0",
+            "Website": "https://bluefoxconsultant.com",
+        },
+    }
+    (base / "metadata.json").write_text(json.dumps(metadata, indent=2))
+    cible = images / "wallpaper.png"
+    shutil.copy(src, cible)
+    _nommer_par_resolution(cible)
+    LOG.info("emit login wallpaper pkg %s", base)
     return base
 
 
@@ -322,57 +205,17 @@ def emit_look_and_feel(b: dict, files_root: Path) -> Path:
         f"[plasma-org.kde.plasma.desktop-appletsrc][Wallpaper][org.kde.image][General]\n"
         f"Image=file://{wallpaper_path}\n"
         f"FillMode=2\n"
+        f"\n"
+        # L'ecran de VERROUILLAGE est un reglage separe de celui du bureau :
+        # kscreenlocker ne lit pas le fond du bureau. Sans cette section, une
+        # machine brandee retombe sur le fond Plasma d'origine des qu'elle se
+        # verrouille — l'ecran qu'on voit le plus souvent, en pratique.
+        f"[kscreenlockerrc][Greeter][Wallpaper][org.kde.image][General]\n"
+        f"Image=file://{wallpaper_path}\n"
+        f"FillMode=2\n"
     )
     (contents / "defaults").write_text(defaults)
     LOG.info("emit look-and-feel %s", base)
-    return base
-
-
-def emit_sddm_theme(b: dict, files_root: Path) -> Path:
-    """Minimal SDDM theme: Breeze-style override with brand background + accent.
-
-    Directory name uses b['sddm_theme'] (defaults to slug). Currently SDDM
-    is steered to the upstream `breeze` theme via emit_sddm_config(); this
-    per-tenant theme dir is shipped as a forward-compatibility hook for v1.1
-    when we ship a custom QML theme.
-    """
-    base = files_root / "usr/share/sddm/themes" / b["sddm_theme"]
-    base.mkdir(parents=True, exist_ok=True)
-
-    desktop = (
-        f"[Desktop Entry]\n"
-        f"Type=Application\n"
-        f"Name=Blue Fox OS — {b['name']}\n"
-        f"Comment=SDDM theme for tenant {b['slug']}\n"
-        f"X-KDE-PluginInfo-Name={b['sddm_theme']}\n"
-        f"X-KDE-PluginInfo-Version=1.0\n"
-        f"X-KDE-PluginInfo-Author=Blue Fox\n"
-    )
-    (base / "metadata.desktop").write_text(desktop)
-
-    theme_conf = (
-        f"[General]\n"
-        f"background={BRANDING_RUNTIME}/wallpaper.jpg\n"
-        f"type=image\n"
-        f"color={b['secondary']}\n"
-        f"fontSize=10\n"
-        f"font={b['system_font']}\n"
-        f"accentColor={b['accent']}\n"
-    )
-    (base / "theme.conf").write_text(theme_conf)
-
-    # Symlink Background.jpg for themes that look at base dir directly (e.g. Breeze fork).
-    bg_link = base / "Background.jpg"
-    if bg_link.is_symlink() or bg_link.exists():
-        bg_link.unlink()
-    bg_link.symlink_to(f"{BRANDING_RUNTIME}/wallpaper.jpg")
-
-    # Minimal Main.qml so SDDM has something to load if the theme is selected
-    # before Breeze theming is borrowed. Plasma 6 ships a usable Breeze theme
-    # at /usr/share/sddm/themes/breeze; in v1 we just steer SDDM to use breeze
-    # via /etc/sddm.conf.d/blue-fox.conf rather than ship a full QML tree here.
-    # See emit_sddm_config() below.
-    LOG.info("emit sddm theme %s", base)
     return base
 
 
@@ -455,20 +298,30 @@ def emit_plymouth_theme(b: dict, files_root: Path) -> Path:
     # images and Scale() them horizontally each refresh tick (~50 Hz).
     bar_width = 600
     bar_height = 4
+    # Le splash source fait 1024x1024 : pose tel quel il mange l'ecran entier.
+    # On le redimensionne a une hauteur fixe et on descend l'ensemble vers le
+    # bas — un splash de demarrage doit rester discret.
+    logo_height = 160
+    logo_top_ratio = 0.58   # haut du logo, en fraction de la hauteur d'ecran
     plymouth_script = (
         f"# Generated for tenant {slug}\n"
         f"Window.SetBackgroundTopColor({bg_norm[0]:.4f}, {bg_norm[1]:.4f}, {bg_norm[2]:.4f});\n"
         f"Window.SetBackgroundBottomColor({bg_norm[0]:.4f}, {bg_norm[1]:.4f}, {bg_norm[2]:.4f});\n"
         f"\n"
-        f"# Centered splash image (file 'splash.png' is a real copy of branding/splash.png).\n"
-        f"splash.image = Image(\"splash.png\");\n"
+        f"# Logo ('splash.png' est une vraie copie de branding/splash.png), mis a\n"
+        f"# l'echelle a {logo_height} px de haut en preservant le rapport, et pose\n"
+        f"# dans le tiers inferieur.\n"
+        f"splash.raw = Image(\"splash.png\");\n"
+        f"splash.ratio = {logo_height} / splash.raw.GetHeight();\n"
+        f"splash.image = splash.raw.Scale(splash.raw.GetWidth() * splash.ratio, {logo_height});\n"
+        f"splash.y = Window.GetHeight() * {logo_top_ratio};\n"
         f"splash.sprite = Sprite(splash.image);\n"
         f"splash.sprite.SetX(Window.GetWidth() / 2 - splash.image.GetWidth() / 2);\n"
-        f"splash.sprite.SetY(Window.GetHeight() / 2 - splash.image.GetHeight() / 2 - 40);\n"
+        f"splash.sprite.SetY(splash.y);\n"
         f"\n"
-        f"# Loading bar — track + fill, 600x4 px, 80 px below splash.\n"
+        f"# Loading bar — track + fill, {bar_width}x{bar_height} px, sous le logo.\n"
         f"bar.x = Window.GetWidth() / 2 - {bar_width} / 2;\n"
-        f"bar.y = Window.GetHeight() / 2 + splash.image.GetHeight() / 2 + 40;\n"
+        f"bar.y = splash.y + {logo_height} + 28;\n"
         f"\n"
         f"track.seed = Image(\"bar-track.png\");\n"
         f"track.image = track.seed.Scale({bar_width}, {bar_height});\n"
@@ -496,9 +349,13 @@ def emit_plymouth_theme(b: dict, files_root: Path) -> Path:
         f"}}\n"
         f"Plymouth.SetRefreshFunction(refresh_callback);\n"
         f"\n"
-        f"# Status text under the bar (LUKS prompt, error messages).\n"
-        f"status_y = bar.y + 40;\n"
+        f"# Zones de texte sous la barre.\n"
+        f"prompt_y = bar.y + 28;\n"
+        f"bullets_y = prompt_y + 26;\n"
+        f"status_y = bullets_y + 26;\n"
         f"status_sprite = Sprite();\n"
+        f"prompt_sprite = Sprite();\n"
+        f"bullets_sprite = Sprite();\n"
         f"\n"
         f"fun update_status(msg) {{\n"
         f"    status_image = Image.Text(msg, "
@@ -509,6 +366,69 @@ def emit_plymouth_theme(b: dict, files_root: Path) -> Path:
         f"}}\n"
         f"Plymouth.SetUpdateStatusFunction(update_status);\n"
         f"Plymouth.SetMessageFunction(update_status);\n"
+        f"\n"
+        f"# ATTENTION - SANS CE BLOC, LA PHRASE DE PASSE LUKS EST INVISIBLE.\n"
+        f"# Le plugin `script` ne dessine rien tout seul : un theme qui n'implemente\n"
+        f"# pas SetDisplayPasswordFunction laisse l'ecran de demarrage fige pendant\n"
+        f"# que cryptsetup attend une saisie. plymouthd accepte quand meme les\n"
+        f"# touches, donc la machine demarre si on tape a l'aveugle — le defaut ne\n"
+        f"# casse pas le boot, il le rend seulement incomprehensible. Vecu le\n"
+        f"# 2026-07-20 : les themes Fedora (bgrt, spinner) utilisent le plugin C\n"
+        f"# `two-step` qui gere la saisie nativement, d'ou l'absence de symptome\n"
+        f"# tant que notre theme n'etait pas reellement charge.\n"
+        f"fun display_password(prompt, bullets) {{\n"
+        f"    # Masquer la barre : pendant une attente de saisie, une barre qui\n"
+        f"    # progresse ment sur ce que fait la machine.\n"
+        f"    track.sprite.SetOpacity(0);\n"
+        f"    fill.sprite.SetOpacity(0);\n"
+        f"\n"
+        f"    prompt_image = Image.Text(prompt, "
+        f"{accent_norm[0]:.4f}, {accent_norm[1]:.4f}, {accent_norm[2]:.4f});\n"
+        f"    prompt_sprite.SetImage(prompt_image);\n"
+        f"    prompt_sprite.SetX(Window.GetWidth() / 2 - prompt_image.GetWidth() / 2);\n"
+        f"    prompt_sprite.SetY(prompt_y);\n"
+        f"    prompt_sprite.SetOpacity(1);\n"
+        f"\n"
+        f"    # Un asterisque par caractere saisi. Image.Text sur une chaine vide\n"
+        f"    # n'a rien a rendre, d'ou la garde sur bullets > 0.\n"
+        f"    if (bullets > 0) {{\n"
+        f"        dots = \"\";\n"
+        f"        i = 0;\n"
+        f"        while (i < bullets) {{\n"
+        f"            dots = dots + \"*\";\n"
+        f"            i++;\n"
+        f"        }}\n"
+        f"        bullets_image = Image.Text(dots, "
+        f"{accent_norm[0]:.4f}, {accent_norm[1]:.4f}, {accent_norm[2]:.4f});\n"
+        f"        bullets_sprite.SetImage(bullets_image);\n"
+        f"        bullets_sprite.SetX(Window.GetWidth() / 2 - bullets_image.GetWidth() / 2);\n"
+        f"        bullets_sprite.SetY(bullets_y);\n"
+        f"        bullets_sprite.SetOpacity(1);\n"
+        f"    }} else {{\n"
+        f"        bullets_sprite.SetOpacity(0);\n"
+        f"    }}\n"
+        f"}}\n"
+        f"Plymouth.SetDisplayPasswordFunction(display_password);\n"
+        f"\n"
+        f"# Retour a l'affichage courant : effacer la zone de saisie et rendre la barre.\n"
+        f"fun display_normal() {{\n"
+        f"    prompt_sprite.SetOpacity(0);\n"
+        f"    bullets_sprite.SetOpacity(0);\n"
+        f"    track.sprite.SetOpacity(1);\n"
+        f"    fill.sprite.SetOpacity(1);\n"
+        f"}}\n"
+        f"Plymouth.SetDisplayNormalFunction(display_normal);\n"
+        f"\n"
+        f"# Passage de relais au gestionnaire de session : tout effacer.\n"
+        f"fun quit_callback() {{\n"
+        f"    splash.sprite.SetOpacity(0);\n"
+        f"    track.sprite.SetOpacity(0);\n"
+        f"    fill.sprite.SetOpacity(0);\n"
+        f"    prompt_sprite.SetOpacity(0);\n"
+        f"    bullets_sprite.SetOpacity(0);\n"
+        f"    status_sprite.SetOpacity(0);\n"
+        f"}}\n"
+        f"Plymouth.SetQuitFunction(quit_callback);\n"
     )
     (base / f"{slug}.script").write_text(plymouth_script)
 
@@ -545,27 +465,6 @@ def emit_plymouth_config(b: dict, files_root: Path) -> Path:
     return target
 
 
-def emit_sddm_config(b: dict, files_root: Path) -> Path:
-    """Wire SDDM to use Breeze with our brand background + cursor."""
-    target = files_root / "etc/sddm.conf.d/blue-fox.conf"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    # We stick with Breeze (mature, ships in Plasma 6) and override its
-    # background via the theme.conf symlink trick documented in the theme dir.
-    # When BFOSL3 audit lands we may switch to a custom QML theme.
-    conf = (
-        f"[Theme]\n"
-        f"Current=breeze\n"
-        f"CursorTheme=breeze_cursors\n"
-        f"Font={b['system_font']}\n"
-        f"\n"
-        f"[General]\n"
-        f"# Tenant: {b['slug']}\n"
-    )
-    target.write_text(conf)
-    LOG.info("emit sddm config %s", target)
-    return target
-
-
 def _kdeglobals_body(b: dict) -> str:
     icon_theme = f"bluefox-{b['slug']}"
     return (
@@ -594,6 +493,159 @@ def _kdeglobals_body(b: dict) -> str:
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# DEUX GENERATIONS DE GREETER COHABITENT DANS NOTRE PROPRE PARC (2026-09-13)
+#
+#   bf, factice   image-version: latest -> Fedora 44 -> plasmalogin
+#   bf-surface    image-version: "43"   -> Fedora 43 -> sddm
+#
+# Mesure sur les images publiees, `display-manager.service` :
+#   bf-surface -> sddm.service     (sddm, sddm-breeze installes,
+#                                   /usr/share/sddm/themes/breeze appartient
+#                                   bien a sddm-breeze-6.7.5-1.fc43)
+#   bf/factice -> plasmalogin.service  (/usr/bin/sddm ABSENT, aucun paquet sddm,
+#                                   et /usr/share/sddm/themes/ n appartenant a
+#                                   AUCUN paquet — cree par ce script)
+#
+# ⚠️ D ou une correction d un constat pose plus tot le meme jour : le reglage
+# SDDM n etait PAS mort partout. Il etait mort sur les deux images en 44, et
+# parfaitement vivant sur celle en 43 — y compris la surcharge
+# `breeze/theme.conf.user` du 2026-09-02, qui faisait bien son travail la.
+# Conclure « dead code » depuis UNE image, c est conclure depuis un echantillon
+# de un.
+#
+# On emet donc les DEUX, et c est l assertion de build qui exige celui que
+# l image cable vraiment. Un fichier de config pour un greeter absent ne coute
+# que quelques centaines d octets et ne fait rien ; il manquer coute un ecran
+# de connexion sans marque.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def emit_sddm_config(b: dict, files_root: Path) -> Path:
+    """Wire SDDM to use Breeze with our brand background + cursor."""
+    target = files_root / "etc/sddm.conf.d/blue-fox.conf"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # We stick with Breeze (mature, ships in Plasma 6) and override its
+    # background via the theme.conf symlink trick documented in the theme dir.
+    # When BFOSL3 audit lands we may switch to a custom QML theme.
+    conf = (
+        f"[Theme]\n"
+        f"Current=breeze\n"
+        f"CursorTheme=breeze_cursors\n"
+        f"Font={b['system_font']}\n"
+        f"\n"
+        f"[General]\n"
+        f"# Tenant: {b['slug']}\n"
+    )
+    target.write_text(conf)
+    LOG.info("emit sddm config %s", target)
+    return target
+
+
+def emit_sddm_breeze_override(b: dict, files_root: Path) -> Path:
+    """Donner au greeter SDDM le papier peint de la marque.
+
+    emit_sddm_config() oriente SDDM vers le theme `breeze` d'origine, mature et
+    livre avec Plasma 6. Le theme par tenant emis juste au-dessus pointe bien
+    sur notre papier peint, mais il n'est PAS celui qui est charge : son propre
+    commentaire annonce une bascule qui n'a jamais eu lieu. Resultat constate le
+    2026-09-02 sur une machine fraichement installee : l'ecran de connexion
+    affiche le fond Breeze d'origine.
+
+    SDDM lit `theme.conf` PUIS `theme.conf.user` dans le repertoire du theme, et
+    le second l'emporte. C'est le point de surcharge prevu en amont, et il
+    survit a une mise a jour du paquet breeze, contrairement a une reecriture de
+    theme.conf.
+    """
+    base = files_root / "usr/share/sddm/themes/breeze"
+    base.mkdir(parents=True, exist_ok=True)
+    conf = (
+        f"# Genere par scripts/generate_kde_theme.py — tenant {b['slug']}.\n"
+        f"# Surcharge de /usr/share/sddm/themes/breeze/theme.conf.\n"
+        f"[General]\n"
+        f"background={BRANDING_RUNTIME}/wallpaper.jpg\n"
+        f"type=image\n"
+    )
+    target = base / "theme.conf.user"
+    target.write_text(conf)
+    LOG.info("emit sddm breeze override %s", target)
+    return target
+
+
+def emit_plasmalogin_config(b: dict, files_root: Path) -> Path:
+    """Papier peint de la marque sur l'ecran de connexion.
+
+    ⚠️⚠️ CE N'EST PLUS SDDM. Mesure du 2026-09-13 sur l'image publiee :
+    `/etc/systemd/system/display-manager.service` pointe sur
+    `plasmalogin.service`, `/usr/bin/sddm` n'existe pas, et aucun paquet sddm
+    n'est installe — Fedora 44 / Plasma 6.7 ont remplace SDDM par
+    plasma-login-manager.
+
+    Tout ce qu'on generait pour SDDM n'etait donc lu par personne :
+    `/etc/sddm.conf.d/blue-fox.conf`, un theme par locataire jamais selectionne,
+    et une surcharge `breeze/theme.conf.user` posee le 2026-09-02 pour corriger
+    « l'ecran de connexion affiche le fond Breeze d'origine ». Le repertoire
+    `/usr/share/sddm/themes/` n'appartenait a AUCUN paquet : il existait parce
+    que ce script le creait. Un arbre entier qui donnait l'illusion d'un ecran
+    de connexion brande.
+
+    Ce que la machine lit vraiment, `/usr/lib/plasmalogin/defaults.conf` :
+
+        [Greeter][Wallpaper][org.kde.image][General]
+        Image=file:///usr/share/wallpapers/Fedora/
+
+    — donc le papier peint de FEDORA, sur chaque Blue Fox OS, locataire tiers
+    ou pas. On ecrit ici un drop-in dans `/etc/plasmalogin.conf.d/`, qui l'emporte
+    sur les defauts du paquet et survit a ses mises a jour.
+
+    ⚠️ On copie la FORME EXACTE des cles de `defaults.conf` — meme greffon, meme
+    genre de valeur (un paquet de papier peint KDE, pas un fichier nu) — plutot
+    que d'inventer des cles plausibles. C'est precisement ce qui avait ete fait
+    du cote SDDM, et ca a tenu onze jours sans que rien ne le dise.
+    """
+    target = files_root / "etc/plasmalogin.conf.d/10-bluefox.conf"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # Le paquet dedie a la connexion s'il existe, celui du bureau sinon.
+    dedie = files_root / "usr/share/wallpapers" / f"{b['slug']}-login"
+    nom = f"{b['slug']}-login" if dedie.is_dir() else b["slug"]
+    paquet = f"file:///usr/share/wallpapers/{nom}/"
+    conf = (
+        f"# Genere par scripts/generate_kde_theme.py — tenant {b['slug']}.\n"
+        f"# Surcharge /usr/lib/plasmalogin/defaults.conf, qui sert le papier\n"
+        f"# peint de Fedora. Le paquet vise est emis par emit_wallpaper_package().\n"
+        f"[Greeter]\n"
+        f"WallpaperPlugin=org.kde.image\n"
+        f"\n"
+        f"[Greeter][Wallpaper][org.kde.image][General]\n"
+        f"Image={paquet}\n"
+        f"PreviewImage={paquet}\n"
+    )
+    target.write_text(conf)
+    LOG.info("emit plasmalogin config %s", target)
+    return target
+
+
+def emit_kscreenlocker_config(b: dict, files_root: Path) -> Path:
+    """Papier peint de l'ecran de verrouillage, a l'echelle du systeme.
+
+    Le `defaults` du look-and-feel ne s'applique qu'a un profil Plasma NEUF. Ce
+    fichier-ci vaut pour toute session, y compris un profil deja cree, et c'est
+    ce qui rend le reglage vrai sur une machine qui a deja servi.
+    """
+    target = files_root / "etc/xdg/kscreenlockerrc"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    wallpaper_path = f"/usr/share/wallpapers/{b['slug']}/contents/images/wallpaper.jpg"
+    conf = (
+        f"# Genere par scripts/generate_kde_theme.py — tenant {b['slug']}.\n"
+        f"[Greeter][Wallpaper][org.kde.image][General]\n"
+        f"Image=file://{wallpaper_path}\n"
+        f"FillMode=2\n"
+    )
+    target.write_text(conf)
+    LOG.info("emit kscreenlocker config %s", target)
+    return target
+
+
 def emit_icon_theme(b: dict, files_root: Path) -> Path:
     """Ship a minimal KDE icon theme inheriting Breeze, overriding only
     `start-here-kde` (the application menu button) with the tenant logo.
@@ -609,8 +661,15 @@ def emit_icon_theme(b: dict, files_root: Path) -> Path:
     index = (
         f"[Icon Theme]\n"
         f"Name=Blue Fox OS — {b['name']}\n"
-        f"Comment=Blue Fox icon overrides (inherits Breeze)\n"
-        f"Inherits=breeze,hicolor\n"
+        f"Comment=Blue Fox icon overrides (inherits Breeze dark)\n"
+        # 🔴 breeze-dark EN PREMIER (#25854, retour du 2026-09-20). On heritait
+        # de `breeze`, la variante CLAIRE, alors que notre schema de couleurs
+        # est sombre (BackgroundNormal 45,48,49). Les icones monochromes de la
+        # barre des taches — son, reseau, Bluetooth — sont dessinees sombres
+        # dans breeze : sur notre panneau sombre, elles disparaissaient.
+        # `breeze` reste derriere : une icone absente de la variante sombre s'y
+        # resout encore, plutot que de tomber sur le carre de hicolor.
+        f"Inherits=breeze-dark,breeze,hicolor\n"
         f"Directories=scalable/places\n"
         f"\n"
         f"[scalable/places]\n"
@@ -710,6 +769,76 @@ def emit_neofetch_config(b: dict, files_root: Path) -> Path:
     return skel_dir
 
 
+def _mesurer_logo(chemin: Path) -> tuple[int, int]:
+    """Largeur et hauteur du logo, lues sur le dessin lui-meme.
+
+    Les sequences d'echappement ne prennent pas de place a l'ecran mais en
+    prennent dans le fichier : c'est precisement ce que fastfetch mesure mal,
+    et pourquoi on lui donne les nombres. On les prend donc au meme endroit que
+    lui aurait du les prendre — apres avoir retire les sequences.
+    """
+    try:
+        lignes = chemin.read_text(encoding="utf-8").rstrip("\n").split("\n")
+    except OSError:
+        LOG.warning("logo ANSI absent (%s) : taille de repli", chemin)
+        return FASTFETCH_LOGO_WIDTH, FASTFETCH_LOGO_HEIGHT
+    largeur = max((len(_SGR.sub("", l)) for l in lignes), default=0)
+    return largeur or FASTFETCH_LOGO_WIDTH, len(lignes) or FASTFETCH_LOGO_HEIGHT
+
+
+def emit_fastfetch_config(b: dict, files_root: Path) -> Path:
+    """Logo du renard et bloc d'information pour fastfetch (#25854).
+
+    ⚠️ CE N'EST PAS NEOFETCH. Fedora 44 sert `fastfetch` ; neofetch n'est plus
+    maintenu et n'est pas dans l'image. On garde sa config a cote tant qu'elle
+    ne coute rien, mais c'est celle-ci qui s'affiche dans un terminal.
+
+    Le logo est `branding/bluefoxos.ansi`, en couleurs VRAIES (24 bits) :
+    Konsole les rend, la console texte du noyau non. La largeur et la hauteur
+    sont declarees ici parce que fastfetch mesure mal un fichier qui porte des
+    sequences d'echappement — sans elles, tout le bloc d'information se decale.
+    Le fichier absent, fastfetch retombe sur le logo de la distribution : pas
+    de logo casse, juste celui de Fedora.
+    """
+    logo = f"{BRANDING_RUNTIME}/bluefoxos.ansi"
+    largeur, hauteur = _mesurer_logo(
+        files_root / "usr/share/bluefox/branding/bluefoxos.ansi")
+    skel_dir = files_root / "etc/skel/.config/fastfetch"
+    skel_dir.mkdir(parents=True, exist_ok=True)
+    config = {
+        "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
+        "logo": {
+            "type": "file-raw",
+            "source": logo,
+            "width": largeur,
+            "height": hauteur,
+            "padding": {"top": 1, "right": 3},
+        },
+        "display": {"separator": "  "},
+        "modules": [
+            {"type": "title", "format": "{user-name}@{host-name}"},
+            "separator",
+            {"type": "os", "key": "Systeme"},
+            {"type": "host", "key": "Locataire", "format": b["name"]},
+            {"type": "kernel", "key": "Noyau"},
+            {"type": "uptime", "key": "Allume depuis"},
+            {"type": "packages", "key": "Paquets"},
+            {"type": "shell", "key": "Interpreteur"},
+            {"type": "de", "key": "Bureau"},
+            {"type": "terminal", "key": "Terminal"},
+            {"type": "cpu", "key": "Processeur"},
+            {"type": "memory", "key": "Memoire"},
+            {"type": "disk", "key": "Disque"},
+            "break",
+            "colors",
+        ],
+    }
+    cible = skel_dir / "config.jsonc"
+    cible.write_text(json.dumps(config, indent=2, ensure_ascii=True) + "\n")
+    LOG.info("emit fastfetch config %s", cible)
+    return cible
+
+
 def emit_xdg_kdeglobals(b: dict, files_root: Path) -> Path:
     """System-wide defaults inherited by every new KDE session."""
     target = files_root / "etc/xdg/kdeglobals"
@@ -778,9 +907,12 @@ def emit_all(tenant: dict, files_root: Path) -> dict:
     return {
         "color_scheme": emit_color_scheme(b, files_root),
         "wallpaper_pkg": emit_wallpaper_package(b, files_root),
+        "login_wallpaper_pkg": emit_login_wallpaper_package(b, files_root),
         "look_and_feel": emit_look_and_feel(b, files_root),
-        "sddm_theme": emit_sddm_theme(b, files_root),
         "sddm_config": emit_sddm_config(b, files_root),
+        "sddm_breeze_override": emit_sddm_breeze_override(b, files_root),
+        "plasmalogin_config": emit_plasmalogin_config(b, files_root),
+        "kscreenlocker": emit_kscreenlocker_config(b, files_root),
         "plymouth_theme": emit_plymouth_theme(b, files_root),
         "plymouth_config": emit_plymouth_config(b, files_root),
         "xdg_kdeglobals": emit_xdg_kdeglobals(b, files_root),
@@ -788,6 +920,7 @@ def emit_all(tenant: dict, files_root: Path) -> dict:
         "skel_appletsrc": emit_skel_plasma_appletsrc(b, files_root),
         "icon_theme": emit_icon_theme(b, files_root),
         "neofetch": emit_neofetch_config(b, files_root),
+        "fastfetch": emit_fastfetch_config(b, files_root),
         "branding": b,
     }
 

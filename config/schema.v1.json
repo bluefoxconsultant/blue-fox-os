@@ -4,7 +4,13 @@
   "title": "Blue Fox OS tenant config",
   "description": "JSON consommé par le welcome agent au premier démarrage et par le pipeline BlueBuild pour le branding par tenant.",
   "type": "object",
-  "required": ["slug", "version", "image_ref", "services", "branding"],
+  "required": [
+    "slug",
+    "version",
+    "image_ref",
+    "services",
+    "branding"
+  ],
   "properties": {
     "slug": {
       "type": "string",
@@ -22,83 +28,167 @@
     },
     "services": {
       "type": "object",
-      "required": ["nextcloud", "authentik", "imap"],
+      "required": [
+        "nextcloud",
+        "authentik",
+        "imap"
+      ],
       "properties": {
         "nextcloud": {
           "type": "object",
-          "required": ["url"],
+          "required": [
+            "url"
+          ],
           "properties": {
-            "url": {"type": "string", "format": "uri"},
-            "talk_enabled": {"type": "boolean", "default": true}
+            "url": {
+              "type": "string",
+              "format": "uri"
+            },
+            "talk_enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "oidc_client_id": {
+              "type": "string",
+              "description": "client_id du fournisseur Nextcloud dans Authentik. Sert d'audience a l'echange de jetons RFC 8693 qui obtient un mot de passe d'application en arriere-plan, sans redemander de SSO au premier demarrage. Absent = l'agent d'accueil retombe sur le parcours navigateur. Ce n'est pas un secret ; le fournisseur CIBLE doit par ailleurs declarer federer avec blue-fox-os cote Authentik."
+            }
           }
         },
         "odoo": {
           "type": "object",
           "properties": {
-            "url": {"type": "string", "format": "uri"}
+            "url": {
+              "type": "string",
+              "format": "uri"
+            }
           }
         },
         "vaultwarden": {
           "type": "object",
           "properties": {
-            "url": {"type": "string", "format": "uri"}
+            "url": {
+              "type": "string",
+              "format": "uri"
+            }
           }
         },
         "authentik": {
           "type": "object",
-          "required": ["url", "issuer"],
+          "required": [
+            "url",
+            "issuer"
+          ],
           "properties": {
-            "url": {"type": "string", "format": "uri"},
-            "issuer": {"type": "string", "format": "uri"},
-            "client_id": {"type": "string"}
+            "url": {
+              "type": "string",
+              "format": "uri"
+            },
+            "issuer": {
+              "type": "string",
+              "format": "uri"
+            },
+            "client_id": {
+              "type": "string"
+            }
           }
         },
         "imap": {
           "type": "object",
-          "required": ["host", "port"],
+          "required": [
+            "host",
+            "port"
+          ],
           "properties": {
-            "host": {"type": "string"},
-            "port": {"type": "integer", "minimum": 1, "maximum": 65535},
-            "use_tls": {"type": "boolean", "default": true}
+            "host": {
+              "type": "string"
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "use_tls": {
+              "type": "boolean",
+              "default": true
+            }
           }
         },
         "smtp": {
           "type": "object",
           "properties": {
-            "host": {"type": "string"},
-            "port": {"type": "integer"},
-            "use_tls": {"type": "boolean", "default": true}
+            "host": {
+              "type": "string"
+            },
+            "port": {
+              "type": "integer"
+            },
+            "use_tls": {
+              "type": "boolean",
+              "default": true
+            }
           }
         },
         "talk": {
           "type": "object",
           "properties": {
-            "url": {"type": "string", "format": "uri"}
+            "url": {
+              "type": "string",
+              "format": "uri"
+            }
           }
         },
         "calcom": {
           "type": "object",
           "properties": {
-            "url": {"type": "string", "format": "uri"}
+            "url": {
+              "type": "string",
+              "format": "uri"
+            }
           }
         }
       }
     },
     "branding": {
       "type": "object",
-      "required": ["logo_url", "wallpaper_url"],
-      "description": "Champs optionnels (palette, system_font, plasma_theme, sddm_theme) tombent sur les defaults BF canoniques (#29ABE1 / #2D3031 / Lexend) si absents — voir scripts/generate_kde_theme.py.",
+      "required": [
+        "logo_url",
+        "wallpaper_url"
+      ],
+      "description": "Champs optionnels (palette, system_font, plasma_theme) tombent sur les defaults BF canoniques (#29ABE1 / #2D3031 / Lexend) si absents — voir scripts/generate_kde_theme.py.",
       "properties": {
-        "logo_url": {"type": "string", "format": "uri", "description": "PNG transparent, idéalement 1024x1024."},
-        "wallpaper_url": {"type": "string", "format": "uri", "description": "JPG ou PNG 1920x1080 minimum."},
-        "splash_url": {"type": "string", "format": "uri", "description": "Splash Plymouth, optionnel."},
+        "logo_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "PNG transparent, idéalement 1024x1024."
+        },
+        "wallpaper_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "JPG ou PNG 1920x1080 minimum."
+        },
+        "splash_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Splash Plymouth, optionnel."
+        },
         "palette": {
           "type": "object",
           "description": "Hex couleurs. Defaults BF si non fourni : primary #29ABE1, secondary #2D3031, accent = primary.",
           "properties": {
-            "primary": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$", "default": "#29ABE1"},
-            "secondary": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$", "default": "#2D3031"},
-            "accent": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"}
+            "primary": {
+              "type": "string",
+              "pattern": "^#[0-9A-Fa-f]{6}$",
+              "default": "#29ABE1"
+            },
+            "secondary": {
+              "type": "string",
+              "pattern": "^#[0-9A-Fa-f]{6}$",
+              "default": "#2D3031"
+            },
+            "accent": {
+              "type": "string",
+              "pattern": "^#[0-9A-Fa-f]{6}$"
+            }
           }
         },
         "system_font": {
@@ -122,7 +212,7 @@
         },
         "sddm_theme": {
           "type": "string",
-          "description": "Nom du theme SDDM. Defaut: dérivé du slug (ex: 'bf')."
+          "description": "OBSOLETE (2026-09-13) : sans effet. Fedora 44 / Plasma 6.7 ont remplacé SDDM par plasmalogin ; l'écran de connexion se règle par /etc/plasmalogin.conf.d/. La propriété reste acceptée pour ne pas invalider les configs de locataires qui la portent encore."
         }
       }
     },
@@ -130,11 +220,22 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["title", "url"],
+        "required": [
+          "title",
+          "url"
+        ],
         "properties": {
-          "title": {"type": "string"},
-          "url": {"type": "string", "format": "uri"},
-          "pinned": {"type": "boolean", "default": false}
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "pinned": {
+            "type": "boolean",
+            "default": false
+          }
         }
       }
     },

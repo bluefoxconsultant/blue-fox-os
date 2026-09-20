@@ -1,0 +1,338 @@
+#!/usr/bin/env python3
+"""bluefox-policy-sync — re-tire la politique Odoo sur une machine deja installee.
+
+POURQUOI CE SERVICE EXISTE (#23909)
+Jusqu'ici une machine recevait sa politique UNE fois, pendant son installation,
+avec le porteur OIDC de la personne qui installait. Modifier la politique dans
+Odoo ne changeait donc rien sur les postes deja en service : il fallait
+reinstaller. Ce service ferme la boucle. Il s'authentifie avec le secret propre
+a la machine, ecrit a l'enrolement dans /etc/bluefox/machine.json (0600, root),
+et reecrit la politique locale.
+
+CE QU'IL APPLIQUE, ET CE QU'IL LAISSE TRANQUILLE
+  1. /var/lib/bluefox-welcome/provisioning.json — la politique elle-meme.
+     Tout ce qui relit ce fichier a chaque demarrage suit alors gratuitement :
+     bluefox-tpm-enroll.service, par exemple, active l'auto-deverrouillage LUKS
+     si la politique vient de l'activer, sans une ligne de plus ici.
+  2. Les deux listes Flatpak /etc/bluebuild/default-flatpaks/system/{install,remove}.
+
+Le reste du bloc « install » — nom d'hote, locale, disposition clavier, mode de
+connexion — n'est DELIBEREMENT pas reapplique. Ces reglages se posent sur un
+systeme qu'on installe, pas sur un systeme qui tourne : changer le nom d'hote
+demande hostnamectl, la locale ne prend qu'a la prochaine session, et le mode
+de connexion touche sssd et PAM. C'est un chantier a part, a tester en VM.
+La frontiere est ici pour qu'elle soit lisible, pas parce qu'on l'a oubliee.
+
+⚠️ CE QUE LA MINUTERIE AMONT NE FAIT PAS
+system-flatpak-setup.timer est en `OnBootSec=30` : elle ne passe QU'AU
+DEMARRAGE. Une machine allumee toute la semaine ne convergerait donc jamais,
+meme les listes reecrites. Quand les listes changent, on declenche donc
+nous-memes system-flatpak-setup.service. Quand elles ne changent pas, on ne
+declenche rien : inutile de reveiller un `flatpak install` tous les jours.
+
+⚠️ RETIRER UNE APP DE LA LISTE « install » NE LA DESINSTALLE PAS
+system-flatpak-setup ne desinstalle que ce qui figure dans la liste `remove`.
+Une application retiree des « Default apps » cesse d'etre installee sur les
+machines neuves, mais reste en place sur celles qui l'ont deja. Pour la retirer
+partout, la mettre dans « Apps to remove » cote Odoo — d'ou le champ.
+
+TOLERANCE AUX PANNES
+Un poste hors ligne, un serveur qui repond mal, une machine revoquee : le
+service journalise et sort en succes en gardant la derniere politique connue.
+Un poste ne doit jamais se retrouver sans configuration parce que la
+synchronisation a echoue. Seules les pannes locales (impossible d'ecrire,
+module manquant dans l'image) sortent en echec, parce qu'elles, il faut les voir.
+
+stdlib uniquement : cette image n'embarque pas de dependances python tierces.
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+MACHINE_JSON = "/etc/bluefox/machine.json"
+PROVISIONING_JSON = "/var/lib/bluefox-welcome/provisioning.json"
+STATE_JSON = "/var/lib/bluefox-welcome/policy-sync.json"
+FLATPAK_DIR = "/etc/bluebuild/default-flatpaks/system"
+# Copie de install/bfos_apply.py posee dans l'image par scripts/publish-image.sh.
+# Une seule source pour le format des listes : le fichier ecrit a l'installation
+# et celui ecrit par la synchronisation ne peuvent pas diverger.
+APPLY_MODULE = "/usr/lib/bluefox/bfos_apply.py"
+AUTH_PREFIX = "bfos-machine "
+TIMEOUT = 30
+
+
+def log(msg):
+    print(f"[policy-sync] {msg}", file=sys.stderr, flush=True)
+
+
+# ------------------------------------------------------------------- lecture
+def read_machine(path):
+    """Lit le fichier d'enrolement. Retourne None si la machine n'est pas
+    enrolee — cas normal d'un poste installe avant l'enrolement, ou dont
+    l'enrolement avait echoue : rien a synchroniser, et ce n'est pas une panne."""
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        log(f"{path} illisible ({exc})")
+        return None
+    if not isinstance(data, dict) or not data.get("token") or not data.get("endpoint"):
+        log(f"{path} incomplet : ni jeton ni endpoint exploitable")
+        return None
+    return data
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse de suivre une redirection.
+
+    ⚠️ urllib recopie l'en-tete Authorization sur l'URL de destination. Un
+    portail captif — le cas normal d'un portable dans un hotel ou un aeroport —
+    repond justement par une redirection : suivre celle-la remettrait le secret
+    de la machine au portail. En TLS le portail ne peut pas se faire passer pour
+    le serveur, donc la connexion echoue d'elle-meme ; ce garde-fou couvre le
+    reste, et une redirection legitime de notre propre plan de politique n'a
+    aucune raison d'exister."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _is_local(url) -> bool:
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    return host in ("localhost", "127.0.0.1", "::1")
+
+
+def fetch_policy(endpoint, token, opener=None):
+    """Retourne ``(policy, note)``. `policy` est None quand la politique n'a pas
+    pu etre obtenue ; `note` dit pourquoi, en clair, pour le journal."""
+    if not endpoint.startswith("https://") and not _is_local(endpoint):
+        # Le jeton de la machine ne part pas en clair. La seule exception est la
+        # boucle locale, qui sert aux essais.
+        return None, f"endpoint non chiffre refuse : {endpoint}"
+    req = urllib.request.Request(endpoint)
+    req.add_header("Authorization", f"Bearer {AUTH_PREFIX}{token}")
+    req.add_header("Accept", "application/json")
+    open_url = opener or urllib.request.build_opener(_NoRedirect()).open
+    try:
+        with open_url(req, timeout=TIMEOUT) as resp:
+            raw = resp.read().decode()
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            # Geste administratif deliberé : machine revoquee, ou usager sorti
+            # du groupe autorise. On garde la derniere politique connue.
+            return None, (f"acces refuse (HTTP {exc.code}) — machine revoquee ou "
+                          "usager non autorise ; politique locale conservee")
+        return None, f"le serveur a repondu HTTP {exc.code}"
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return None, f"serveur injoignable ({exc}) — poste hors ligne ?"
+    try:
+        policy = json.loads(raw)
+    except ValueError as exc:
+        return None, f"reponse illisible ({exc})"
+    if not (isinstance(policy, dict) and policy.get("schema") == "bf-policy/v2"
+            and isinstance(policy.get("install"), dict)):
+        return None, "reponse hors schema bf-policy/v2"
+    return policy, "ok"
+
+
+# ------------------------------------------------------------------ ecriture
+def atomic_write(path, content, mode=0o644):
+    """Ecriture atomique : fichier temporaire puis os.replace. Une coupure de
+    courant au mauvais moment laisse l'ancien fichier intact plutot qu'un JSON
+    tronque, que plus rien ne saurait relire.
+
+    Le mode est pose A LA CREATION du temporaire, pas apres. L'atomicite du
+    rename ne dit rien des permissions : avec un chmod posterieur, le fichier
+    appele avec mode=0o600 — la politique, qui porte le login de l'operateur —
+    existait d'abord en 0644 sous un nom previsible, dans le repertoire de
+    destination. Le rename n'y changeait rien, il arrivait apres."""
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    tmp = os.path.join(directory, f".{os.path.basename(path)}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        os.fchmod(fd, mode)  # temporaire deja present : O_CREAT ignore le mode
+        fh = os.fdopen(fd, "w")
+    except BaseException:
+        os.close(fd)
+        raise
+    with fh:
+        fh.write(content)
+    os.replace(tmp, path)
+
+
+def write_if_changed(path, content, mode=0o644) -> bool:
+    """Ecrit `content` seulement s'il differe de ce qui est deja la. Retourne
+    True si le fichier a change."""
+    try:
+        with open(path) as fh:
+            if fh.read() == content:
+                return False
+    except (OSError, ValueError):
+        pass
+    atomic_write(path, content, mode)
+    return True
+
+
+def _comparable(policy):
+    """La politique debarrassee de ce qui change a chaque appel.
+
+    ⚠️ `generated_at` est horodate par le serveur A CHAQUE reponse. Comparer les
+    fichiers octet a octet ferait donc conclure « la politique a change » tous
+    les jours, sur toutes les machines : le journal mentirait, le fichier
+    changerait de date pour rien, et toute logique branchee plus tard sur « la
+    politique a change » se declencherait quotidiennement."""
+    return {k: v for k, v in policy.items() if k != "generated_at"}
+
+
+def write_policy(path, policy) -> bool:
+    """Ecrit la politique si son CONTENU a change. Retourne True si oui."""
+    try:
+        with open(path) as fh:
+            current = json.load(fh)
+        if isinstance(current, dict) and _comparable(current) == _comparable(policy):
+            return False
+    except (OSError, ValueError):
+        pass
+    # 0600 : la politique porte le login de l'operateur et les endpoints LDAP.
+    atomic_write(path, json.dumps(policy, indent=2) + "\n", mode=0o600)
+    return True
+
+
+def load_apply(path=APPLY_MODULE):
+    """Charge la copie de bfos_apply.py posee dans l'image, pour reutiliser son
+    rendu des listes Flatpak. Retourne None si elle manque."""
+    import importlib.util
+
+    if not os.path.exists(path):
+        return None
+    spec = importlib.util.spec_from_file_location("bfos_apply", path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def apply_apps(policy, apply_mod, flatpak_dir=FLATPAK_DIR) -> tuple:
+    """Reecrit les deux listes Flatpak. Retourne ``(changed, detail)``.
+
+    ⚠️ Difference VOULUE avec l'application a l'installation : ici on ecrit les
+    deux fichiers meme quand une liste est VIDE. A l'installation, une liste
+    vide ne fait rien ecrire, ce qui laisse la base de l'image telle quelle —
+    c'est le bon comportement pour un systeme neuf. En synchronisation, ne pas
+    ecrire laisserait la liste PRECEDENTE en place : vider les applications
+    supplementaires cote Odoo n'aurait alors aucun effet, et la politique ne
+    serait plus la source de verite. Une politique SANS bloc « apps » (serveur
+    anterieur a bf_policy 18.0.2.3.0) ne fait toujours rien ecrire, elle."""
+    apps = policy.get("apps")
+    if not isinstance(apps, dict):
+        return False, "politique sans bloc apps — listes laissees intactes"
+    changed = []
+    for key in ("install", "remove"):
+        ids = [str(a).strip() for a in (apps.get(key) or []) if str(a).strip()]
+        content = apply_mod.render_flatpak_list(ids, key)
+        if write_if_changed(os.path.join(flatpak_dir, key), content):
+            changed.append(f"{key}={len(ids)}")
+    if not changed:
+        return False, "listes Flatpak inchangees"
+    return True, "listes Flatpak reecrites (" + ", ".join(changed) + ")"
+
+
+def trigger_flatpak_setup(run=subprocess.run) -> bool:
+    """Declenche la convergence des applications tout de suite.
+
+    Necessaire parce que system-flatpak-setup.timer est en OnBootSec=30 : sans
+    ce coup de pouce, une machine allumee en continu n'appliquerait la nouvelle
+    liste qu'a son prochain demarrage."""
+    try:
+        run(["systemctl", "start", "--no-block", "system-flatpak-setup.service"],
+            check=False)
+        return True
+    except OSError as exc:
+        log(f"declenchement de system-flatpak-setup impossible ({exc})")
+        return False
+
+
+def write_state(path, **fields):
+    """Trace de la derniere synchronisation, pour le diagnostic a froid."""
+    try:
+        write_if_changed(path, json.dumps(fields, indent=2, sort_keys=True) + "\n")
+    except OSError as exc:
+        log(f"etat non ecrit ({exc})")
+
+
+# ---------------------------------------------------------------------- main
+def sync(machine_path=MACHINE_JSON, provisioning_path=PROVISIONING_JSON,
+         flatpak_dir=FLATPAK_DIR, state_path=STATE_JSON,
+         apply_module=APPLY_MODULE, opener=None, run=subprocess.run,
+         trigger=True) -> int:
+    machine = read_machine(machine_path)
+    if machine is None:
+        log("machine non enrolee — rien a synchroniser")
+        return 0
+
+    policy, note = fetch_policy(machine["endpoint"], machine["token"],
+                                opener=opener)
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    if policy is None:
+        log(note)
+        write_state(state_path, last_attempt=stamp, status="skipped", detail=note,
+                    machine_uuid=machine.get("machine_uuid", ""))
+        return 0
+
+    rc = 0
+    changes = []
+    try:
+        if write_policy(provisioning_path, policy):
+            changes.append("politique")
+    except OSError as exc:
+        # Panne locale : celle-la doit se voir dans `systemctl status`.
+        log(f"ecriture de {provisioning_path} impossible ({exc})")
+        write_state(state_path, last_attempt=stamp, status="error", detail=str(exc),
+                    machine_uuid=machine.get("machine_uuid", ""))
+        return 1
+
+    apply_mod = load_apply(apply_module)
+    if apply_mod is None:
+        log(f"{apply_module} absent de l'image — applications non synchronisees")
+        rc = 1
+    else:
+        try:
+            apps_changed, detail = apply_apps(policy, apply_mod, flatpak_dir)
+        except OSError as exc:
+            log(f"ecriture des listes Flatpak impossible ({exc})")
+            apps_changed, detail, rc = False, str(exc), 1
+        log(detail)
+        if apps_changed:
+            changes.append("applications")
+            if trigger:
+                trigger_flatpak_setup(run=run)
+
+    log("aucun changement" if not changes
+        else "applique : " + ", ".join(changes))
+    write_state(state_path, last_attempt=stamp, last_success=stamp,
+                status="ok" if rc == 0 else "partial",
+                changes=changes, machine_uuid=machine.get("machine_uuid", ""),
+                hostname=machine.get("hostname", ""))
+    return rc
+
+
+def main(argv=None):
+    if os.geteuid() != 0:
+        log("doit tourner en root")
+        return 1
+    return sync()
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

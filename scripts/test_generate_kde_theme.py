@@ -21,7 +21,7 @@ def test_resolve_branding_applies_bf_defaults():
     assert b["accent"] == b["primary"]
     assert b["system_font"] == gkt.BF_FONT
     assert b["plasma_theme"] == "client"
-    assert b["sddm_theme"] == "client"
+    assert "sddm_theme" not in b  # SDDM n'existe plus dans l'image (2026-09-13)
 
 
 def test_resolve_branding_respects_palette_override():
@@ -37,10 +37,10 @@ def test_resolve_branding_respects_palette_override():
 def test_resolve_branding_respects_theme_overrides():
     b = gkt.resolve_branding({
         "slug": "bf",
-        "branding": {"plasma_theme": "blue-fox-dark", "sddm_theme": "blue-fox"},
+        "branding": {"plasma_theme": "blue-fox-dark"},
     })
     assert b["plasma_theme"] == "blue-fox-dark"
-    assert b["sddm_theme"] == "blue-fox"
+    assert "sddm_theme" not in b
 
 
 def test_hex_to_rgb_round_trip():
@@ -94,12 +94,20 @@ def test_emit_wallpaper_symlinks_runtime_path(tmp_path: Path):
     assert str(link.readlink()) == "/usr/share/bluefox/branding/wallpaper.jpg"
 
 
-def test_emit_sddm_config_steers_to_breeze(tmp_path: Path):
-    tenant = {"slug": "bf"}
-    artifacts = gkt.emit_all(tenant, tmp_path)
-    text = artifacts["sddm_config"].read_text()
-    assert "Current=breeze" in text
-    assert "Font=Lexend" in text
+def test_emit_plasmalogin_config_sert_le_papier_peint_du_locataire(tmp_path: Path):
+    """Le greeter est plasmalogin, pas SDDM (mesure du 2026-09-13).
+
+    Son defaut Fedora sert `file:///usr/share/wallpapers/Fedora/`. On reprend la
+    forme exacte de ses cles, et on vise NOTRE paquet de papier peint.
+    """
+    artifacts = gkt.emit_all({"slug": "bf"}, tmp_path)
+    cible = artifacts["plasmalogin_config"]
+    assert cible == tmp_path / "etc/plasmalogin.conf.d/10-bluefox.conf"
+    text = cible.read_text()
+    assert "WallpaperPlugin=org.kde.image" in text
+    assert "[Greeter][Wallpaper][org.kde.image][General]" in text
+    assert "Image=file:///usr/share/wallpapers/bf/" in text
+    assert "PreviewImage=file:///usr/share/wallpapers/bf/" in text
 
 
 def test_emit_skel_kdeglobals_mirrors_xdg(tmp_path: Path):
@@ -173,6 +181,33 @@ def test_plymouth_uses_boot_bg_color(tmp_path: Path):
     script = (artifacts["plymouth_theme"] / "bf.script").read_text()
     # #001533 = 0, 21, 51 / 255 = 0.0000, 0.0824, 0.2000
     assert "0.0000, 0.0824, 0.2000" in script
+
+
+def test_plymouth_theme_can_display_a_password(tmp_path: Path):
+    """Regression: a script theme draws everything itself, so without this
+    callback the LUKS passphrase prompt is invisible and the machine looks
+    hung. Vecu le 2026-07-20 — Olivier a du taper sa phrase de passe a
+    l'aveugle. Ne jamais retirer cette assertion."""
+    artifacts = gkt.emit_all({"slug": "bf", "branding": {}}, tmp_path)
+    script = (artifacts["plymouth_theme"] / "bf.script").read_text()
+    assert "Plymouth.SetDisplayPasswordFunction(" in script
+    # Le retour a l'affichage courant doit exister aussi, sinon la zone de
+    # saisie reste a l'ecran une fois le disque ouvert.
+    assert "Plymouth.SetDisplayNormalFunction(" in script
+    # Un asterisque par caractere saisi : sans retour visuel on ne sait pas
+    # si le clavier repond.
+    assert "bullets" in script
+
+
+def test_plymouth_logo_is_scaled_down_and_low(tmp_path: Path):
+    """Le splash source fait 1024x1024 : pose tel quel il occupe tout l'ecran.
+    Il doit etre remis a l'echelle et descendu dans le tiers inferieur."""
+    artifacts = gkt.emit_all({"slug": "bf", "branding": {}}, tmp_path)
+    script = (artifacts["plymouth_theme"] / "bf.script").read_text()
+    assert ".Scale(" in script.split("# Loading bar")[0], "logo non redimensionne"
+    assert "Window.GetHeight() * 0.58" in script, "logo non descendu"
+    # L'ancienne mise en page centrait sur la moitie de l'ecran.
+    assert "Window.GetHeight() / 2 - splash.image.GetHeight() / 2" not in script
 
 
 def test_plymouth_loading_bar_uses_accent(tmp_path: Path):
@@ -313,3 +348,108 @@ def test_color_scheme_decoration_keeps_brand_accent(tmp_path: Path):
     for section in ("Colors:Window", "Colors:View", "Colors:Button", "Colors:Header", "Colors:Tooltip"):
         focus = _rgb_to_hex(_rgb_tuple_from_section(text, section, "DecorationFocus"))
         assert focus == "#29ABE1", f"{section}.DecorationFocus must keep raw BF accent (got {focus})"
+
+
+def test_les_deux_configurations_de_greeter_sont_emises(tmp_path: Path):
+    """Le parc straddle Fedora 43 (sddm) et Fedora 44 (plasmalogin).
+
+    🔴 Une premiere version de ce test, ecrite le meme jour, exigeait le
+    CONTRAIRE : qu'aucun artefact SDDM ne soit plus emis. Elle reposait sur
+    l'ouverture d'UNE image, `factice`, en 44. Sur `bf-surface`, epingle en 43,
+    sddm et sddm-breeze sont bel et bien installes et
+    /usr/share/sddm/themes/breeze appartient au paquet. Le build de bf-surface
+    a rougi, et la passe de publication y est passee.
+
+    On emet les deux ; l'assertion de recette exige celle que l'image cable.
+    """
+    out = gkt.emit_all({"slug": "bf", "branding": {}}, tmp_path)
+    assert out["plasmalogin_config"] == tmp_path / "etc/plasmalogin.conf.d/10-bluefox.conf"
+    assert out["sddm_config"] == tmp_path / "etc/sddm.conf.d/blue-fox.conf"
+    assert out["sddm_breeze_override"] == tmp_path / "usr/share/sddm/themes/breeze/theme.conf.user"
+    for cle in ("plasmalogin_config", "sddm_config", "sddm_breeze_override"):
+        assert out[cle].is_file(), f"{cle} annonce mais pas ecrit"
+
+    sddm = out["sddm_config"].read_text()
+    assert "Current=breeze" in sddm and "Font=Lexend" in sddm
+    override = out["sddm_breeze_override"].read_text()
+    assert f"background={gkt.BRANDING_RUNTIME}/wallpaper.jpg" in override
+
+
+def test_kscreenlocker_config_uses_tenant_wallpaper(tmp_path: Path):
+    b = gkt.resolve_branding({"slug": "bf", "branding": {}})
+    target = gkt.emit_kscreenlocker_config(b, tmp_path)
+    assert target == tmp_path / "etc/xdg/kscreenlockerrc"
+    body = target.read_text()
+    assert "[Greeter][Wallpaper][org.kde.image][General]" in body
+    assert "Image=file:///usr/share/wallpapers/bf/contents/images/wallpaper.jpg" in body
+
+
+def test_look_and_feel_defaults_cover_the_lock_screen(tmp_path: Path):
+    """kscreenlocker ne lit pas le fond du bureau : il lui faut sa section."""
+    b = gkt.resolve_branding({"slug": "bf", "branding": {}})
+    base = gkt.emit_look_and_feel(b, tmp_path)
+    body = (base / "contents" / "defaults").read_text()
+    assert "[kscreenlockerrc][Greeter][Wallpaper][org.kde.image][General]" in body
+    assert body.count("Image=file:///usr/share/wallpapers/bf/contents/images/wallpaper.jpg") == 2
+
+
+def test_emit_all_ships_both_wallpaper_surfaces(tmp_path: Path):
+    out = gkt.emit_all({"slug": "bf", "branding": {}}, tmp_path)
+    assert out["plasmalogin_config"].exists()
+    assert out["kscreenlocker"].exists()
+
+
+def test_aucun_artefact_genere_ne_salit_git_status(tmp_path: Path):
+    """Tout ce que ce script ecrit sous files/ doit etre ignore par git.
+
+    🔴 Vecu le 2026-09-13, et ca a coute une passe de publication. L'emetteur
+    plasmalogin a remplace les emetteurs SDDM, mais `.gitignore` couvrait
+    `files/etc/sddm.conf.d/` et pas `files/etc/plasmalogin.conf.d/`. Le premier
+    locataire de la passe a donc laisse un repertoire non suivi derriere lui,
+    et `publish-image.sh` — qui refuse a juste titre de publier depuis un arbre
+    sale — a rejete les DEUX locataires suivants.
+
+    ⚠️ Le premier locataire, lui, a REUSSI. L'echec ne ressemblait donc pas a
+    une regression de code mais a un caprice de machine, et c'est ce qui rend
+    ce defaut cher : il se declare loin de sa cause.
+
+    Le garde-fou vaut pour tout emetteur futur : on ne verifie pas une ligne
+    connue de .gitignore, on verifie CE QUI EST REELLEMENT ECRIT.
+    """
+    import fnmatch
+
+    gkt.emit_all({"slug": "bf", "branding": {}}, tmp_path)
+
+    racine = Path(__file__).resolve().parents[1]
+    regles = [
+        l.strip().lstrip("/")
+        for l in (racine / ".gitignore").read_text().splitlines()
+        if l.strip() and not l.startswith("#") and not l.startswith("!")
+    ]
+
+    def couvert(rel: str) -> bool:
+        """`rel` est ignore si une regle le designe, ou designe un de ses
+        repertoires parents — c'est la semantique que git applique."""
+        prefixes = [rel]
+        parent = Path(rel).parent
+        while str(parent) not in (".", "/"):
+            prefixes.append(str(parent))
+            parent = parent.parent
+        for regle in regles:
+            nu = regle.rstrip("/")
+            for chemin in prefixes:
+                if chemin == nu or fnmatch.fnmatch(chemin, nu):
+                    return True
+        return False
+
+    nus = [
+        "files/" + str(c.relative_to(tmp_path))
+        for c in sorted(tmp_path.rglob("*"))
+        if (c.is_file() or c.is_symlink()) and not couvert(
+            "files/" + str(c.relative_to(tmp_path)))
+    ]
+
+    assert not nus, (
+        "artefacts generes que .gitignore ne couvre pas — ils saliront "
+        f"`git status` et feront refuser la publication : {nus}"
+    )

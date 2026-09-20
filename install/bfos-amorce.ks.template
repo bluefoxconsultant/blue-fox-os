@@ -1,0 +1,28 @@
+# Blue Fox OS : kickstart d'amorce, embarque dans l'ISO sous /bfos-amorce.ks.
+#
+# L'entree « Installer Blue Fox OS (zero-touch) » du menu demarre sur ce
+# fichier. Il ne fait qu'une chose : demander le domaine de l'organisation, le
+# verifier, puis enchainer sur le kickstart que cette organisation sert
+# (https://<domaine>/blue-fox-install.ks, rendu par bf_zerotouch_install).
+# Le detail, et pourquoi les blocs pre du locataire sont executes par le script
+# plutot que par Anaconda : install/bfos_amorce.py.
+#
+# Rendu par scripts/render_amorce_ks.py, depose dans l'ISO par brand-iso.sh.
+#
+# ⚠️ AUCUNE COMMANDE ICI. Tout vient du kickstart de l'organisation : une
+# commande posee dans ce fichier ET dans l'autre serait lue deux fois, et la
+# derniere lecture gagnerait sans prevenir.
+
+# --erroronfail : sans kickstart d'organisation, il n'y a rien a installer.
+# Anaconda s'arrete et affiche /tmp/bfos-amorce.log, qui dit pourquoi.
+%pre --interpreter=/bin/bash --erroronfail --log=/tmp/bfos-amorce.log
+cat > /tmp/bfos_amorce.py <<'BFOSAMORCEEOF'
+{{AMORCE_SCRIPT}}
+BFOSAMORCEEOF
+exec python3 /tmp/bfos_amorce.py --domaine-defaut '{{DOMAINE_DEFAUT}}'
+%end
+
+# Le kickstart de l'organisation, sans ses blocs pre, depose par le bloc
+# ci-dessus. Absent a la premiere passe d'Anaconda, qui l'ignore ; present a la
+# seconde, qui le lit en entier.
+%include /tmp/bfos-locataire.ks

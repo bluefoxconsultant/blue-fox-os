@@ -1,0 +1,11 @@
+# Drapeau qui garde plasma-setup.service, l'assistant OOBE de KDE.
+#
+# L'unite tourne AVANT le gestionnaire de connexion
+# (Before=display-manager.service) et ne depend que de ce chemin :
+#   ConditionPathExists=!/etc/plasma-setup-done
+# Tant que ce fichier existe, l'assistant ne s'ouvre jamais. La politique
+# Blue Fox fixe deja langue, clavier, fuseau, theme et compte de siege.
+#
+# ⚠️ Ne pas confondre avec plasma-welcome, le Centre d'accueil, retire de
+# l'image le 2026-09-11 : c'est un autre paquet, qui tourne DANS une session.
+# Le contenu de ce fichier n'est jamais lu — seule son existence compte.

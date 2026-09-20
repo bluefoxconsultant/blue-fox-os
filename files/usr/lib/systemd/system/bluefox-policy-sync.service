@@ -1,0 +1,28 @@
+[Unit]
+Description=Blue Fox OS — re-synchronisation de la politique
+Documentation=https://github.com/bluefoxconsultant/blue-fox-os
+# Sans fichier d'enrolement il n'y a rien a synchroniser : le service ne
+# demarre meme pas, plutot que de sortir en succes vide tous les jours.
+ConditionPathExists=/etc/bluefox/machine.json
+# La politique se tire par le reseau ; sur un poste hors ligne le script sort
+# proprement en gardant la derniere politique connue.
+After=network-online.target NetworkManager-wait-online.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/bluefox-policy-sync
+StandardOutput=journal
+StandardError=journal
+RemainAfterExit=no
+# Le tirage lui-meme est plafonne a 30 s dans le script ; la marge couvre la
+# reecriture des listes et le declenchement de system-flatpak-setup.
+TimeoutStartSec=5min
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+
+# Pas de section [Install] : ce service se declenche par
+# bluefox-policy-sync.timer (c'est lui que les recipes activent) ou a la main
+# avec `systemctl start bluefox-policy-sync`. L'activer directement le ferait
+# tourner une fois de plus a chaque demarrage, sans rien apporter.

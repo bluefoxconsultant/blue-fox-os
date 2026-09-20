@@ -31,7 +31,41 @@ except Exception:
 fi
 IMAGE_REF="${IMAGE_REF:-$DEFAULT_IMAGE_REF}"
 
-echo "[bluefox-rebase] rebasing to $IMAGE_REF"
+# ⚠️ AJOUTE LE 2026-09-11. Le kickstart pose la sentinelle INCONDITIONNELLEMENT,
+# et rien ne verifiait ensuite si le rebase avait lieu d'etre — contrairement a
+# ce que le commentaire du kickstart annoncait. Une installation zero-touch tire
+# pourtant deja son image du registre (ostreecontainer --transport=registry) :
+# le rebase la repointait donc sur ELLE-MEME, et redemarrait la machine pour
+# rien, a chaque installation.
+#
+# 🔴 Ce n'etait pas qu'un redemarrage perdu. Le rebase se fait en
+# ostree-unverified-image: il prenait une machine installee depuis une image
+# VERIFIEE et la repinglait sur une reference non verifiee. Le premier
+# demarrage affaiblissait la chaine de confiance qu'on venait d'etablir.
+ACTUELLE=$(rpm-ostree status --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)['deployments'][0]
+except Exception:
+    sys.exit(0)
+import re
+ref = d.get('container-image-reference') or ''
+# ⚠️ CORRIGE LE 2026-09-11 : une installation zero-touch par
+# `ostreecontainer --transport=registry` donne une reference de la forme
+# ostree-unverified-registry:ghcr.io/...:latest — SANS docker://. La version
+# precedente ne retirait que docker:// et ne concordait donc jamais : le
+# rebase repartait, et la machine redemarrait une minute apres son premier
+# demarrage, en tuant au passage l'installation des Flatpak. On retire tout
+# prefixe de transport ostree, avec ou sans docker://.
+print(re.sub(r'^ostree-[a-z-]+:(docker://)?', '', ref))
+" 2>/dev/null || true)
+if [ -n "$ACTUELLE" ] && [ "$ACTUELLE" = "$IMAGE_REF" ]; then
+    echo "[bluefox-rebase] deja sur $IMAGE_REF ; rien a rebaser, aucun redemarrage"
+    rm -f "$FLAG"
+    exit 0
+fi
+
+echo "[bluefox-rebase] rebasing to $IMAGE_REF (actuelle : ${ACTUELLE:-inconnue})"
 
 # ostree-unverified-image en v1 ; switcher vers ostree-image-signed apres
 # config cosign policy (BFOSL3).

@@ -1,235 +1,359 @@
 #!/usr/bin/env bash
-# scripts/brand-iso.sh — post-process a BIB-produced anaconda-iso to add
-# Blue Fox boot-menu branding (GRUB theme, splash, volume label).
-#
-# BIB hard-codes Lorax templates per distro (see legacy_iso.go::loraxFedoraTemplates);
-# overriding upstream is invasive. The pragmatic path: extract the ISO with
-# xorriso, swap the chrome assets, repack preserving the EFI/BIOS hybrid
-# boot signature via `xorriso -boot_image any replay`.
-#
-# What this brands:
-#   - GRUB boot menu: BF blue selection bar + Lexend font + "Blue Fox OS Installer" title
-#   - ISO volume label: "Blue Fox OS Installer"
-#   - Boot splash background (when GRUB theme renders it)
-#
-# Anaconda product branding (v0.1.1, BF #22417/#22418/#22419):
-#   - Runtime keyboard + locale: handled here via `inst.keymap=ca` and
-#     `inst.lang=fr_CA.UTF-8` boot params injected in the menuentries below
-#     (closes the keyboard half of #22419).
-#   - Anaconda installer GUI chrome (sidebar/logo pixmaps + profile.d config
-#     + .buildstamp title): overlaid into the stage2 squashfs via
-#     scripts/inject-anaconda-product.sh, called at the end of this script.
-#     Selected at boot via `inst.profile=blue-fox-os`. The full asset spec
-#     is documented in branding/anaconda/README.md — the text-only files
-#     (profile config, CSS, .buildstamp) ship here; sidebar PNGs are pending
-#     design and the overlay script skips them gracefully until they land.
+# scripts/brand-iso.sh — brande le menu de demarrage d'une ISO produite par
+# bootc-image-builder, et n'en casse pas l'amorçage.
 #
 # Usage: ./scripts/brand-iso.sh path/to/install.iso
-#        Output: same path, atomically replaced with the branded ISO.
+#        L'ISO est remplacee sur place (echange atomique).
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# CE QU'IL FAUT SAVOIR AVANT DE TOUCHER A CE SCRIPT (BF #23739, 2026-07-19)
+#
+# 1. UNE ISO ANACONDA EMBARQUE **TROIS** MENUS GRUB, PAS UN :
+#
+#      /boot/grub2/grub.cfg          -> demarrage BIOS. GNOME Boxes,
+#                                       VirtualBox et beaucoup de machines
+#                                       demarrent en BIOS PAR DEFAUT : c'est
+#                                       tres souvent CE menu que l'on voit.
+#      grub.cfg DANS /images/efiboot.img  -> demarrage UEFI. C'est une image
+#                                       FAT (El Torito) : elle ne s'edite
+#                                       qu'avec mtools, pas avec xorriso -map.
+#      /EFI/BOOT/grub.cfg            -> copie dans l'arborescence ISO9660.
+#                                       En pratique aucun micrologiciel ne la
+#                                       lit. On la garde synchronisee.
+#
+#    Ne patcher qu'un seul des trois donne un branding invisible et fait
+#    conclure a tort que le correctif n'a pas pris.
+#
+# 2. NE JAMAIS RENOMMER LE VOLUME. L'ancienne version de ce script posait
+#    `-volid BLUE_FOX_OS_INST`. Le volid est une propriete GLOBALE de l'image :
+#    le renommer invalide d'un coup tous les `inst.stage2=hd:LABEL=...` et
+#    `inst.ks=hd:LABEL=...` des menus qu'on n'a pas reecrits. Symptomes vecus :
+#      - gel ~3 min sur dracut-initqueue (« still waiting for /dev/root »),
+#        puis « missing inst.stage2 or inst.repo » ;
+#      - le menu affiche reste Fedora (c'etait le menu d'origine) ;
+#      - aucun `inst.profile` -> chrome Anaconda/Barracuda inactif.
+#    Le volid n'est que cosmetique (nom du lecteur). L'amorçage, lui, depend
+#    de l'accord entre le volid et chaque menu.
+#
+# 3. ON PATCHE LES MENUS D'ORIGINE, ON N'EN GENERE PAS. L'ancienne version
+#    fabriquait un grub.cfg de zero ; il n'aurait jamais demarre meme bien
+#    place : il utilisait `linuxefi`/`initrdefi` la ou Fedora 44 emploie
+#    `linux`/`initrd`, et omettait le `search --no-floppy --set=root -l ...`
+#    sans lequel $root est indefini et le noyau introuvable. Ici, tout ce qui
+#    est structurel (preambule, search, noms de commandes, jetons inst.stage2
+#    et inst.ks) vient du fichier d'origine, qui fonctionne.
+#
+# 4. `xorriso` ECRIT SES INFORMATIONS SUR STDERR. Un `-toc 2>/dev/null | grep`
+#    retourne toujours vide — c'est ce qui rendait muette l'ancienne
+#    reecriture d'etiquettes. Utiliser 2>&1.
+#
+# Ce que le branding apporte concretement :
+#   - titres de menu en français ;
+#   - inst.profile=blue-fox-os  -> chrome Anaconda (sidebar Barracuda, CSS,
+#     titre). Sans lui les assets sont dans le squashfs mais dorment, car
+#     l'auto-detection (`os_id`) ne peut pas matcher : l'image garde ID=fedora ;
+#   - inst.keymap=ca + inst.lang=fr_CA.UTF-8 (#22419).
+#
+# Le thème GRUB (couleurs, barre de selection) n'est PAS injecte : sa
+# resolution de chemin depuis efiboot.img n'est pas fiable, et un menu qui ne
+# s'affiche pas coute plus cher qu'un menu aux couleurs d'origine. Les assets
+# restent dans branding/grub-theme/ pour quand ce sera valide.
 
 set -euo pipefail
 
 ISO="${1:?usage: $0 path/to/install.iso}"
 WORKDIR="$(cd "$(dirname "$0")/.." && pwd)"
-BRANDING="${WORKDIR}/branding"
-GRUB_THEME_DIR="${BRANDING}/grub-theme"
 
-if [ ! -f "${ISO}" ]; then
-    echo "[brand-iso] FAIL: ${ISO} not found" >&2
-    exit 1
-fi
-if ! command -v xorriso >/dev/null 2>&1; then
-    cat >&2 <<EOF
-[brand-iso] FAIL: xorriso not in PATH.
-    sudo apt install -y xorriso       # Ubuntu/Debian
-    sudo dnf install -y xorriso       # Fedora/Kinoite
-EOF
-    exit 1
-fi
-for asset in "${GRUB_THEME_DIR}/theme.txt" "${GRUB_THEME_DIR}/select_bg.png"; do
-    if [ ! -f "${asset}" ]; then
-        echo "[brand-iso] FAIL: missing GRUB theme asset ${asset}" >&2
-        exit 1
-    fi
-done
+# Titres volontairement SANS accents : la console GRUB en mode texte ne rend
+# pas les caracteres non-ASCII de façon fiable selon le micrologiciel.
+BF_PARAMS="inst.profile=blue-fox-os inst.keymap=ca inst.lang=fr_CA.UTF-8"
+# Domaine propose, pre-rempli, a la question « a quelle organisation ? » de
+# l'amorce (Entree seule le prend). Surchargeable pour une ISO dont la
+# proposition serait un client : ZEROTOUCH_DEFAULT_DOMAIN=client.com.
+ZEROTOUCH_DEFAULT_DOMAIN="${ZEROTOUCH_DEFAULT_DOMAIN:-bluefoxconsultant.com}"
 
-VOLID="BLUE_FOX_OS_INST"   # ISO9660 volume IDs are uppercase, max 32 chars,
-                           # ASCII letters/digits/underscore only.
+log()  { echo "[brand-iso] $*"; }
+die()  { echo "[brand-iso] ERREUR: $*" >&2; exit 1; }
+
+[ -f "${ISO}" ] || die "${ISO} introuvable"
+
+command -v xorriso >/dev/null 2>&1 || die "xorriso introuvable.
+    Arch/Garuda : sudo pacman -S --needed libisoburn   (xorriso y est fourni)
+    Fedora      : sudo dnf install -y xorriso
+    Debian      : sudo apt install -y xorriso"
+command -v mcopy >/dev/null 2>&1 || die "mcopy (mtools) introuvable — requis pour
+    editer le grub.cfg a l'interieur de /images/efiboot.img.
+    Arch/Garuda : sudo pacman -S --needed mtools"
+command -v python3 >/dev/null 2>&1 || die "python3 introuvable — requis pour rendre
+    le kickstart d'amorce (scripts/render_amorce_ks.py)."
+
 TMPDIR="$(mktemp -d)"
-trap 'rm -rf "${TMPDIR}"' EXIT
+trap 'chmod -R u+w "${TMPDIR}" 2>/dev/null; rm -rf "${TMPDIR}"' EXIT
 
-echo "[brand-iso] iso=${ISO}"
-echo "[brand-iso] tmp=${TMPDIR}"
+# Kickstart d'amorce : c'est lui que l'entree zero-touch demarre. Rendu AVANT
+# de toucher a l'ISO, pour qu'un echec de rendu ne laisse rien a moitie fait.
+AMORCE_KS="${TMPDIR}/bfos-amorce.ks"
+python3 "${WORKDIR}/scripts/render_amorce_ks.py" \
+    --domaine-defaut "${ZEROTOUCH_DEFAULT_DOMAIN}" > "${AMORCE_KS}" \
+    || die "rendu du kickstart d'amorce impossible"
 
-# 1. Locate the existing GRUB config in the ISO. BIB-produced ISOs have it at
-# /EFI/BOOT/grub.cfg (UEFI) and sometimes /boot/grub2/grub.cfg too. We extract,
-# patch, and put back via xorriso -map.
-echo "[brand-iso] extracting grub.cfg from ISO"
-xorriso -osirrox on -indev "${ISO}" \
-    -extract /EFI/BOOT/grub.cfg "${TMPDIR}/grub.cfg.orig" \
-    2>&1 | grep -vE '^(xorriso|libisoburn|libburn|libisofs|GNU)' || true
+# Volume id : on le lit pour verifier, jamais pour le changer.
+read_volid() {
+    xorriso -indev "$1" -toc 2>&1 \
+        | sed -n "s/^[[:space:]]*Volume id[[:space:]]*:[[:space:]]*'\{0,1\}//p" \
+        | head -1 | sed "s/'[[:space:]]*$//"
+}
 
-if [ ! -f "${TMPDIR}/grub.cfg.orig" ]; then
-    echo "[brand-iso] WARN: /EFI/BOOT/grub.cfg not found in ISO — skipping GRUB theme injection" >&2
-    PATCH_GRUB=0
+ISO_VOLID="$(read_volid "${ISO}")"
+[ -n "${ISO_VOLID}" ] || die "impossible de lire le volume id de ${ISO}"
+log "iso=${ISO}"
+log "volume id (preserve) = '${ISO_VOLID}'"
+
+# ── transformation d'un menu ────────────────────────────────────────────────
+# Applique aux entrees EXISTANTES : ajout des parametres BF + retitrage.
+# Le numero de version Fedora est capture par regex pour survivre a un F45.
+patch_menu() {
+    local cfg="$1"
+
+    # ⚠️ Idempotent (#23940, 2026-09-01). Sans ce retrait prealable, un second
+    # passage du branding ajoutait BF_PARAMS une deuxieme fois et la ligne linux
+    # finissait avec inst.profile / inst.keymap / inst.lang en DOUBLE. Valeurs
+    # identiques, donc sans consequence au demarrage — mais ca s'empile a chaque
+    # passage, et rejouer le branding sur une ISO deja brandee est justement ce
+    # qu'on fait pour corriger un menu sans refaire 28 min de build.
+    local p k
+    for p in ${BF_PARAMS}; do
+        k="${p%%=*}"
+        sed -i -E "/^[[:space:]]*linux(efi)?[[:space:]]+\/images\/pxeboot\/vmlinuz/ s|[[:space:]]+${k}=[^[:space:]]*||g" "$cfg"
+    done
+
+    sed -i -E "s|^([[:space:]]*linux(efi)?[[:space:]]+/images/pxeboot/vmlinuz[[:space:]].*)\$|\1 ${BF_PARAMS}|" "$cfg"
+    sed -i -E "s|menuentry 'Install Fedora Linux [0-9]+ in basic graphics mode'|menuentry 'Installer Blue Fox OS (mode graphique de base)'|" "$cfg"
+    sed -i -E "s|menuentry 'Test this media \& install Fedora Linux [0-9]+'|menuentry 'Tester le support \\& installer Blue Fox OS'|" "$cfg"
+    sed -i -E "s|menuentry 'Install Fedora Linux [0-9]+'|menuentry 'Installer Blue Fox OS'|" "$cfg"
+    sed -i -E "s|menuentry 'Rescue a Fedora Linux system'|menuentry 'Depanner un systeme Blue Fox OS'|" "$cfg"
+    sed -i -E "s|menuentry 'Boot first drive'|menuentry 'Demarrer sur le premier disque'|" "$cfg"
+    sed -i -E "s|submenu 'Troubleshooting -->'|submenu 'Depannage -->'|" "$cfg"
+}
+
+# Entree zero-touch (BFOSD10) : elle demarre sur le kickstart d'amorce depose
+# dans l'ISO (/bfos-amorce.ks), qui demande le domaine de l'organisation A
+# L'ECRAN, le verifie, puis enchaine sur le kickstart que cette organisation
+# sert (bf_zerotouch_install). On la CONSTRUIT A PARTIR des lignes linux/initrd
+# de la premiere entree d'origine — jamais de zero — pour heriter du bon nom de
+# commande et du bon inst.stage2.
+#
+# ⚠️ AUCUNE INVITE DANS GRUB (#23940, 2026-09-01) — la question vit dans l'amorce
+# -------------------------------------------------------------------------------
+# Cette entree a longtemps demande le domaine par `read bf_domain`. Elle n'a
+# JAMAIS pu demarrer en UEFI, donc sur aucune vraie machine :
+#
+#   Domaine : error: ../../grub-core/script/function.c:
+#   grub_script_function_find:119: can't find command `read'.
+#
+# `read` vit dans read.mod, et l'ISO ne porte de modules que pour i386-pc : zero
+# fichier sous boot/grub2/x86_64-efi/. Le grub UEFI est le binaire monolithique
+# de efiboot.img, avec un jeu de modules fige et pas de `read` dedans — il n'y a
+# donc rien a insmod. L'erreur AVORTE le menuentry : la ligne `linux` n'est
+# jamais atteinte, et le repli `if [ -z ... ]` non plus.
+#
+# En BIOS ca passait, read.mod etant sur le media. D'ou un defaut invisible tant
+# que personne n'avait demarre l'entree pour de vrai.
+#
+# Du 2026-09-01 au 2026-09-15, le domaine est reste en dur dans le menu, et une
+# autre organisation passait par « e ». La question est maintenant posee par
+# l'amorce, dans l'installateur, ou le reseau permet de VERIFIER la reponse
+# avant de s'en servir. Imposer un domaine sans question reste possible : « e »,
+# ajouter bfos.domaine=<domaine> a la ligne linux, Ctrl-X.
+prepend_zerotouch_entry() {
+    local cfg="$1"
+    local linux_line initrd_line cmd
+
+    # Idempotence : un second passage sur une ISO deja brandee prendrait la
+    # ligne linux de l'entree zero-touch elle-meme comme modele, et empilerait
+    # un doublon portant deja l'amorce. On retire donc l'entree existante
+    # avant de reconstruire, et on choisit un modele qui n'est pas elle.
+    # (Une ISO brandee avant l'amorce porte encore bf_domain : meme traitement.)
+    if grep -q "menuentry 'Installer Blue Fox OS (zero-touch)'" "$cfg"; then
+        # Les lignes vides qui suivent l'entree partent avec elle : sinon chaque
+        # passage en ajoutait une (le menu du 2026-09-11 en portait quatre).
+        awk '
+            /^menuentry .Installer Blue Fox OS \(zero-touch\)./ { skip = 1; next }
+            skip && /^\}/                                       { skip = 0; vide = 1; next }
+            skip                                                { next }
+            vide && /^[[:space:]]*$/                            { next }
+                                                                { vide = 0; print }
+        ' "$cfg" > "${cfg}.sanszt" && mv "${cfg}.sanszt" "$cfg"
+        log "  entree zero-touch precedente retiree (reconstruction)"
+    fi
+
+    linux_line="$(grep -E '^[[:space:]]*linux(efi)?[[:space:]]+/images/pxeboot/vmlinuz' "$cfg" \
+        | grep -v -E 'bf_domain|bfos-amorce' | head -1 || true)"
+    initrd_line="$(grep -m1 -E '^[[:space:]]*initrd(efi)?[[:space:]]+' "$cfg" || true)"
+    if [ -z "${linux_line}" ] || [ -z "${initrd_line}" ]; then
+        log "  pas d'entree modele exploitable — zero-touch non ajoutee"
+        return 0
+    fi
+    cmd="$(echo "${linux_line}" | awk '{print $1}')"
+
+    # Le kickstart de l'entree devient l'amorce, lue sur le MEME volume que le
+    # stage2 : on reprend le jeton hd:LABEL=... d'inst.stage2 tel quel, echappes
+    # compris, plutot que de le reconstruire depuis le volid (voir point 2).
+    local stage2 zt_linux
+    stage2="$(echo "${linux_line}" | grep -oE 'inst\.stage2=hd:LABEL=[^[:space:]]+' \
+        | head -1 | sed -E 's|^inst\.stage2=||' || true)"
+    if [ -z "${stage2}" ]; then
+        log "  pas d'inst.stage2=hd:LABEL= dans l'entree modele — zero-touch non ajoutee"
+        return 0
+    fi
+    zt_linux="$(echo "${linux_line}" | sed -E 's|[[:space:]]+inst\.ks=[^[:space:]]+||g')"
+    zt_linux="${zt_linux} inst.ks=${stage2}:/bfos-amorce.ks"
+    # Le zero-touch a besoin du reseau, et l'amorce le trouve deja leve :
+    # rd.neednet, parce qu'un kickstart LOCAL ne le fait plus demander a dracut.
+    echo "${zt_linux}" | grep -qE '(^| )ip=' || zt_linux="${zt_linux} ip=dhcp"
+    echo "${zt_linux}" | grep -q 'rd\.neednet=' || zt_linux="${zt_linux} rd.neednet=1"
+
+    {
+        printf "menuentry 'Installer Blue Fox OS (zero-touch)' --class fedora --class gnu-linux {\n"
+        printf '    # Le domaine de l%sorganisation est demande a l%secran, apres le demarrage.\n' "'" "'"
+        printf '    # Pour l%simposer sans question : e ici, ajouter bfos.domaine=<domaine>, Ctrl-X.\n' "'"
+        printf '%s\n' "${zt_linux}"
+        printf '%s\n' "${initrd_line}"
+        printf "}\n\n"
+        cat "$cfg"
+    } > "${cfg}.zt"
+    mv "${cfg}.zt" "$cfg"
+    log "  entree zero-touch ajoutee (commande ${cmd}, heritee de l'entree d'origine)"
+}
+
+# ── 1. menu BIOS ────────────────────────────────────────────────────────────
+log "1/3 menu BIOS  /boot/grub2/grub.cfg"
+MAPS=()
+if xorriso -osirrox on -indev "${ISO}" -extract /boot/grub2/grub.cfg \
+        "${TMPDIR}/bios.cfg" >/dev/null 2>&1 && [ -f "${TMPDIR}/bios.cfg" ]; then
+    patch_menu "${TMPDIR}/bios.cfg"
+    prepend_zerotouch_entry "${TMPDIR}/bios.cfg"
+    MAPS+=(-map "${TMPDIR}/bios.cfg" /boot/grub2/grub.cfg)
+    log "  ok"
 else
-    PATCH_GRUB=1
-
-    # Discover vmlinuz + initrd paths from the existing config. BIB-produced
-    # Fedora ISOs typically use /images/pxeboot/vmlinuz + initrd.img, but
-    # we extract from the file rather than hardcode in case BIB changes.
-    VMLINUZ=$(grep -oE '(linuxefi|linux)\s+\S*vmlinuz\S*' "${TMPDIR}/grub.cfg.orig" \
-        | head -1 | awk '{print $NF}' || echo "/images/pxeboot/vmlinuz")
-    INITRD=$(grep -oE '(initrdefi|initrd)\s+\S*initrd\S*' "${TMPDIR}/grub.cfg.orig" \
-        | head -1 | awk '{print $NF}' || echo "/images/pxeboot/initrd.img")
-    echo "[brand-iso] discovered vmlinuz=${VMLINUZ} initrd=${INITRD}"
-
-    # Build the new grub.cfg from scratch:
-    #   1. Theme prelude
-    #   2. Zero-touch menuentry (default) — prompts for org domain via `read`
-    #   3. Built-in defaults menuentry (fallback) — uses the embedded BIB kickstart
-    #   4. The original BIB-generated entries below as deeper fallbacks
-    cat > "${TMPDIR}/grub.cfg" <<EOF
-# Blue Fox OS — branded grub.cfg (injected by scripts/brand-iso.sh).
-# Original BIB grub.cfg appended below as fallback entries.
-
-set theme=/EFI/BOOT/themes/blue-fox/theme.txt
-export theme
-set color_normal=white/black
-set color_highlight=white/blue
-set menu_color_normal=white/black
-set menu_color_highlight=white/blue
-set timeout=10
-set default=0
-
-menuentry 'Install Blue Fox OS (zero-touch)' --class fedora --class gnu-linux {
-    set bf_domain=""
-    echo ""
-    echo "----------------------------------------------------------------"
-    echo " Blue Fox OS — zero-touch install"
-    echo "----------------------------------------------------------------"
-    echo ""
-    echo " Type your organization's root domain and press <enter>."
-    echo " Example: bluefoxconsultant.com"
-    echo ""
-    echo " (Empty input falls back to bluefoxconsultant.com.)"
-    echo ""
-    echo -n " Org domain: "
-    read bf_domain
-    if [ -z "\${bf_domain}" ]; then
-        set bf_domain="bluefoxconsultant.com"
-        echo " -> Using bluefoxconsultant.com"
-    fi
-    echo ""
-    echo " Fetching install config from https://\${bf_domain}/blue-fox-install.ks"
-    echo " Anaconda will prompt for LUKS passphrase + user creation."
-    echo ""
-    linuxefi ${VMLINUZ} inst.stage2=hd:LABEL=${VOLID} inst.ks=https://\${bf_domain}/blue-fox-install.ks inst.profile=blue-fox-os inst.keymap=ca inst.lang=fr_CA.UTF-8 ip=dhcp quiet
-    initrdefi ${INITRD}
-}
-
-menuentry 'Install Blue Fox OS (built-in defaults)' --class fedora --class gnu-linux {
-    linuxefi ${VMLINUZ} inst.stage2=hd:LABEL=${VOLID} inst.profile=blue-fox-os inst.keymap=ca inst.lang=fr_CA.UTF-8 quiet
-    initrdefi ${INITRD}
-}
-
-menuentry 'Test this media & install Blue Fox OS' --class fedora --class gnu-linux {
-    linuxefi ${VMLINUZ} inst.stage2=hd:LABEL=${VOLID} inst.profile=blue-fox-os inst.keymap=ca inst.lang=fr_CA.UTF-8 rd.live.check quiet
-    initrdefi ${INITRD}
-}
-
-submenu 'Original BIB entries (fallback)' --class submenu {
-EOF
-
-    # Indent + append the original BIB-generated grub.cfg as a submenu so it's
-    # accessible if our injected entries fail. Strip its own `set timeout=` etc.
-    # to avoid overriding our prelude.
-    sed -E 's/^/    /; /^[[:space:]]*set (timeout|default|theme)/d' \
-        "${TMPDIR}/grub.cfg.orig" >> "${TMPDIR}/grub.cfg"
-
-    cat >> "${TMPDIR}/grub.cfg" <<'EOF'
-}
-EOF
-
-    # Sync any LABEL= references in the appended block to our VOLID.
-    OLD_VOLID=$(xorriso -indev "${ISO}" -toc 2>/dev/null \
-        | grep -oE 'Volume id\s*:\s*.*' | head -1 \
-        | sed 's/Volume id\s*:\s*//' | tr -d "'\" " || echo "")
-    if [ -n "${OLD_VOLID}" ] && [ "${OLD_VOLID}" != "${VOLID}" ]; then
-        echo "[brand-iso] rewriting LABEL=${OLD_VOLID} → LABEL=${VOLID} in grub.cfg"
-        sed -i "s|LABEL=${OLD_VOLID}|LABEL=${VOLID}|g" "${TMPDIR}/grub.cfg"
-    fi
+    log "  absent — ISO sans voie BIOS, on continue"
 fi
 
-# 2. (Optional) BIOS path: if /isolinux/isolinux.cfg exists, mirror the
-# zero-touch entry there too so legacy BIOS-boot still picks it up. Modern
-# BIB ISOs are EFI-only, but older hardware may need this.
-PATCH_ISOLINUX=0
-xorriso -osirrox on -indev "${ISO}" \
-    -extract /isolinux/isolinux.cfg "${TMPDIR}/isolinux.cfg.orig" \
-    2>/dev/null || true
-if [ -f "${TMPDIR}/isolinux.cfg.orig" ]; then
-    PATCH_ISOLINUX=1
-    cat > "${TMPDIR}/isolinux.cfg" <<EOF
-# Blue Fox OS — branded isolinux.cfg (injected by scripts/brand-iso.sh).
-# isolinux has no equivalent of GRUB \`read\` — BIOS users only get the
-# built-in defaults entry. UEFI users get the full zero-touch flow via grub.cfg.
-
-default vesamenu.c32
-timeout 100
-prompt 0
-menu title Blue Fox OS Installer (BIOS)
-
-label builtin
-    menu label ^Install Blue Fox OS (built-in defaults)
-    menu default
-    kernel ${VMLINUZ}
-    append initrd=${INITRD} inst.stage2=hd:LABEL=${VOLID} inst.profile=blue-fox-os inst.keymap=ca inst.lang=fr_CA.UTF-8 quiet
-
-label test
-    menu label ^Test this media & install
-    kernel ${VMLINUZ}
-    append initrd=${INITRD} inst.stage2=hd:LABEL=${VOLID} inst.profile=blue-fox-os inst.keymap=ca inst.lang=fr_CA.UTF-8 rd.live.check quiet
-EOF
-    if [ -n "${OLD_VOLID:-}" ] && [ "${OLD_VOLID}" != "${VOLID}" ]; then
-        sed -i "s|LABEL=${OLD_VOLID}|LABEL=${VOLID}|g" "${TMPDIR}/isolinux.cfg"
-    fi
+# ── 2. menu UEFI, dans efiboot.img ──────────────────────────────────────────
+log "2/3 menu UEFI  grub.cfg dans /images/efiboot.img"
+if xorriso -osirrox on -indev "${ISO}" -extract /images/efiboot.img \
+        "${TMPDIR}/efiboot.img" >/dev/null 2>&1 && [ -f "${TMPDIR}/efiboot.img" ]; then
+    mcopy -i "${TMPDIR}/efiboot.img" ::/EFI/BOOT/grub.cfg "${TMPDIR}/efi.cfg" 2>/dev/null \
+        || die "grub.cfg introuvable dans efiboot.img"
+    patch_menu "${TMPDIR}/efi.cfg"
+    prepend_zerotouch_entry "${TMPDIR}/efi.cfg"
+    mcopy -o -i "${TMPDIR}/efiboot.img" "${TMPDIR}/efi.cfg" ::/EFI/BOOT/grub.cfg
+    # Relire pour confirmer que l'ecriture dans le FAT a bien pris.
+    mcopy -i "${TMPDIR}/efiboot.img" ::/EFI/BOOT/grub.cfg "${TMPDIR}/efi.verify" 2>/dev/null
+    cmp -s "${TMPDIR}/efi.cfg" "${TMPDIR}/efi.verify" \
+        || die "la reinjection dans efiboot.img n'a pas pris"
+    MAPS+=(-map "${TMPDIR}/efiboot.img" /images/efiboot.img)
+    # 3. La copie ISO9660 reçoit le meme contenu, pour qu'aucune des trois
+    #    ne diverge si un micrologiciel exotique la lit.
+    MAPS+=(-map "${TMPDIR}/efi.cfg" /EFI/BOOT/grub.cfg)
+    log "  ok (+ copie ISO9660 synchronisee)"
+else
+    log "  pas de /images/efiboot.img — ISO non UEFI ?"
 fi
 
-# 3. Repack the ISO: replace volume label, drop in GRUB theme files, replace
-# grub.cfg + isolinux.cfg, preserve the original boot signature (UEFI El Torito
-# + BIOS isohybrid MBR) via -boot_image any replay.
-echo "[brand-iso] repacking ISO with branded chrome"
+[ "${#MAPS[@]}" -gt 0 ] || die "aucun menu trouve dans ${ISO} — rien a brander"
+
+# L'amorce que l'entree zero-touch demarre, a la racine du volume.
+MAPS+=(-map "${AMORCE_KS}" /bfos-amorce.ks)
+
+# ── repack ──────────────────────────────────────────────────────────────────
+# `-boot_image any replay` preserve les signatures El Torito UEFI + MBR
+# isohybrid BIOS. Pas de -volid : voir le point 2 de l'en-tete.
+log "repack (volume id inchange)"
 ISO_OUT="${ISO}.branded"
-
-XORRISO_ARGS=(
-    -indev "${ISO}"
-    -outdev "${ISO_OUT}"
-    -boot_image any replay
-    -volid "${VOLID}"
-    -map "${GRUB_THEME_DIR}/theme.txt"      "/EFI/BOOT/themes/blue-fox/theme.txt"
-    -map "${GRUB_THEME_DIR}/select_bg.png"  "/EFI/BOOT/themes/blue-fox/select_bg.png"
-)
-if [ -f "${BRANDING}/splash.png" ]; then
-    XORRISO_ARGS+=(-map "${BRANDING}/splash.png" "/EFI/BOOT/themes/blue-fox/background.png")
-fi
-if [ "${PATCH_GRUB}" = "1" ]; then
-    XORRISO_ARGS+=(-map "${TMPDIR}/grub.cfg" "/EFI/BOOT/grub.cfg")
-fi
-if [ "${PATCH_ISOLINUX}" = "1" ]; then
-    XORRISO_ARGS+=(-map "${TMPDIR}/isolinux.cfg" "/isolinux/isolinux.cfg")
-fi
-
-xorriso "${XORRISO_ARGS[@]}"
-
-# 4. Atomic swap.
+xorriso -indev "${ISO}" -outdev "${ISO_OUT}" -boot_image any replay "${MAPS[@]}"
 mv "${ISO_OUT}" "${ISO}"
-SIZE=$(du -h "${ISO}" | cut -f1)
-echo "[brand-iso] OK ${ISO} (${SIZE})"
+log "ok ${ISO} ($(du -h "${ISO}" | cut -f1))"
 
-# 5. Anaconda installer GUI chrome (BF #22417/#22418 + title half of #22419).
-# Overlays branding/anaconda/* into the stage2 squashfs of the ISO. Skips
-# silently when no assets are present, so this is a no-op on a fresh
-# checkout until the sidebar pixmaps land alongside the text-only configs
-# that ship with this script.
+# ── chrome Anaconda (assets dans le squashfs stage2) ────────────────────────
 "${WORKDIR}/scripts/inject-anaconda-product.sh" "${ISO}"
+
+# ── verification ────────────────────────────────────────────────────────────
+# L'echec rc1 etait muet a la construction et ne se voyait qu'apres 3 minutes
+# de gel sur du vrai materiel. On refuse desormais de rendre une ISO dont un
+# menu ne concorde pas avec le volume.
+log "verification"
+FINAL_VOLID="$(read_volid "${ISO}")"
+[ "${FINAL_VOLID}" = "${ISO_VOLID}" ] \
+    || die "le volume id a change pendant le repack : '${ISO_VOLID}' -> '${FINAL_VOLID}'"
+log "  volume id preserve : '${FINAL_VOLID}'"
+
+verify_menu() {   # $1 = etiquette humaine, $2 = fichier
+    local name="$1" cfg="$2" bad=0 nlinux nprof
+    while read -r label; do
+        [ -n "${label}" ] || continue
+        if [ "${label//\\x20/ }" != "${ISO_VOLID}" ]; then
+            echo "[brand-iso]   ${name}: etiquette perimee LABEL=${label}" >&2
+            bad=$((bad + 1))
+        fi
+    done < <(grep -oE 'LABEL=[^[:space:]:]+' "$cfg" | sed 's/^LABEL=//' | sort -u)
+    [ "${bad}" -eq 0 ] || die "${name} : ${bad} etiquette(s) perimee(s) — c'est le mode
+    d'echec de #23739 (gel ~3 min sur dracut-initqueue). ISO non livrable."
+    nlinux=$(grep -cE '^[[:space:]]*linux(efi)?[[:space:]]+/images/pxeboot/vmlinuz' "$cfg" || true)
+    nprof=$(grep -c 'inst.profile=blue-fox-os' "$cfg" || true)
+    [ "${nlinux}" -eq "${nprof}" ] \
+        || die "${name} : inst.profile sur ${nprof}/${nlinux} entree(s) — le chrome
+    Anaconda resterait Fedora sur les autres."
+
+    # ⚠️ Les commandes doivent EXISTER dans le grub qui lira ce menu (#23940).
+    # Jusqu'au 2026-09-01 ce controle validait etiquettes et profil, puis
+    # declarait « ISO livrable » un menu UEFI qui ne pouvait pas demarrer :
+    # l'entree zero-touch appelait `read`, absent du grub UEFI, et le menuentry
+    # avortait avant la ligne `linux`. Un feu vert sur ce qu'on a regarde ne dit
+    # rien de ce qu'on n'a pas regarde.
+    #
+    # L'ISO ne porte de modules que pour i386-pc : en UEFI, rien a insmod. La
+    # liste ci-dessous est donc celle des commandes qu'on a vues manquer, pas un
+    # inventaire exhaustif du jeu integre.
+    local absentes=0 c
+    for c in read; do
+        if grep -qE "^[[:space:]]*${c}[[:space:]]" "$cfg"; then
+            echo "[brand-iso]   ${name}: commande '${c}' absente du grub UEFI" >&2
+            absentes=$((absentes + 1))
+        fi
+    done
+    if [ "${name}" = "UEFI " ] && [ "${absentes}" -gt 0 ]; then
+        die "${name} : ${absentes} commande(s) indisponible(s) en UEFI. Le menuentry
+    avorterait avant la ligne 'linux' — l'entree ne demarrerait sur aucune vraie
+    machine. ISO non livrable."
+    fi
+
+    # L'entree zero-touch doit exister et demarrer sur l'amorce. Sans elle,
+    # l'ISO n'installe plus qu'en mode manuel, sans politique : c'est un echec
+    # de construction, pas une variante.
+    grep -q "menuentry 'Installer Blue Fox OS (zero-touch)'" "$cfg" \
+        || die "${name} : aucune entree zero-touch. ISO non livrable."
+    grep -qE 'inst\.ks=hd:LABEL=[^[:space:]]+:/bfos-amorce\.ks' "$cfg" \
+        || die "${name} : l'entree zero-touch ne demarre pas sur /bfos-amorce.ks."
+    ! grep -q 'bf_domain' "$cfg" \
+        || die "${name} : reste d'une entree d'avant l'amorce (bf_domain)."
+
+    log "  ${name} : ${nlinux} entree(s), etiquettes ok, inst.profile ok, commandes ok"
+}
+
+if xorriso -osirrox on -indev "${ISO}" -extract /boot/grub2/grub.cfg \
+        "${TMPDIR}/v-bios.cfg" >/dev/null 2>&1 && [ -f "${TMPDIR}/v-bios.cfg" ]; then
+    verify_menu "BIOS " "${TMPDIR}/v-bios.cfg"
+fi
+if xorriso -osirrox on -indev "${ISO}" -extract /images/efiboot.img \
+        "${TMPDIR}/v-efi.img" >/dev/null 2>&1 && [ -f "${TMPDIR}/v-efi.img" ]; then
+    mcopy -i "${TMPDIR}/v-efi.img" ::/EFI/BOOT/grub.cfg "${TMPDIR}/v-efi.cfg" 2>/dev/null \
+        && verify_menu "UEFI " "${TMPDIR}/v-efi.cfg"
+fi
+# Relue DANS l'ISO finale : inject-anaconda-product.sh repack apres nous, et un
+# menu qui cite /bfos-amorce.ks sans le fichier gele dracut ~3 min.
+xorriso -osirrox on -indev "${ISO}" -extract /bfos-amorce.ks "${TMPDIR}/v-amorce.ks" \
+        >/dev/null 2>&1 && cmp -s "${AMORCE_KS}" "${TMPDIR}/v-amorce.ks" \
+    || die "/bfos-amorce.ks absent de l'ISO finale, ou different de celui rendu."
+log "  amorce : /bfos-amorce.ks present, domaine propose ${ZEROTOUCH_DEFAULT_DOMAIN:-aucun}"
+log "verification passee — ISO livrable"

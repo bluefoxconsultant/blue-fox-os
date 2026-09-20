@@ -4,8 +4,11 @@
 # Surface.
 #
 # Source : https://github.com/linux-surface/linux-surface
-# Repo Fedora : https://pkg.surfacelinux.com/fedora/linux-surface.repo
-#   (auto-detect $releasever, donc suit la base Kinoite-main sans bumper)
+# Repo Fedora : NOTRE .repo, ecrit par files/scripts/setup-surface-repo.sh, et
+#   non plus celui servi par pkg.surfacelinux.com — qui porte
+#   skip_if_unavailable=1 et une gpgkey sur une branche mutable
+#   (audit P5.2 2026-07-22, #23812).
+#   Il garde $releasever, donc suit la base Kinoite-main sans bumper.
 #
 # Le kernel-surface est build avec Provides/Obsoletes qui remplacent le
 # kernel stock de Kinoite quand `rpm-ostree install` resout les deps.
@@ -23,18 +26,56 @@ base-image: ghcr.io/ublue-os/kinoite-main
 #   - kinoite-main:43 actif et maintenu (build 43.20260506.1, kernel 6.19.14-200.fc43)
 #   - linux-surface F43 actif : kernel-surface 6.19.8-2.surface.fc43, derniers commits 2026-04-30
 #   - linux-surface F44 : repo 404 + issue upstream #2092 ouverte 2026-04-30, pas mergee
-# Prochain gate : 2026-06-05 (4 semaines). Watch pkg.surfacelinux.com/fedora/f44/.
+# Re-eval 2026-07-24 (#23812) — pin maintenu.
+#   - https://pkg.surfacelinux.com/fedora/f44/ repond toujours 404 ; f43 = 200.
+#   - Le gate n'a plus de date : il est rattache a #23812, rejoue a chaque
+#     passage sur cette recipe. Une date de re-eval echue depuis 7 semaines
+#     sans que personne ne la rejoue ne protege rien.
+#   - setup-surface-repo.sh nomme desormais ce cas explicitement quand il
+#     tombe : le 404 du tree f<N> ressort comme tel, pas en echec de depsolve.
 image-version: "43"
+
+# Provenance de l'image (#23810) — voir recipes/bf.yml pour le rationale et le
+# piege du shellexpand sur variable absente.
+labels:
+  org.opencontainers.image.revision: "${BF_GIT_REVISION}"
+  # ⚠️ `source` aussi : BlueBuild le derive de la CI et le laisse VIDE en
+  # local (cf. recipes/bf.yml). Une revision sans depot ne designe rien.
+  org.opencontainers.image.source: "https://github.com/bluefoxconsultant/blue-fox-os"
 
 modules:
 
+  # Depot linux-surface durci, AVANT le module rpm-ostree qui en depend
+  # (#23812). Voir l'entete de files/scripts/setup-surface-repo.sh pour le
+  # detail des trois faiblesses du .repo amont.
+  - type: script
+    snippets:
+      # Le module `script` v1 cherche ses `scripts:` sous
+      # $CONFIG_DIRECTORY/scripts, or CONFIG_DIRECTORY vaut /tmp/config
+      # (config complet monte) OU /tmp/files (seul files/ monte) selon la
+      # version de BlueBuild — les deux conventions coexistent encore dans les
+      # modules amont, cf. modules/files/files.sh. On resout donc nous-memes,
+      # avec les deux racines candidates : elles pointent le meme dossier
+      # in-repo, files/scripts/.
+      - for D in "${CONFIG_DIRECTORY}/scripts" "${CONFIG_DIRECTORY}/files/scripts"; do [ -f "$D/setup-surface-repo.sh" ] && exec bash "$D/setup-surface-repo.sh"; done; echo "ERREUR - setup-surface-repo.sh introuvable sous ${CONFIG_DIRECTORY}" >&2; exit 1
+
   - type: rpm-ostree
     repos:
-      - https://pkgs.tailscale.com/stable/fedora/tailscale.repo
-      # Repo officiel linux-surface (utilise $releasever, pas besoin de pin
-      # de version Fedora). GPG key signee par l'equipe linux-surface,
-      # check active dans la .repo.
-      - https://pkg.surfacelinux.com/fedora/linux-surface.repo
+      # ⚠️ Fichier .repo VERSIONNE (files/rpm-ostree/tailscale.repo) plutot
+      # que telecharge a chaque construction (2026-09-14). pkgs.tailscale.com
+      # coupe ~1 connexion TLS sur 4 depuis charizard, et le module rpm-ostree
+      # le tirait par `curl --retry 5` — mais --retry ne reessaie PAS une
+      # erreur TLS (code 35) : il faudrait --retry-all-errors. Une coupure
+      # tuait donc la construction entiere, et elle a tue bf, bf-surface et
+      # factice tour a tour. Une entree sans http(s):// est COPIEE depuis
+      # $CONFIG_DIRECTORY/rpm-ostree/ par le module : aucun reseau. Les
+      # paquets, eux, restent tires par dnf, qui reessaie, et verifies
+      # (gpgcheck=1, repo_gpgcheck=1).
+      - tailscale.repo
+      # ⚠️ PAS d'entree linux-surface ici : son .repo est ecrit par le module
+      # `script` ci-dessus. Le module rpm-ostree curl un .repo et enchaine le
+      # depsolve dans la meme etape — il n'y a aucun point d'accroche pour en
+      # corriger le contenu, d'ou le pre-module.
     install:
       - tailscale
       - rclone
@@ -50,12 +91,43 @@ modules:
       - surface-secureboot
       # plymouth-plugin-script : script.so requis par Plymouth theme [#22420]
       - plymouth-plugin-script
+      # Connexion de siege sur l'avant-poste LDAP d'Authentik (#22387). La base
+      # kinoite-main ne porte que sssd-client : le demon, le fournisseur LDAP,
+      # oddjobd et son module PAM manquent tous. Sans eux, les trois gestes du
+      # chemin sssd de bfos_apply.py echouent EN SILENCE (check=False) et la
+      # machine n'a aucune session ouvrable — soit exactement #23906 par un
+      # autre chemin. Le controle de construction plus bas les affirme.
+      - sssd
+      - sssd-ldap
+      - oddjob
+      - oddjob-mkhomedir
+      # Le renard dans le terminal (#25854). ⚠️ NI fastfetch NI neofetch ne sont
+      # dans kinoite-main : mesure du 2026-09-20 sur l'image publiée (`rpm -q`
+      # rend « not installed » pour les deux). La config émise dans /etc/skel
+      # n'aurait eu personne pour la lire.
+      - fastfetch
       # Note : on n'installe PAS libwacom-surface car il conflicte avec
       # libwacom du stock Fedora qui est plus recent. La calibration pen
       # marche correctement avec libwacom stock + le kernel-surface ; on
       # ajoutera libwacom-surface plus tard via override-replace si pen
       # behavior est off sur le Surface Studio.
     remove:
+      # ⚠️ RETIRE LE 2026-09-11, a la demande d'Olivier. plasma-welcome est le
+      # Centre d'accueil de KDE : il redemande langue, clavier, fuseau ET
+      # theme au premier demarrage, alors que la politique les fixe deja. Le
+      # resultat est pire qu'une question inutile — on choisit « sombre » et
+      # autre chose l'ecrase, ce qui donne un reglage qui ne prend pas.
+      #
+      # ⚠️ Pourquoi retirer le paquet plutot que couper son demarrage : ce
+      # n'est PAS un autostart mais un module KDED
+      # (kded_plasma_welcome.so), dont l'identifiant vit dans des metadonnees
+      # Qt6 en CBOR — illisible avec `strings`. Un `[Module-<id>]` devine dans
+      # kdedrc ne couperait rien du tout, en silence. Retirer le paquet ne se
+      # devine pas : `rpm -q` tranche.
+      #
+      # Corollaire assume : on perd la page d'intro brandee que
+      # files/usr/share/plasma/plasma-welcome/ lui livrait.
+      - plasma-welcome
       - firefox
       - firefox-langpacks
 
@@ -67,42 +139,131 @@ modules:
       install:
         - com.brave.Browser
         - org.mozilla.Thunderbird
-        - com.nextcloud.desktopclient.nextcloudclient
+        # ⚠️ CORRIGE LE 2026-09-11. L'identifiant etait
+        # com.nextcloud.desktopclient.nextcloudclient — il n'existe PAS sur
+        # Flathub (404). Et `flatpak install` sur une liste abandonne TOUT le
+        # lot au premier identifiant inconnu : aucune application n'arrivait,
+        # Brave compris, donc aucun navigateur pour le SSO de l'agent d'accueil.
+        # Verifie contre https://flathub.org/api/v2/appstream/<id> avant d'ecrire.
+        - com.nextcloud.desktopclient.nextcloud
         - com.bitwarden.desktop
 
   - type: files
     files:
       - source: usr
         destination: /usr
-      # KDE theme (kdeglobals + sddm.conf.d + skel) généré par
+      # KDE theme (kdeglobals + plasmalogin.conf.d + skel) généré par
       # scripts/generate_kde_theme.py à partir de config/bf.json.
       - source: etc
         destination: /etc
 
   - type: script
     snippets:
-      - rpm-ostree install /usr/share/bluefox/rpm-staging/bluefox-welcome.noarch.rpm && rm -rf /usr/share/bluefox/rpm-staging
+      # bluefox-welcome : signature verifiee avant installation (#23811) — cf.
+      # recipes/bf.yml pour le rationale et la resolution a deux racines.
+      - for D in "${CONFIG_DIRECTORY}/scripts" "${CONFIG_DIRECTORY}/files/scripts"; do [ -f "$D/install-welcome-rpm.sh" ] && exec bash "$D/install-welcome-rpm.sh"; done; echo "ERREUR - install-welcome-rpm.sh introuvable sous ${CONFIG_DIRECTORY}" >&2; exit 1
       # Refresh fontconfig cache pour Lexend hand-baked (cf bf.yml).
       - fc-cache -f /usr/share/fonts/lexend/
-      # Bake Plymouth theme dans initramfs. `-R` invoque dracut sans
-      # specifier de kernel, qui retombe sur `uname -r` = kernel HOTE
-      # (kernel du build agent ; sur Garuda/vir, c'est le kernel Zen, qui
-      # n'existe pas dans /lib/modules/ de l'image -> dracut FAIL).
-      # On split : set-default-theme sans -R (juste le symlink + conf),
-      # puis dracut --regenerate-all qui itere sur /lib/modules/* dans
-      # l'image et ignore uname -r.
-      - PLYMOUTH_THEME=$(awk -F= '/^Theme=/{print $2}' /etc/plymouth/plymouthd.conf) && [ -n "$PLYMOUTH_THEME" ] && plymouth-set-default-theme "$PLYMOUTH_THEME" && dracut --regenerate-all -f
+      # Les tables MIME de Fedora designent firefox pour http/https/text-html,
+      # or la recette le RETIRE de l'image. Un gestionnaire fantome fait
+      # descendre xdg-open jusqu'au premier programme revendiquant text/html
+      # — un editeur de texte. Vecu le 2026-07-19 (« le bouton ouvre Kate »),
+      # et ça cassait aussi le bouton SSO Nextcloud, donc le montage.
+      # Notre /etc/xdg/mimeapps.list (Brave) reste seul en place.
+      - sed -i "/=org\.mozilla\.firefox\.desktop$/d" /usr/share/applications/mimeapps.list
+      # Nom de marque dans l'entree de demarrage (cf. bf.yml). ID reste fedora.
+      # ⚠️ DOIT RESTER AVANT LE BAKE DRACUT : dracut copie os-release dans
+      # l'initramfs sous le nom `initrd-release`, d'ou Plymouth tire le nom
+      # affiche sur l'ecran LUKS. Apres le bake, l'ecran affichait « Fedora »
+      # (constate sur l'ISO du 2026-07-25). Ordre garde par un test.
+      - . /usr/lib/os-release && sed -i "s|^NAME=.*|NAME=\"Blue Fox OS\"|; s|^PRETTY_NAME=.*|PRETTY_NAME=\"Blue Fox OS ${VERSION_ID} (Kinoite)\"|" /usr/lib/os-release
+      # Bake Plymouth theme dans initramfs. `-R` retombe sur `uname -r` =
+      # kernel HOTE du build agent, absent de /lib/modules/ de l'image.
+      # ⚠️ Et `--regenerate-all` ne suffit pas non plus (corrige 2026-07-19,
+      # cf. le bloc de commentaires equivalent dans bf.yml) :
+      #   1. il meurt sur « Invalid tmpdir '/var/tmp' » — /var est vide dans
+      #      une image bootc a la construction -> --tmpdir /tmp ;
+      #   2. il ecrit dans /boot/, qu'ostree ignore : l'initramfs d'une image
+      #      ostree vit dans /usr/lib/modules/<kver>/initramfs.img.
+      # La boucle couvre les DEUX noyaux de cette variante (Fedora + surface).
+      - PLYMOUTH_THEME=$(awk -F= '/^Theme=/{print $2}' /etc/plymouth/plymouthd.conf) && [ -n "$PLYMOUTH_THEME" ] && plymouth-set-default-theme "$PLYMOUTH_THEME" && for KDIR in /usr/lib/modules/*/; do KVER=$(basename "$KDIR"); dracut -f --kver "$KVER" --add ostree --no-hostonly --tmpdir /tmp "${KDIR}initramfs.img" || exit 1; lsinitrd "${KDIR}initramfs.img" | grep -q "plymouth/themes/${PLYMOUTH_THEME}/" || { echo "ERREUR - theme ${PLYMOUTH_THEME} absent de ${KDIR}initramfs.img"; exit 1; }; for M in ostree btrfs crypt dm systemd-cryptsetup plymouth; do lsinitrd "${KDIR}initramfs.img" | sed -n "/^dracut modules:/,/^===/p" | grep -qx "$M" || { echo "ERREUR - module dracut $M absent de ${KDIR}initramfs.img ; sans ostree rien ne prepare /sysroot et switch-root echoue"; exit 1; }; done; done
+      # Connexion de siege (#22387) : le chemin sssd de bfos_apply.py fait ses
+      # trois gestes en check=False. Si un morceau manque de l'image, ils
+      # echouent sans bruit et la machine n'ouvre aucune session, soit le meme
+      # symptome que #23906. On l'affirme donc ici, ou l'echec coute un build
+      # et pas une installation complete. Chemins releves sur Fedora 44.
+      - for F in /usr/sbin/sssd /usr/lib64/sssd/libsss_ldap.so /usr/lib64/security/pam_sss.so /usr/lib64/security/pam_oddjob_mkhomedir.so /usr/sbin/oddjobd /usr/lib/systemd/system/sssd.service /usr/lib/systemd/system/oddjobd.service; do [ -e "$F" ] || { echo "ERREUR - $F absent, le mode login sssd n'ouvrirait aucune session"; exit 1; }; done; authselect list | grep -qw sssd || { echo "ERREUR - profil authselect sssd absent de l'image"; exit 1; }
+      # Le Centre d'accueil de KDE doit avoir DISPARU (#2026-09-11). Il
+      # rouvre sa visite guidee DANS la session et reecrit le theme que la
+      # politique fixe deja. `rpm -q` est le seul controle qui tranche — son
+      # module KDED ne se coupe pas par un reglage devinable.
+      #
+      # ⚠️ CE N EST PAS LUI QUI OUVRE L ASSISTANT DU PREMIER DEMARRAGE
+      # (mesure le 2026-09-13 sur l image publiee, rev. 9d81537). Ca, c est
+      # `plasma-setup`, un AUTRE paquet, qui tourne AVANT le gestionnaire de
+      # connexion et ne depend que d un drapeau. Retirer plasma-welcome ne l a
+      # jamais touche. On pose donc le drapeau par le module `files`, et on
+      # affirme ici LES DEUX MOITIES du mecanisme : le drapeau existe, et
+      # l unite se garde toujours sur ce chemin. Si une version future deplace
+      # le drapeau, le build echoue au lieu de rendre l assistant en silence.
+      - rpm -q plasma-welcome >/dev/null 2>&1 && { echo "ERREUR - plasma-welcome est encore dans l image, il reposera les questions de la politique"; exit 1; } || true
+      - U=/usr/lib/systemd/system/plasma-setup.service; if [ -e "$U" ]; then grep -q '^ConditionPathExists=!/etc/plasma-setup-done$' "$U" || { echo "ERREUR - plasma-setup.service ne se garde plus sur /etc/plasma-setup-done, relire l unite avant de publier"; exit 1; }; [ -f /etc/plasma-setup-done ] || { echo "ERREUR - /etc/plasma-setup-done absent, l assistant OOBE de KDE s ouvrirait avant le gestionnaire de connexion"; exit 1; }; fi
+      # L ecran de connexion, et le gestionnaire qui le rend (2026-09-13).
+      #
+      # ⚠️ NOTRE PARC STRADDLE DEUX GENERATIONS. bf et factice suivent
+      # kinoite-main:latest, donc Fedora 44, ou SDDM a cede la place a
+      # plasmalogin. bf-surface est EPINGLE en 43 pour le noyau linux-surface,
+      # et y tourne encore sur sddm. Mesure sur les images publiees.
+      #
+      # Les deux configurations sont donc emises, et c est ICI qu on exige
+      # celle que l image cable vraiment — en lisant display-manager plutot
+      # qu en supposant. Une configuration pour un greeter absent ne coute que
+      # quelques centaines d octets ; la manquer coute un ecran de connexion
+      # sans marque, et ca ne se voit qu a l installation.
+      #
+      # Un greeter inconnu echoue aussi : le silence serait le retour au fond
+      # de Fedora, sans un mot.
+      - D=/etc/systemd/system/display-manager.service; C="$(readlink -f "$D" 2>/dev/null)"; case "$C" in *plasmalogin*) [ -f /etc/plasmalogin.conf.d/10-bluefox.conf ] || { echo "ERREUR - greeter plasmalogin mais drop-in /etc/plasmalogin.conf.d absent, l ecran de connexion servirait le papier peint de Fedora"; exit 1; };; *sddm*) [ -f /etc/sddm.conf.d/blue-fox.conf ] || { echo "ERREUR - greeter sddm mais /etc/sddm.conf.d/blue-fox.conf absent, l ecran de connexion resterait sans marque"; exit 1; };; *) { echo "ERREUR - gestionnaire de connexion inconnu [$C], aucune de nos deux configurations ne serait lue"; exit 1; };; esac
 
   - type: systemd
     system:
       enabled:
         - rpm-ostreed-automatic.timer
         - bluefox-rebase.service
-        - firstboot.service
+        # ⚠️ firstboot.service RETIRE le 2026-09-14. Il lancait l'agent d'accueil
+        # EN TANT QUE ROOT, au demarrage, avant toute session : l'agent trouvait
+        # les identifiants Nextcloud, appliquait theme, fond d'ecran, montages et
+        # PWA dans /root, puis effacait les identifiants. La session de l'usager
+        # n'avait plus rien a faire. Le lanceur /etc/xdg/autostart suffit, et
+        # l'unite le documentait elle-meme sans en tirer la consequence.
+        # ⚠️ RENVERSEMENT ASSUME (2026-09-03), dont la JUSTIFICATION A CHANGE
+        # le 2026-09-11. tailscaled etait MASQUE, avec la consigne
+        # « l'utilisateur doit l'activer consciemment ». Le demasquage a ete
+        # fait pour la connexion de siege, qu'on croyait alors devoir passer
+        # par le tailnet pour joindre l'avant-poste LDAP d'Authentik.
+        #
+        # Ce n'est plus le chemin retenu : l'avant-poste est joint en LDAPS
+        # public (#22387, arbitrage du 2026-09-11), donc la premiere ouverture
+        # de session ne depend plus du tailnet. Le demasquage reste en place,
+        # mais il ne porte plus rien de critique. Le defaire serait une
+        # decision, pas un menage : un service masque ne peut meme pas etre
+        # demarre par le %post, c'est tout l'objet du masquage.
+        #
+        # Le demon seul ne rejoint aucun reseau : sans cle d'authentification il
+        # tourne et attend. C'est `tailscale up` qui engage la machine, et il
+        # n'est automatise nulle part a ce jour — ni dans la politique, ni dans
+        # le kickstart.
+        - tailscaled.service
+        - bluefox-tpm-enroll.service   # auto-deverrouillage LUKS TPM2, pilote par la policy
+        - bluefox-policy-sync.timer    # re-tirage quotidien de la politique (#23909)
+        # Remise des identifiants Nextcloud au siege (#22436). Le %pre les
+        # frappe pendant que le porteur de l'operateur vaut encore, le %post
+        # les depose en 0600 root ; l'uid du siege vient de l'annuaire et
+        # n'est connaissable qu'ici. Conditionnee au fichier, donc inerte sur
+        # un poste qui n'en a pas.
+        - bluefox-seat-credentials.service
         # iptsd ship une unite templated `iptsd@.service` lancee par udev
         # quand le device IPTS apparait au boot. Pas besoin de l'enable
         # explicitement.
-      masked:
-        - tailscaled.service
 
   - type: signing

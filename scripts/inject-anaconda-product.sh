@@ -73,7 +73,15 @@ EOF
 done
 
 TMPDIR="$(mktemp -d)"
-trap 'rm -rf "${TMPDIR}"' EXIT
+# ⚠️ chmod AVANT rm (#23940, 2026-09-01). unsquashfs restitue les modes
+# d'origine du rootfs, dont des repertoires sans bit d'ecriture (/bin, /boot,
+# /dev, les hachages ca-trust...). `rm -rf` ne chmod pas : il echoue sur
+# « Permission denied » pour chaque fichier vivant dans un tel repertoire.
+# En root ca passait, les droits etant contournes — donc invisible tant que le
+# script n'avait tourne que sous sudo. Rejoue en livv, le trap faisait sortir
+# le script en erreur APRES un travail entierement reussi, et laissait 783 Mo
+# dans le tmpfs de 16 Go.
+trap 'chmod -R u+w "${TMPDIR}" 2>/dev/null; rm -rf "${TMPDIR}"' EXIT
 
 # 1. Locate stage2. BIB Fedora ISOs put it at /images/install.img.
 # Live-ISO style (LiveOS/squashfs.img) is a fallback that older Fedora

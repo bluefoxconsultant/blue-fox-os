@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# bluefox-tpm-enroll — lie le volume LUKS au TPM2 pour un deverrouillage
+# automatique au demarrage, pilote par la policy Odoo (bf-policy/v2).
+#
+# POURQUOI UN SERVICE ROOT ET PAS UN apply_* DE L'AGENT WELCOME
+# `systemd-cryptenroll` doit tourner en root, alors que l'agent welcome tourne
+# en tant que l'usager, dans sa session (lanceur /etc/xdg/autostart).
+# ⚠️ CE COMMENTAIRE CITAIT firstboot.service COMME PREUVE, jusqu'au 2026-09-14 —
+# et c'est precisement cette unite qui lancait l'agent EN ROOT, avant toute
+# session. Elle est retiree ; l'affirmation est desormais vraie. Passer par
+# pkexec depuis Qt donnerait une elevation sans tty, et systemd-cryptenroll a
+# besoin de lire la phrase de passe existante. On reste donc dans une unite
+# root, qui demande la phrase via `systemd-ask-password` — l'agent de mot de
+# passe de KDE affiche alors une vraie boite de dialogue dans la session.
+#
+# CE QUE LE REGLAGE VEUT DIRE, ET CE QU'IL COUTE
+# Enrolement SANS NIP (choix explicite d'Olivier, 2026-07-19) : le disque se
+# deverrouille des qu'on allume la machine. Quiconque a le portable arrive a
+# l'ecran de connexion avec le chiffrement deja leve ; la protection au repos
+# repose alors sur le seul mot de passe de session. La phrase de passe reste
+# enrolee comme methode de secours — `systemd-cryptenroll --tpm2-device`
+# AJOUTE un keyslot, il n'en retire jamais.
+#
+# PCR 7 par defaut = etat du Secure Boot. Survit aux mises a jour de noyau et
+# de firmware ; si Secure Boot est desactive, le TPM refuse de rendre la cle et
+# la machine redemande la phrase de passe. C'est le comportement voulu.
+#
+# Idempotent : si un jeton systemd-tpm2 existe deja sur le volume, on sort.
+# Relance a chaque demarrage tant que ce n'est pas fait — la policy peut etre
+# activee apres coup depuis Odoo sans retoucher a la machine.
+
+set -euo pipefail
+
+PROV="/var/lib/bluefox-welcome/provisioning.json"
+STATE_DIR="/var/lib/bluefox-welcome"
+SENTINEL="${STATE_DIR}/tpm-enrolled"
+LOG_TAG="bluefox-tpm-enroll"
+
+log()  { logger -t "$LOG_TAG" -- "$*"; echo "[tpm-enroll] $*"; }
+warn() { logger -t "$LOG_TAG" -p user.warning -- "$*"; echo "[tpm-enroll] ATTENTION: $*" >&2; }
+
+[ "$(id -u)" -eq 0 ] || { warn "doit tourner en root"; exit 1; }
+
+# --- 1. la policy demande-t-elle l'auto-deverrouillage ? --------------------
+if [ ! -r "$PROV" ]; then
+    log "pas de policy stagee (${PROV}) — rien a faire"
+    exit 0
+fi
+
+read_policy() {
+    # Sortie : "<enabled> <pcrs>". python3 est garanti present (agent welcome).
+    python3 - "$PROV" <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print("false 7"); sys.exit(0)
+t = (d.get("policies") or {}).get("tpm_autounlock") or {}
+print("%s %s" % ("true" if t.get("enabled") else "false", t.get("pcrs") or "7"))
+PY
+}
+
+read -r ENABLED PCRS <<< "$(read_policy)"
+if [ "$ENABLED" != "true" ]; then
+    log "policy: tpm_autounlock desactive — rien a faire"
+    exit 0
+fi
+log "policy: tpm_autounlock actif, PCR ${PCRS}"
+
+# --- 2. la machine a-t-elle un TPM2 utilisable ? ----------------------------
+if ! systemd-analyze has-tpm2 >/dev/null 2>&1; then
+    warn "aucun TPM2 utilisable sur cette machine — on garde la phrase de passe"
+    exit 0
+fi
+
+# --- 3. trouver le volume LUKS de la racine --------------------------------
+# On part de /etc/crypttab, ecrit par Anaconda a l'installation. Format :
+#   <nom>  UUID=<uuid>  <keyfile>  <options>
+if [ ! -r /etc/crypttab ]; then
+    warn "/etc/crypttab illisible — impossible de localiser le volume chiffre"
+    exit 0
+fi
+CRYPT_NAME=$(awk '!/^[[:space:]]*#/ && NF {print $1; exit}' /etc/crypttab)
+CRYPT_SRC=$(awk  '!/^[[:space:]]*#/ && NF {print $2; exit}' /etc/crypttab)
+if [ -z "${CRYPT_NAME:-}" ] || [ -z "${CRYPT_SRC:-}" ]; then
+    warn "aucune entree exploitable dans /etc/crypttab"
+    exit 0
+fi
+case "$CRYPT_SRC" in
+    UUID=*) DEV="/dev/disk/by-uuid/${CRYPT_SRC#UUID=}" ;;
+    *)      DEV="$CRYPT_SRC" ;;
+esac
+[ -b "$DEV" ] || { warn "peripherique ${DEV} introuvable"; exit 0; }
+log "volume LUKS : ${CRYPT_NAME} -> ${DEV}"
+
+# --- 4. deja enrole ? -------------------------------------------------------
+if cryptsetup luksDump "$DEV" 2>/dev/null | grep -q "systemd-tpm2"; then
+    log "un jeton systemd-tpm2 existe deja — rien a faire"
+    mkdir -p "$STATE_DIR"; : > "$SENTINEL"
+    exit 0
+fi
+
+# --- 5. obtenir la phrase de passe existante --------------------------------
+# systemd-ask-password passe par l'agent de mot de passe : boite de dialogue
+# dans la session graphique, invite sur la console sinon.
+# La phrase transite par une variable d'environnement lue par
+# systemd-cryptenroll ($PASSWORD, documente dans sa page de manuel). Elle
+# n'est jamais journalisee ni ecrite sur disque.
+PASSWORD=$(systemd-ask-password --timeout=120 --icon=drive-harddisk \
+    "Blue Fox OS — phrase de passe du disque, pour activer le deverrouillage par TPM :" 2>/dev/null || true)
+if [ -z "${PASSWORD:-}" ]; then
+    warn "aucune phrase de passe saisie — enrolement reporte au prochain demarrage"
+    exit 0
+fi
+export PASSWORD
+
+# --- 6. enrolement ----------------------------------------------------------
+if ! systemd-cryptenroll "$DEV" --tpm2-device=auto --tpm2-pcrs="$PCRS" 2>&1 \
+        | sed 's/^/[cryptenroll] /'; then
+    unset PASSWORD
+    warn "echec de l'enrolement TPM2 — la phrase de passe reste seule methode"
+    exit 1
+fi
+unset PASSWORD
+log "enrolement TPM2 reussi (PCR ${PCRS})"
+
+# --- 7. rendre l'option visible au demarrage --------------------------------
+# systemd-cryptsetup ne consulte le jeton TPM2 que si l'entree crypttab porte
+# `tpm2-device=auto`. Et sur un systeme ostree, /etc/crypttab n'atteint PAS
+# l'initramfs tout seul : il faut le faire suivre explicitement, ce qui exige
+# un redemarrage de plus. C'est le piege de ce chantier.
+if ! grep -qE "^[[:space:]]*${CRYPT_NAME}\b.*tpm2-device=auto" /etc/crypttab; then
+    cp -a /etc/crypttab "/etc/crypttab.bak-$(date +%Y%m%d%H%M%S)"
+    awk -v name="$CRYPT_NAME" '
+        !/^[[:space:]]*#/ && $1 == name {
+            if (NF < 4 || $4 == "none" || $4 == "-") { $4 = "tpm2-device=auto" }
+            else { $4 = $4 ",tpm2-device=auto" }
+        }
+        { print }
+    ' /etc/crypttab > /etc/crypttab.new && mv /etc/crypttab.new /etc/crypttab
+    log "/etc/crypttab : option tpm2-device=auto ajoutee (sauvegarde conservee)"
+fi
+
+if rpm-ostree initramfs-etc --track=/etc/crypttab >/dev/null 2>&1; then
+    log "crypttab suivi dans l'initramfs — REDEMARRAGE requis pour que le"
+    log "deverrouillage automatique prenne effet"
+else
+    warn "rpm-ostree initramfs-etc a echoue : le jeton TPM2 est enrole mais"
+    warn "l'initramfs ne verra pas l'option. Lancer a la main :"
+    warn "  rpm-ostree initramfs-etc --track=/etc/crypttab && systemctl reboot"
+fi
+
+mkdir -p "$STATE_DIR"; : > "$SENTINEL"
+log "termine"

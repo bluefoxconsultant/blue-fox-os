@@ -1,0 +1,18 @@
+[Unit]
+Description=Minuterie de re-synchronisation de la politique Blue Fox OS
+Documentation=https://github.com/bluefoxconsultant/blue-fox-os
+
+[Timer]
+# Un passage peu apres le demarrage : c'est le moment ou un poste rallume
+# rattrape ce qui a change pendant qu'il dormait.
+OnBootSec=3min
+# Puis une fois par jour. Persistent=true fait rattraper une echeance manquee
+# (portable eteint a l'heure dite) au demarrage suivant.
+OnCalendar=daily
+Persistent=true
+# Etale une flotte sur une heure : sans ce delai, toutes les machines
+# tireraient la politique a la meme seconde.
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

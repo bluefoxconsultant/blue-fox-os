@@ -1,0 +1,28 @@
+[Unit]
+Description=Blue Fox OS TPM2 LUKS auto-unlock enrolment
+Documentation=https://github.com/bluefoxconsultant/blue-fox-os
+# Pas de ConditionPathExists sur le sentinelle seul : la policy peut activer
+# l'auto-deverrouillage APRES l'installation, depuis Odoo. Le script sort en
+# quelques millisecondes quand il n'y a rien a faire, donc on le laisse
+# reevaluer a chaque demarrage tant qu'il n'a pas enrole.
+ConditionPathExists=!/var/lib/bluefox-welcome/tpm-enrolled
+# La policy est stagee par le %pre de l'installation ; le TPM et le volume
+# LUKS sont disponibles des que le systeme de fichiers racine est monte.
+After=local-fs.target systemd-cryptsetup.target
+# L'invite passe par systemd-ask-password : dans une session graphique c'est
+# l'agent de KDE qui l'affiche. On demarre donc apres que la session soit la,
+# sinon l'invite atterrit sur la console et personne ne la voit.
+After=graphical.target
+Wants=graphical.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/bluefox-tpm-enroll
+StandardOutput=journal
+StandardError=journal
+RemainAfterExit=no
+# 120 s d'attente de saisie dans le script + marge pour l'enrolement lui-meme.
+TimeoutStartSec=5min
+
+[Install]
+WantedBy=multi-user.target

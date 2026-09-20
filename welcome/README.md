@@ -25,6 +25,10 @@ make welcome-rpm   # depuis la racine du repo
 
 - `main.py` : CLI + dispatcher (réinitialisation, mode service)
 - `wizard.py` : 4-5 écrans PyQt6 (à créer)
-- `tenant.py` : fetch + valide `config.bluefoxconsultant.com/{slug}.json` (à créer)
+- `tenant.py` : lit `/usr/share/bluefox/tenant.json`, déposé dans l'image au
+  build depuis `config/{slug}.json` (source unique, en dépôt). ⚠️ Cette ligne
+  annonçait un fetch de `config.bluefoxconsultant.com/{slug}.json` (#23813) :
+  l'endpoint n'a jamais été déployé et ne le sera pas — décision du 2026-07-24.
+  Aucun appel réseau ici.
 - `apply/` : modules d'application des configs (KAccounts, Thunderbird, NC Talk, CalDAV, CardDAV, imprimante) (à créer)
 - `firstboot.service` : unité systemd qui déclenche le wizard

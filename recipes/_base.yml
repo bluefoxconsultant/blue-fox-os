@@ -8,6 +8,16 @@
 base-image: ghcr.io/ublue-os/kinoite-main
 image-version: latest
 
+# Provenance : à dupliquer dans CHAQUE recipe tenant (#23810). Une recipe qui
+# l'oublie publie une image sans lien vers son commit source — le trou que
+# l'audit P5.2 a mis deux mois à voir. scripts/tests/test_provenance.py le
+# vérifie pour toutes les recipes.
+labels:
+  org.opencontainers.image.revision: "${BF_GIT_REVISION}"
+  # ⚠️ `source` aussi : BlueBuild le derive de la CI et le laisse VIDE en
+  # local (cf. recipes/bf.yml). Une revision sans depot ne designe rien.
+  org.opencontainers.image.source: "https://github.com/bluefoxconsultant/blue-fox-os"
+
 # Modules communs à appliquer en plus du branding tenant-specific.
 # Les tenants doivent dupliquer cette liste avant d'ajouter leurs overrides.
 modules:
@@ -21,8 +31,36 @@ modules:
       - plymouth-plugin-script   # script.so requis par notre Plymouth theme
                                  # (loading bar animée via Plymouth scripting,
                                  # cf. scripts/generate_kde_theme.py emit_plymouth_theme)
+      # Connexion de siege sur l'avant-poste LDAP d'Authentik (#22387). La base
+      # kinoite-main ne porte que sssd-client : le demon, le fournisseur LDAP,
+      # oddjobd et son module PAM manquent tous. Sans eux, les trois gestes du
+      # chemin sssd de bfos_apply.py echouent EN SILENCE (check=False) et la
+      # machine n'a aucune session ouvrable — soit exactement #23906 par un
+      # autre chemin. Le controle de construction plus bas les affirme.
+      - sssd
+      - sssd-ldap
+      - oddjob
+      - oddjob-mkhomedir
+      # Le renard dans le terminal (#25854). ⚠️ NI fastfetch NI neofetch ne sont
+      # dans kinoite-main : mesure du 2026-09-20 sur l'image publiee (`rpm -q`
+      # rend « not installed » pour les deux). La config emise dans /etc/skel
+      # n'aurait eu personne pour la lire.
+      - fastfetch
+                                 # (loading bar animée via Plymouth scripting,
+                                 # cf. scripts/generate_kde_theme.py emit_plymouth_theme)
     # Lexend : pas de paquet en repos Fedora, ship via files/usr/share/fonts/lexend/
     remove:
+      # ⚠️ Retiré le 2026-09-11 : plasma-welcome rouvre sa visite guidée DANS
+      # la session et réécrit le thème que la politique fixe déjà. On retire le
+      # PAQUET plutôt que de couper un module KDED dont l'identifiant vit dans
+      # des métadonnées Qt6 en CBOR : une coupure devinée ne couperait rien, en
+      # silence.
+      #
+      # ⚠️ L'assistant du PREMIER DÉMARRAGE est un autre paquet, `plasma-setup`,
+      # qui tourne avant le gestionnaire de connexion et que ce retrait n'a
+      # jamais touché (mesuré le 2026-09-13). Il se coupe par le drapeau
+      # files/etc/plasma-setup-done, et chaque recipe tenant l'affirme au build.
+      - plasma-welcome
       - firefox                  # remplacé par Brave Flatpak
       - firefox-langpacks
 
@@ -36,7 +74,13 @@ modules:
       install:
         - com.brave.Browser
         - org.mozilla.Thunderbird
-        - com.nextcloud.desktopclient.nextcloudclient
+        # ⚠️ CORRIGE LE 2026-09-11. L'identifiant etait
+        # com.nextcloud.desktopclient.nextcloudclient — il n'existe PAS sur
+        # Flathub (404). Et `flatpak install` sur une liste abandonne TOUT le
+        # lot au premier identifiant inconnu : aucune application n'arrivait,
+        # Brave compris, donc aucun navigateur pour le SSO de l'agent d'accueil.
+        # Verifie contre https://flathub.org/api/v2/appstream/<id> avant d'ecrire.
+        - com.nextcloud.desktopclient.nextcloud
         # Talk client web seulement en v1, pas de Flatpak desktop officiel mature
 
   # 3. Fichiers : assets de branding, welcome agent, units systemd.
@@ -46,18 +90,24 @@ modules:
       # source est relatif a <repo>/files/ (conventionnel BlueBuild).
       - source: usr
         destination: /usr
-      # /etc/xdg/kdeglobals + /etc/sddm.conf.d + /etc/skel/.config matérialisés
+      # /etc/xdg/kdeglobals + /etc/plasmalogin.conf.d + /etc/skel/.config matérialisés
       # par scripts/generate_kde_theme.py à partir de tenant.json.
       - source: etc
         destination: /etc
 
-  # 4. systemd : auto-rebase + premier rebase post-install + firstboot wizard.
+  # 4. systemd : auto-rebase + premier rebase post-install.
+  #    (L'agent d'accueil demarre dans la SESSION, par /etc/xdg/autostart.)
   - type: systemd
     system:
       enabled:
         - rpm-ostreed-automatic.timer  # auto-rebase quotidien stage
         - bluefox-rebase.service       # premier rebase post-Kickstart vers tenant image
-        - firstboot.service            # P4.1 : welcome wizard, conditionne au sentinelle /var/lib/bluefox-welcome/done
+        # ⚠️ firstboot.service RETIRE le 2026-09-14. Il lancait l'agent d'accueil
+        # EN TANT QUE ROOT, au demarrage, avant toute session : l'agent trouvait
+        # les identifiants Nextcloud, appliquait theme, fond d'ecran, montages et
+        # PWA dans /root, puis effacait les identifiants. La session de l'usager
+        # n'avait plus rien a faire. Le lanceur /etc/xdg/autostart suffit, et
+        # l'unite le documentait elle-meme sans en tirer la consequence.
 
   # 5. Signature cosign (uniquement en CI ; ignoré en build local).
   - type: signing
