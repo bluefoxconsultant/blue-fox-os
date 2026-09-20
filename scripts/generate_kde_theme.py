@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -51,10 +52,13 @@ from bluefox_welcome.branding.colors import (  # noqa: E402
 LOG = logging.getLogger("generate_kde_theme")
 
 BRANDING_RUNTIME = "/usr/share/bluefox/branding"
-# Taille du logo ANSI (branding/bluefoxos.ansi), declaree parce que
-# fastfetch ne sait pas la mesurer sur un fichier a sequences.
-FASTFETCH_LOGO_WIDTH = 34
+# Taille de repli du logo ANSI, si le fichier manque a la generation. Elle est
+# normalement MESUREE sur le fichier lui-meme : une taille declaree en dur se
+# desynchronise du dessin des la premiere retouche, et fastfetch decale alors
+# tout le bloc d'information sans rien dire.
+FASTFETCH_LOGO_WIDTH = 30
 FASTFETCH_LOGO_HEIGHT = 20
+_SGR = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def emit_color_scheme(b: dict, files_root: Path) -> Path:
@@ -765,6 +769,23 @@ def emit_neofetch_config(b: dict, files_root: Path) -> Path:
     return skel_dir
 
 
+def _mesurer_logo(chemin: Path) -> tuple[int, int]:
+    """Largeur et hauteur du logo, lues sur le dessin lui-meme.
+
+    Les sequences d'echappement ne prennent pas de place a l'ecran mais en
+    prennent dans le fichier : c'est precisement ce que fastfetch mesure mal,
+    et pourquoi on lui donne les nombres. On les prend donc au meme endroit que
+    lui aurait du les prendre — apres avoir retire les sequences.
+    """
+    try:
+        lignes = chemin.read_text(encoding="utf-8").rstrip("\n").split("\n")
+    except OSError:
+        LOG.warning("logo ANSI absent (%s) : taille de repli", chemin)
+        return FASTFETCH_LOGO_WIDTH, FASTFETCH_LOGO_HEIGHT
+    largeur = max((len(_SGR.sub("", l)) for l in lignes), default=0)
+    return largeur or FASTFETCH_LOGO_WIDTH, len(lignes) or FASTFETCH_LOGO_HEIGHT
+
+
 def emit_fastfetch_config(b: dict, files_root: Path) -> Path:
     """Logo du renard et bloc d'information pour fastfetch (#25854).
 
@@ -780,6 +801,8 @@ def emit_fastfetch_config(b: dict, files_root: Path) -> Path:
     de logo casse, juste celui de Fedora.
     """
     logo = f"{BRANDING_RUNTIME}/bluefoxos.ansi"
+    largeur, hauteur = _mesurer_logo(
+        files_root / "usr/share/bluefox/branding/bluefoxos.ansi")
     skel_dir = files_root / "etc/skel/.config/fastfetch"
     skel_dir.mkdir(parents=True, exist_ok=True)
     config = {
@@ -787,8 +810,8 @@ def emit_fastfetch_config(b: dict, files_root: Path) -> Path:
         "logo": {
             "type": "file-raw",
             "source": logo,
-            "width": FASTFETCH_LOGO_WIDTH,
-            "height": FASTFETCH_LOGO_HEIGHT,
+            "width": largeur,
+            "height": hauteur,
             "padding": {"top": 1, "right": 3},
         },
         "display": {"separator": "  "},
