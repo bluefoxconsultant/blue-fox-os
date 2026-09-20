@@ -8,8 +8,12 @@ from .kaccounts import apply_kaccounts
 from .bitwarden_prefs import apply_bitwarden_prefs
 from .brave_policy import apply_brave_policy
 from .kde_theme import apply_kde_theme
+from .horloges import appliquer_horloges
+from .photo import appliquer_photo
 
 __all__ = [
+    "appliquer_horloges",
+    "appliquer_photo",
     "apply_rclone_mount",
     "apply_session_mounts",
     "apply_kaccounts",

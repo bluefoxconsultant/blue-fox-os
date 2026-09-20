@@ -27,6 +27,8 @@ from pathlib import Path
 
 from . import seat_credentials
 from .apply import (
+    appliquer_horloges,
+    appliquer_photo,
     apply_bitwarden_prefs,
     apply_brave_policy,
     apply_kaccounts,
@@ -656,6 +658,14 @@ def _finalize_and_apply(
 
     ok, msg = apply_kde_theme(tenant)
     results.append(("kde_theme", ok, msg))
+
+    # L'heure et la photo viennent de la politique de la personne, pas du
+    # locataire : elles passent donc `prov`, et se taisent quand il manque.
+    ok, msg = appliquer_horloges(prov)
+    results.append(("horloges", ok, msg))
+
+    ok, msg = appliquer_photo(prov)
+    results.append(("photo", ok, msg))
 
     try:
         USER_LOG.parent.mkdir(parents=True, exist_ok=True)
