@@ -609,10 +609,7 @@ def emit_plasmalogin_config(b: dict, files_root: Path) -> Path:
     dedie = files_root / "usr/share/wallpapers" / f"{b['slug']}-login"
     nom = f"{b['slug']}-login" if dedie.is_dir() else b["slug"]
     paquet = f"file:///usr/share/wallpapers/{nom}/"
-    conf = (
-        f"# Genere par scripts/generate_kde_theme.py — tenant {b['slug']}.\n"
-        f"# Surcharge /usr/lib/plasmalogin/defaults.conf, qui sert le papier\n"
-        f"# peint de Fedora. Le paquet vise est emis par emit_wallpaper_package().\n"
+    corps = (
         f"[Greeter]\n"
         f"WallpaperPlugin=org.kde.image\n"
         f"\n"
@@ -620,8 +617,33 @@ def emit_plasmalogin_config(b: dict, files_root: Path) -> Path:
         f"Image={paquet}\n"
         f"PreviewImage={paquet}\n"
     )
-    target.write_text(conf)
-    LOG.info("emit plasmalogin config %s", target)
+    entete = (
+        f"# Genere par scripts/generate_kde_theme.py — tenant {b['slug']}.\n"
+        f"# Surcharge /usr/lib/plasmalogin/defaults.conf, qui sert le papier\n"
+        f"# peint de Fedora. Le paquet vise est emis par emit_wallpaper_package().\n"
+    )
+    target.write_text(entete + corps)
+
+    # 🔴 ET LE MEME CONTENU DANS /etc/plasmalogin.conf (mesure du 2026-09-21).
+    # Le repertoire .conf.d est la place documentee, et le paquet le livre —
+    # mais le gestionnaire de connexion IGNORE le papier peint qui s'y trouve.
+    # Defaut connu en amont : la meme configuration fonctionne dans le fichier
+    # principal et reste sans effet dans un drop-in
+    # (https://discuss.kde.org/t/plasma-login-manager-wallpaper-setting-in-plasmalogin-conf-d-ignored/46226).
+    #
+    # On ecrit donc AUX DEUX ENDROITS : le drop-in pour le jour ou le defaut
+    # sera corrige, et le fichier principal pour que ce soit vrai aujourd'hui.
+    # ⚠️ Ce fichier appartient au paquet et ne porte que des valeurs commentees ;
+    # le remplacer ne perd aucun reglage.
+    principal = files_root / "etc/plasmalogin.conf"
+    principal.parent.mkdir(parents=True, exist_ok=True)
+    principal.write_text(
+        f"# Genere par scripts/generate_kde_theme.py — tenant {b['slug']}.\n"
+        f"# Le papier peint DOIT etre ici : place dans /etc/plasmalogin.conf.d/,\n"
+        f"# il est ignore (defaut amont). Voir emit_plasmalogin_config().\n"
+        + corps
+    )
+    LOG.info("emit plasmalogin config %s + %s", target, principal)
     return target
 
 

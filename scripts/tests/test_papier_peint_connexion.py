@@ -74,3 +74,20 @@ def test_la_construction_depose_le_fond_de_connexion():
     corps = (REPO / "scripts" / "build_branded_iso.sh").read_text()
     assert "branding/login-wallpaper.png" in corps
     assert "share/bluefox/branding/login-wallpaper.png" in corps
+
+
+def test_le_papier_peint_est_aussi_dans_le_fichier_principal(tmp_path):
+    """🔴 Mesure du 2026-09-21 sur une machine installee : le fond de Fedora
+    s'affichait encore, alors que le drop-in etait bien la et pointait le bon
+    paquet. Defaut connu en amont — le gestionnaire de connexion ignore le
+    papier peint place dans /etc/plasmalogin.conf.d/ et ne lit que le fichier
+    principal. On ecrit aux deux endroits."""
+    g, b = _branding(tmp_path)
+    g.emit_wallpaper_package(b, tmp_path)
+    g.emit_login_wallpaper_package(b, tmp_path)
+    g.emit_plasmalogin_config(b, tmp_path)
+    principal = (tmp_path / "etc/plasmalogin.conf").read_text()
+    drop_in = (tmp_path / "etc/plasmalogin.conf.d/10-bluefox.conf").read_text()
+    for fichier in (principal, drop_in):
+        assert "[Greeter][Wallpaper][org.kde.image][General]" in fichier
+        assert "Image=file:///usr/share/wallpapers/bf-login/" in fichier
