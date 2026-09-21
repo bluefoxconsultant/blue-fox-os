@@ -58,6 +58,7 @@ files/etc/xdg/kdeglobals
 files/etc/xdg/kscreenlockerrc
 files/etc/skel/
 files/etc/plasmalogin.conf.d/
+files/etc/plasmalogin.conf
 files/etc/sddm.conf.d/
 # ⚠️ Le 2026-09-13, la ligne plasmalogin manquait : le staging du PREMIER
 # locataire a salit `git status`, et publish-image.sh a refuse net les deux
