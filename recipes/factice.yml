@@ -32,7 +32,6 @@ modules:
       # (gpgcheck=1, repo_gpgcheck=1).
       - tailscale.repo
     install:
-      - tailscale
       - rclone           # P4.1 : rclone mount NC via systemd --user (BFOSP3)
       - fuse3            # rclone mount needs fusermount3
       - plymouth-plugin-script   # script.so requis par Plymouth theme [#22420]
@@ -107,6 +106,7 @@ modules:
       # bluefox-welcome : signature verifiee avant installation (#23811) — cf.
       # recipes/bf.yml pour le rationale et la resolution a deux racines.
       - for D in "${CONFIG_DIRECTORY}/scripts" "${CONFIG_DIRECTORY}/files/scripts"; do [ -f "$D/install-welcome-rpm.sh" ] && exec bash "$D/install-welcome-rpm.sh"; done; echo "ERREUR - install-welcome-rpm.sh introuvable sous ${CONFIG_DIRECTORY}" >&2; exit 1
+      - for D in "${CONFIG_DIRECTORY}/scripts" "${CONFIG_DIRECTORY}/files/scripts"; do [ -f "$D/install-tailscale-rpm.sh" ] && exec bash "$D/install-tailscale-rpm.sh"; done; echo "ERREUR - install-tailscale-rpm.sh introuvable sous ${CONFIG_DIRECTORY}" >&2; exit 1
       # Refresh fontconfig cache pour Lexend hand-baked (cf bf.yml).
       - fc-cache -f /usr/share/fonts/lexend/
       # Les tables MIME de Fedora designent firefox pour http/https/text-html,

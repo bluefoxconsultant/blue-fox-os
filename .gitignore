@@ -41,6 +41,9 @@ cosign.key
 # la SAUTE en silence quand on ajoute le dossier — le build passe en local et
 # casse au premier clone frais.
 !files/scripts/keys/linux-surface.asc
+# Cle publique du depot Tailscale : TELECHARGEE a la construction par
+# scripts/stage_tailscale_rpm.py, jamais commitee — c'est leur cle, pas la notre.
+files/usr/share/bluefox/keys/RPM-GPG-KEY-tailscale
 
 # Tenant configs : vivent cote serveur, pas dans le repo.
 # Exceptions : schema, exemple, et bf.json (BF est le tenant lead du projet

@@ -77,7 +77,6 @@ modules:
       # depsolve dans la meme etape — il n'y a aucun point d'accroche pour en
       # corriger le contenu, d'ou le pre-module.
     install:
-      - tailscale
       - rclone
       - fuse3
       # Kernel + modules Surface (touch, pen, type cover, sensors, Surface
@@ -162,6 +161,7 @@ modules:
       # bluefox-welcome : signature verifiee avant installation (#23811) — cf.
       # recipes/bf.yml pour le rationale et la resolution a deux racines.
       - for D in "${CONFIG_DIRECTORY}/scripts" "${CONFIG_DIRECTORY}/files/scripts"; do [ -f "$D/install-welcome-rpm.sh" ] && exec bash "$D/install-welcome-rpm.sh"; done; echo "ERREUR - install-welcome-rpm.sh introuvable sous ${CONFIG_DIRECTORY}" >&2; exit 1
+      - for D in "${CONFIG_DIRECTORY}/scripts" "${CONFIG_DIRECTORY}/files/scripts"; do [ -f "$D/install-tailscale-rpm.sh" ] && exec bash "$D/install-tailscale-rpm.sh"; done; echo "ERREUR - install-tailscale-rpm.sh introuvable sous ${CONFIG_DIRECTORY}" >&2; exit 1
       # Refresh fontconfig cache pour Lexend hand-baked (cf bf.yml).
       - fc-cache -f /usr/share/fonts/lexend/
       # Les tables MIME de Fedora designent firefox pour http/https/text-html,
