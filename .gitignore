@@ -44,6 +44,10 @@ cosign.key
 # Cle publique du depot Tailscale : TELECHARGEE a la construction par
 # scripts/stage_tailscale_rpm.py, jamais commitee — c'est leur cle, pas la notre.
 files/usr/share/bluefox/keys/RPM-GPG-KEY-tailscale
+# Telechargements en cours de stage_tailscale_rpm.py : un echec en laisse un,
+# et un fichier non suivi fait refuser la publication suivante (#25854).
+files/usr/share/bluefox/keys/RPM-GPG-KEY-tailscale.part
+files/usr/share/bluefox/rpm-staging/*.part
 
 # Tenant configs : vivent cote serveur, pas dans le repo.
 # Exceptions : schema, exemple, et bf.json (BF est le tenant lead du projet

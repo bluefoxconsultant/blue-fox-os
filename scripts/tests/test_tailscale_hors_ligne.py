@@ -101,6 +101,7 @@ def test_curl_est_rejoue_apres_une_rafale(tmp_path, monkeypatch):
         appels.append(args)
         if len(appels) < 3:
             raise subprocess.CalledProcessError(35, args)
+        pathlib.Path(args[args.index("-o") + 1]).write_bytes(b"ok")
 
     monkeypatch.setattr(mod.subprocess, "run", faux_run)
     mod._telecharger("https://exemple/t.rpm", tmp_path / "t.rpm",
@@ -131,3 +132,25 @@ def test_aucun_script_d_installation_ne_vide_le_staging_partage():
                          if not l.lstrip().startswith("#"))
         assert not re.search(r"rm\s+-[a-z]*r[a-z]*\s+\S*rpm-staging", code), nom
         assert 'rm -f "$RPM"' in code, nom
+
+
+def test_un_fichier_deja_complet_n_est_pas_repris_par_dessus(tmp_path, monkeypatch):
+    """curl 33 le 2026-09-22 : `-C -` sur la cle deja deposee par le locataire
+    precedent. curl ne doit JAMAIS ecrire sur la cible elle-meme."""
+    mod = _module()
+    cible = tmp_path / "RPM-GPG-KEY-tailscale"
+    cible.write_bytes(b"ancienne cle complete")
+    (tmp_path / "RPM-GPG-KEY-tailscale.part").write_bytes(b"reste d'hier")
+    vus = []
+
+    def faux_run(args, check):
+        sortie = pathlib.Path(args[args.index("-o") + 1])
+        vus.append((sortie, sortie.exists()))
+        sortie.write_bytes(b"nouvelle cle")
+
+    monkeypatch.setattr(mod.subprocess, "run", faux_run)
+    mod._telecharger("https://exemple/cle", cible, dormir=lambda s: None)
+    (sortie, existait), = vus
+    assert sortie != cible and not existait
+    assert cible.read_bytes() == b"nouvelle cle"
+    assert not sortie.exists()

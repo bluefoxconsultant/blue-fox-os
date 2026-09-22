@@ -90,13 +90,22 @@ _PAUSE_ENTRE_PASSES = 45
 def _telecharger(url: str, cible: pathlib.Path, dormir=time.sleep) -> None:
     """curl avec --retry-all-errors : --retry seul NE rejoue PAS une erreur TLS."""
     cible.parent.mkdir(parents=True, exist_ok=True)
+    # ⚠️ On telecharge dans un .part NEUF, jamais par-dessus la cible. `-C -`
+    # sur un fichier deja COMPLET demande une plage au-dela de la fin ; le
+    # serveur de Tailscale ne sert pas les plages, et curl sort en 33 (« does
+    # not seem to support byte ranges »). Vecu le 2026-09-22 sur la cle : le
+    # premier locataire la deposait, tous les suivants mouraient dessus. La
+    # reprise reste utile DANS un telechargement, entre les passes de curl.
+    partiel = cible.with_name(cible.name + ".part")
+    partiel.unlink(missing_ok=True)
     for passe in range(1, _PASSES_CURL + 1):
         try:
             subprocess.run(
                 ["curl", "-fL", "--retry", "6", "--retry-all-errors",
                  "--retry-delay", "3", "-C", "-", "--connect-timeout", "20",
-                 "-o", str(cible), url],
+                 "-o", str(partiel), url],
                 check=True)
+            partiel.replace(cible)
             return
         except subprocess.CalledProcessError as exc:
             if passe == _PASSES_CURL:
