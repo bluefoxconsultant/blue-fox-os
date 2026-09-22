@@ -137,7 +137,10 @@ modules:
       repo-name: flathub
       install:
         - com.brave.Browser
-        - org.mozilla.Thunderbird
+        # ⚠️ En minuscules (#25854) : Flathub a renomme Thunderbird, et
+        # org.mozilla.Thunderbird y est desormais en FIN DE VIE, remplace par
+        # org.mozilla.thunderbird — l'identifiant que le catalogue bf_policy sert deja.
+        - org.mozilla.thunderbird
         # ⚠️ CORRIGE LE 2026-09-11. L'identifiant etait
         # com.nextcloud.desktopclient.nextcloudclient — il n'existe PAS sur
         # Flathub (404). Et `flatpak install` sur une liste abandonne TOUT le
