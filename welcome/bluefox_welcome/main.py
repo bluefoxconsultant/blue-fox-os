@@ -31,7 +31,6 @@ from .apply import (
     appliquer_photo,
     apply_bitwarden_prefs,
     apply_brave_policy,
-    apply_kaccounts,
     apply_kde_theme,
     apply_rclone_mount,
     apply_session_mounts,
@@ -653,8 +652,9 @@ def _finalize_and_apply(
     ok, msg = apply_brave_policy(tenant, pwas=pwas)
     results.append(("brave_policy", ok, msg))
 
-    ok, msg = apply_kaccounts(tenant)
-    results.append(("kaccounts", ok, msg))
+    # ⚠️ Plus de page « Comptes en ligne » de KDE ici (#25854). Elle s'ouvrait
+    # par-dessus notre propre fenetre au premier demarrage, pour demander a la
+    # main un compte Nextcloud que le SSO (Login Flow v2) vient deja de relier.
 
     ok, msg = apply_kde_theme(tenant)
     results.append(("kde_theme", ok, msg))

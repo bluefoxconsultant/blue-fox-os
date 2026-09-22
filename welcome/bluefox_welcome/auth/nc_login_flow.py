@@ -6,7 +6,7 @@ via the existing Authentik SSO button — *no password typed into the wizard*),
 then poll until Nextcloud returns a durable app-password.
 
 This is the v1 mechanism for obtaining the rclone / KAccounts credential. It
-breaks the chicken-and-egg flagged in apply/kaccounts.py: the browser SSO login
+breaks the chicken-and-egg once flagged in apply/kaccounts.py (removed, #25854): the browser SSO login
 is what authorizes minting the app-password, so OIDC users never type a password
 here, and we avoid the user_oidc bearer-token audience pitfalls entirely.
 
