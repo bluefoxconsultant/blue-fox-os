@@ -118,3 +118,16 @@ def test_curl_finit_par_echouer_bruyamment(tmp_path, monkeypatch):
     with pytest.raises(subprocess.CalledProcessError):
         mod._telecharger("https://exemple/t.rpm", tmp_path / "t.rpm",
                          dormir=lambda s: None)
+
+
+def test_aucun_script_d_installation_ne_vide_le_staging_partage():
+    """Premiere vraie construction depuis 301aca0 (2026-09-22) : factice meurt
+    sur « [tailscale-rpm] ERREUR: RPM absent ». Le paquet etait bien depose ;
+    install-welcome-rpm.sh, joue JUSTE AVANT, faisait `rm -rf` du dossier de
+    staging entier. Chaque script retire son paquet, jamais le dossier."""
+    for nom in ("install-welcome-rpm.sh", "install-tailscale-rpm.sh"):
+        corps = (REPO / "files" / "scripts" / nom).read_text()
+        code = "\n".join(l for l in corps.splitlines()
+                         if not l.lstrip().startswith("#"))
+        assert not re.search(r"rm\s+-[a-z]*r[a-z]*\s+\S*rpm-staging", code), nom
+        assert 'rm -f "$RPM"' in code, nom

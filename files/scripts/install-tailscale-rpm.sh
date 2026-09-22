@@ -50,4 +50,7 @@ Un NOKEY signale un RPM signe par une AUTRE cle que celle deposee a cote."
 log "signature verifiee — $(echo "$KOUT" | grep -i 'signature' | grep -i ': OK' | sed 's/^ *//' | head -1)"
 log "version : $(rpm -qp --qf '%{VERSION}-%{RELEASE}' "$RPM")"
 rpm-ostree install "$RPM"
+# Meme regle que le paquet de l'agent : on retire le sien, pas le dossier.
+rm -f "$RPM"
+rmdir --ignore-fail-on-non-empty /usr/share/bluefox/rpm-staging
 log "installe depuis le disque, sans toucher au reseau"
