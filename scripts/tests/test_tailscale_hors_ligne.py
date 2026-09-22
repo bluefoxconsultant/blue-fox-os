@@ -59,3 +59,62 @@ def test_la_publication_depose_le_rpm_avant_de_construire():
     i_stage = corps.index("stage_tailscale_rpm.py")
     i_build = corps.index("4/7")
     assert i_stage < i_build, "le depot doit preceder la construction"
+
+
+# --- Reutilisation et rafales (2026-09-22) ------------------------------------
+# bf puis bf-surface sont tombes a deux minutes d'intervalle, curl sorti en 35
+# apres ses six reprises de trois secondes : la rafale du miroir durait plus
+# longtemps. Et chaque locataire retelechargeait les 39 Mio que le precedent
+# venait de verifier.
+import hashlib  # noqa: E402
+import importlib.util  # noqa: E402
+import subprocess  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+def _module():
+    spec = importlib.util.spec_from_file_location(
+        "stage_tailscale_rpm", REPO / "scripts" / "stage_tailscale_rpm.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_un_paquet_deja_verifie_n_est_pas_retelecharge(tmp_path):
+    mod = _module()
+    cible = tmp_path / "tailscale.rpm"
+    cible.write_bytes(b"paquet")
+    bonne = hashlib.sha256(b"paquet").hexdigest()
+    assert mod.deja_depose(cible, bonne)
+    # Somme differente, fichier absent ou somme inconnue : on retelecharge.
+    assert not mod.deja_depose(cible, "0" * 64)
+    assert not mod.deja_depose(tmp_path / "absent.rpm", bonne)
+    assert not mod.deja_depose(cible, "")
+
+
+def test_curl_est_rejoue_apres_une_rafale(tmp_path, monkeypatch):
+    mod = _module()
+    appels, pauses = [], []
+
+    def faux_run(args, check):
+        appels.append(args)
+        if len(appels) < 3:
+            raise subprocess.CalledProcessError(35, args)
+
+    monkeypatch.setattr(mod.subprocess, "run", faux_run)
+    mod._telecharger("https://exemple/t.rpm", tmp_path / "t.rpm",
+                     dormir=pauses.append)
+    assert len(appels) == 3 and len(pauses) == 2
+
+
+def test_curl_finit_par_echouer_bruyamment(tmp_path, monkeypatch):
+    mod = _module()
+
+    def toujours_35(args, check):
+        raise subprocess.CalledProcessError(35, args)
+
+    monkeypatch.setattr(mod.subprocess, "run", toujours_35)
+    with pytest.raises(subprocess.CalledProcessError):
+        mod._telecharger("https://exemple/t.rpm", tmp_path / "t.rpm",
+                         dormir=lambda s: None)

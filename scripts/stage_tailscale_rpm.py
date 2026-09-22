@@ -36,6 +36,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import time
 import urllib.request
 import xml.etree.ElementTree as ET
 
@@ -73,16 +74,52 @@ def _lire(url: str, essais: int = 5) -> bytes:
             dernier = exc
             print(f"[tailscale] {url} : {exc} (essai {essai}/{essais})",
                   file=sys.stderr)
+            if essai < essais:
+                time.sleep(10)  # meme rafale que pour le paquet : on la laisse passer
     raise SystemExit(f"[tailscale] echec apres {essais} essais : {dernier}")
 
 
-def _telecharger(url: str, cible: pathlib.Path) -> None:
+# Le miroir coupe par RAFALES (2026-09-22 : bf puis bf-surface tombes a deux
+# minutes d'intervalle, curl sorti en 35 apres ses six reprises de 3 s). Une
+# rafale dure plus longtemps que six fois trois secondes : on rejoue donc curl
+# lui-meme, avec une pause qui laisse a la rafale le temps de retomber.
+_PASSES_CURL = 4
+_PAUSE_ENTRE_PASSES = 45
+
+
+def _telecharger(url: str, cible: pathlib.Path, dormir=time.sleep) -> None:
     """curl avec --retry-all-errors : --retry seul NE rejoue PAS une erreur TLS."""
     cible.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["curl", "-fL", "--retry", "6", "--retry-all-errors", "--retry-delay", "3",
-         "-C", "-", "--connect-timeout", "20", "-o", str(cible), url],
-        check=True)
+    for passe in range(1, _PASSES_CURL + 1):
+        try:
+            subprocess.run(
+                ["curl", "-fL", "--retry", "6", "--retry-all-errors",
+                 "--retry-delay", "3", "-C", "-", "--connect-timeout", "20",
+                 "-o", str(cible), url],
+                check=True)
+            return
+        except subprocess.CalledProcessError as exc:
+            if passe == _PASSES_CURL:
+                raise
+            print(f"[tailscale] curl sorti en {exc.returncode} (passe "
+                  f"{passe}/{_PASSES_CURL}) ; nouvel essai dans "
+                  f"{_PAUSE_ENTRE_PASSES} s", file=sys.stderr)
+            dormir(_PAUSE_ENTRE_PASSES)
+
+
+def _somme(chemin: pathlib.Path) -> str:
+    return hashlib.sha256(chemin.read_bytes()).hexdigest()
+
+
+def deja_depose(cible: pathlib.Path, sha_attendu: str) -> bool:
+    """Vrai si le paquet deja sur le disque EST celui que le depot annonce.
+
+    La passe publie trois locataires a la suite depuis le meme arbre : sans ce
+    controle, chacun retelechargeait les 39 Mio, et chacun rejouait sa chance
+    contre le miroir. Sans somme annoncee, on ne peut rien prouver : on
+    retelecharge.
+    """
+    return bool(sha_attendu) and cible.is_file() and _somme(cible) == sha_attendu
 
 
 def paquet_courant(base: str) -> tuple[str, str, str]:
@@ -125,10 +162,14 @@ def main() -> int:
     url, sha_attendu, version = paquet_courant(base)
     cible = args.files_root / DEST_RPM
     print(f"[tailscale] paquet courant : {version}")
-    _telecharger(url, cible)
+    if deja_depose(cible, sha_attendu):
+        print("[tailscale] deja depose, somme SHA-256 conforme : pas de "
+              "telechargement")
+    else:
+        _telecharger(url, cible)
 
     if sha_attendu:
-        somme = hashlib.sha256(cible.read_bytes()).hexdigest()
+        somme = _somme(cible)
         if somme != sha_attendu:
             cible.unlink(missing_ok=True)
             raise SystemExit(
