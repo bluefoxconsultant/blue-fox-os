@@ -1,0 +1,14 @@
+# system-flatpak-setup.timer ne passe qu'au demarrage (OnBootSec). Celle-ci
+# repasse toutes les heures tant qu'il manque une application, et ne reveille
+# rien quand tout est la.
+[Unit]
+Description=Minuterie de reprise des applications Flatpak manquantes
+Documentation=https://github.com/bluefoxconsultant/blue-fox-os
+
+[Timer]
+OnBootSec=20min
+OnUnitActiveSec=1h
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

@@ -30,23 +30,30 @@ SYSTEMD_UNIT_TMPL = TEMPLATE_DIR / "rclone-nc.service.tmpl"
 
 
 def _obscure_password(password: str) -> str:
-    """Replicate `rclone obscure` (reveal.go) without spawning rclone.
+    """Le mot de passe sous la forme qu'attend rclone (`rclone obscure`).
 
-    rclone uses AES-CTR with a fixed key. For v1 we use rclone CLI when
-    available — falls back to base64 + warn if rclone is missing (the user
-    will be prompted on first mount and rclone rewrites the conf).
+    ⚠️ Refuse plutot que de retomber sur le clair (2026-09-23). La version
+    precedente rendait le mot de passe TEL QUEL quand rclone manquait ou
+    echouait, alors que sa docstring promettait du base64 : le mot de passe
+    d'application Nextcloud finissait en clair dans rclone.conf, et rclone,
+    qui attend une valeur obscurcie, refusait de toute facon de monter. Un
+    echec franc ne coute rien de plus et ne laisse rien trainer. (Obscurcir
+    n'est pas chiffrer : c'est la forme de rclone, cle publique.)
     """
     rclone = shutil.which("rclone")
-    if rclone:
-        try:
-            result = subprocess.run(
-                [rclone, "obscure", password],
-                capture_output=True, text=True, check=True, timeout=5,
-            )
-            return result.stdout.strip()
-        except Exception as e:
-            LOG.warning("rclone obscure failed (%s) ; falling back to plaintext", e)
-    return password
+    if not rclone:
+        raise RuntimeError("rclone absent : mot de passe non ecrit")
+    try:
+        result = subprocess.run(
+            [rclone, "obscure", password],
+            capture_output=True, text=True, check=True, timeout=5,
+        )
+    except Exception as e:
+        raise RuntimeError(f"rclone obscure a echoue ({e}) : mot de passe non ecrit") from e
+    obscured = result.stdout.strip()
+    if not obscured or obscured == password:
+        raise RuntimeError("rclone obscure n'a rien rendu d'utilisable : mot de passe non ecrit")
+    return obscured
 
 
 def _render_rclone_conf(nc_url: str, user: str, obscured_password: str) -> str:

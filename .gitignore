@@ -41,6 +41,13 @@ cosign.key
 # la SAUTE en silence quand on ajoute le dossier — le build passe en local et
 # casse au premier clone frais.
 !files/scripts/keys/linux-surface.asc
+# Cle publique du depot Tailscale : TELECHARGEE a la construction par
+# scripts/stage_tailscale_rpm.py, jamais commitee — c'est leur cle, pas la notre.
+files/usr/share/bluefox/keys/RPM-GPG-KEY-tailscale
+# Telechargements en cours de stage_tailscale_rpm.py : un echec en laisse un,
+# et un fichier non suivi fait refuser la publication suivante (#25854).
+files/usr/share/bluefox/keys/RPM-GPG-KEY-tailscale.part
+files/usr/share/bluefox/rpm-staging/*.part
 
 # Tenant configs : vivent cote serveur, pas dans le repo.
 # Exceptions : schema, exemple, et bf.json (BF est le tenant lead du projet
@@ -58,6 +65,7 @@ files/etc/xdg/kdeglobals
 files/etc/xdg/kscreenlockerrc
 files/etc/skel/
 files/etc/plasmalogin.conf.d/
+files/etc/plasmalogin.conf
 files/etc/sddm.conf.d/
 # ⚠️ Le 2026-09-13, la ligne plasmalogin manquait : le staging du PREMIER
 # locataire a salit `git status`, et publish-image.sh a refuse net les deux

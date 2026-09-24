@@ -15,6 +15,12 @@ CE QU'IL APPLIQUE, ET CE QU'IL LAISSE TRANQUILLE
      bluefox-tpm-enroll.service, par exemple, active l'auto-deverrouillage LUKS
      si la politique vient de l'activer, sans une ligne de plus ici.
   2. Les deux listes Flatpak /etc/bluebuild/default-flatpaks/system/{install,remove}.
+  3. La copie EXPURGEE de la politique (policy-public.json, 0644), la seule que
+     l'agent de session peut lire. 🔴 Jusqu'au 2026-09-23 elle n'etait ecrite
+     qu'a l'installation : la session relisait donc la politique du premier
+     jour, et un changement fait dans Odoo (PWA, extensions du navigateur)
+     n'atteignait jamais le profil de la personne. Elle est rendue par la meme
+     fonction qu'a l'installation (`render_public_policy`), secrets retires.
 
 Le reste du bloc « install » — nom d'hote, locale, disposition clavier, mode de
 connexion — n'est DELIBEREMENT pas reapplique. Ces reglages se posent sur un
@@ -208,6 +214,21 @@ def write_policy(path, policy) -> bool:
     return True
 
 
+def write_public(path, policy, apply_mod) -> bool:
+    """Ecrit la copie expurgee si son CONTENU a change (meme regle que
+    write_policy : `generated_at` seul n'est pas un changement)."""
+    content = apply_mod.render_public_policy(policy)
+    try:
+        with open(path) as fh:
+            current = json.load(fh)
+        if isinstance(current, dict) and _comparable(current) == _comparable(json.loads(content)):
+            return False
+    except (OSError, ValueError):
+        pass
+    atomic_write(path, content, mode=0o644)
+    return True
+
+
 def load_apply(path=APPLY_MODULE):
     """Charge la copie de bfos_apply.py posee dans l'image, pour reutiliser son
     rendu des listes Flatpak. Retourne None si elle manque."""
@@ -275,7 +296,7 @@ def write_state(path, **fields):
 def sync(machine_path=MACHINE_JSON, provisioning_path=PROVISIONING_JSON,
          flatpak_dir=FLATPAK_DIR, state_path=STATE_JSON,
          apply_module=APPLY_MODULE, opener=None, run=subprocess.run,
-         trigger=True) -> int:
+         trigger=True, public_path=None) -> int:
     machine = read_machine(machine_path)
     if machine is None:
         log("machine non enrolee — rien a synchroniser")
@@ -317,6 +338,12 @@ def sync(machine_path=MACHINE_JSON, provisioning_path=PROVISIONING_JSON,
             changes.append("applications")
             if trigger:
                 trigger_flatpak_setup(run=run)
+        try:
+            if write_public(public_path or apply_mod.PUBLIC_JSON, policy, apply_mod):
+                changes.append("copie de session")
+        except OSError as exc:
+            log(f"ecriture de la copie de session impossible ({exc})")
+            rc = 1
 
     log("aucun changement" if not changes
         else "applique : " + ", ".join(changes))

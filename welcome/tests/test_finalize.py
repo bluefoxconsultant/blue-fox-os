@@ -7,7 +7,8 @@ Current contract (BFOSI10 / SSO Login Flow v2):
   the SSO Login Flow v2, not a typed password.
 - The fan-out is five integrations: exactly one of apply_rclone_mount /
   apply_session_mounts (the latter when the staged policy carries
-  session.mounts[]), plus bitwarden_prefs, brave_policy, kaccounts, kde_theme.
+  session.mounts[]), plus bitwarden_prefs, brave_policy, kde_theme. (La page KDE « Comptes en
+  ligne » n'est plus ouverte : #25854.)
 - Each apply_* is best-effort and returns (ok, msg); one returning a failure
   must not abort the others, and DONE_FLAG must still be written.
 """
@@ -30,7 +31,7 @@ POLICY_WITH_SESSION = {
 
 _APPLY_NAMES = (
     "apply_rclone_mount", "apply_session_mounts", "apply_bitwarden_prefs",
-    "apply_brave_policy", "apply_kaccounts", "apply_kde_theme",
+    "apply_brave_policy", "apply_kde_theme",
 )
 
 
@@ -75,7 +76,7 @@ def test_single_rclone_mount_when_no_policy_mounts(applies, state_dir):
     assert applies["apply_rclone_mount"].call_count == 1
     assert applies["apply_session_mounts"].call_count == 0
     for name in ("apply_bitwarden_prefs", "apply_brave_policy",
-                 "apply_kaccounts", "apply_kde_theme"):
+                 "apply_kde_theme"):
         assert applies[name].call_count == 1, name
     # the SSO pair is threaded through to the mount
     kw = applies["apply_rclone_mount"].call_args.kwargs
@@ -104,7 +105,7 @@ def test_skips_mount_when_no_credentials(applies, state_dir):
     assert applies["apply_rclone_mount"].call_count == 0
     assert applies["apply_session_mounts"].call_count == 0
     for name in ("apply_bitwarden_prefs", "apply_brave_policy",
-                 "apply_kaccounts", "apply_kde_theme"):
+                 "apply_kde_theme"):
         assert applies[name].call_count == 1, name
 
 
@@ -130,7 +131,7 @@ def test_writes_per_apply_log(applies, state_dir):
     _finalize()
     log = main_mod.USER_LOG.read_text()
     for tag in ("rclone_mount", "bitwarden_prefs", "brave_policy",
-                "kaccounts", "kde_theme"):
+                "kde_theme"):
         assert tag in log
     assert "OK" in log
 
@@ -140,7 +141,7 @@ def test_one_failing_apply_does_not_abort_the_rest(state_dir, monkeypatch):
     must still be written (best-effort contract)."""
     ok = {n: MagicMock(return_value=(True, "ok")) for n in (
         "apply_rclone_mount", "apply_bitwarden_prefs",
-        "apply_kaccounts", "apply_kde_theme")}
+        "apply_kde_theme")}
     for name, m in ok.items():
         monkeypatch.setattr(main_mod, name, m)
     monkeypatch.setattr(main_mod, "apply_brave_policy",
@@ -150,3 +151,12 @@ def test_one_failing_apply_does_not_abort_the_rest(state_dir, monkeypatch):
         assert m.call_count == 1, name
     assert main_mod.DONE_FLAG.exists()
     assert "FAIL brave_policy" in main_mod.USER_LOG.read_text()
+
+
+def test_kde_online_accounts_page_is_never_opened(applies, state_dir):
+    """#25854 : la page « Comptes en ligne » de KDE s'ouvrait a la place de
+    notre fenetre au premier demarrage. Elle n'est plus dans l'eventail des
+    integrations, et le journal par integration ne la nomme plus."""
+    assert not hasattr(main_mod, "apply_kaccounts")
+    _finalize()
+    assert "kaccounts" not in main_mod.USER_LOG.read_text()

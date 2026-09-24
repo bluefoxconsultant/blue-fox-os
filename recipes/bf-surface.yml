@@ -77,7 +77,6 @@ modules:
       # depsolve dans la meme etape — il n'y a aucun point d'accroche pour en
       # corriger le contenu, d'ou le pre-module.
     install:
-      - tailscale
       - rclone
       - fuse3
       # Kernel + modules Surface (touch, pen, type cover, sensors, Surface
@@ -138,7 +137,10 @@ modules:
       repo-name: flathub
       install:
         - com.brave.Browser
-        - org.mozilla.Thunderbird
+        # ⚠️ En minuscules (#25854) : Flathub a renomme Thunderbird, et
+        # org.mozilla.Thunderbird y est desormais en FIN DE VIE, remplace par
+        # org.mozilla.thunderbird — l'identifiant que le catalogue bf_policy sert deja.
+        - org.mozilla.thunderbird
         # ⚠️ CORRIGE LE 2026-09-11. L'identifiant etait
         # com.nextcloud.desktopclient.nextcloudclient — il n'existe PAS sur
         # Flathub (404). Et `flatpak install` sur une liste abandonne TOUT le
@@ -162,6 +164,7 @@ modules:
       # bluefox-welcome : signature verifiee avant installation (#23811) — cf.
       # recipes/bf.yml pour le rationale et la resolution a deux racines.
       - for D in "${CONFIG_DIRECTORY}/scripts" "${CONFIG_DIRECTORY}/files/scripts"; do [ -f "$D/install-welcome-rpm.sh" ] && exec bash "$D/install-welcome-rpm.sh"; done; echo "ERREUR - install-welcome-rpm.sh introuvable sous ${CONFIG_DIRECTORY}" >&2; exit 1
+      - for D in "${CONFIG_DIRECTORY}/scripts" "${CONFIG_DIRECTORY}/files/scripts"; do [ -f "$D/install-tailscale-rpm.sh" ] && exec bash "$D/install-tailscale-rpm.sh"; done; echo "ERREUR - install-tailscale-rpm.sh introuvable sous ${CONFIG_DIRECTORY}" >&2; exit 1
       # Refresh fontconfig cache pour Lexend hand-baked (cf bf.yml).
       - fc-cache -f /usr/share/fonts/lexend/
       # Les tables MIME de Fedora designent firefox pour http/https/text-html,
@@ -229,6 +232,8 @@ modules:
     system:
       enabled:
         - rpm-ostreed-automatic.timer
+        - bluefox-flatpaks-verify.timer  # reprise horaire des Flatpak manquants (#25854)
+        - bluefox-refresh-md.timer       # liste des paquets disponibles, chaque jour
         - bluefox-rebase.service
         # ⚠️ firstboot.service RETIRE le 2026-09-14. Il lancait l'agent d'accueil
         # EN TANT QUE ROOT, au demarrage, avant toute session : l'agent trouvait

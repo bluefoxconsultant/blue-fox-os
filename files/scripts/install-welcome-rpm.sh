@@ -79,5 +79,10 @@ files/usr/share/bluefox/keys/ — verifier laquelle a servi au build."
 log "signature verifiee — $(echo "$KOUT" | grep -i 'signature' | grep -i ': OK' | sed 's/^ *//')"
 
 rpm-ostree install "$RPM"
-rm -rf /usr/share/bluefox/rpm-staging
-log "installe, staging retire"
+# ⚠️ Notre paquet SEUL, jamais le dossier (#25854). Le dossier de staging est
+# partage : tailscale.rpm y attend le snippet suivant, et un `rm -rf` du
+# dossier le faisait disparaitre avant qu'il ne soit lu — les trois locataires
+# tombaient sur « RPM absent » a l'installation de Tailscale.
+rm -f "$RPM"
+rmdir --ignore-fail-on-non-empty /usr/share/bluefox/rpm-staging
+log "installe, paquet retire du staging"

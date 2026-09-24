@@ -47,7 +47,6 @@ modules:
       # (gpgcheck=1, repo_gpgcheck=1).
       - tailscale.repo
     install:
-      - tailscale
       - rclone           # P4.1 : rclone mount NC via systemd --user (BFOSP3)
       - fuse3            # rclone mount needs fusermount3
       - plymouth-plugin-script   # script.so requis par Plymouth theme [#22420]
@@ -97,7 +96,10 @@ modules:
       repo-name: flathub
       install:
         - com.brave.Browser
-        - org.mozilla.Thunderbird
+        # ⚠️ En minuscules (#25854) : Flathub a renomme Thunderbird, et
+        # org.mozilla.Thunderbird y est desormais en FIN DE VIE, remplace par
+        # org.mozilla.thunderbird — l'identifiant que le catalogue bf_policy sert deja.
+        - org.mozilla.thunderbird
         # ⚠️ CORRIGE LE 2026-09-11. L'identifiant etait
         # com.nextcloud.desktopclient.nextcloudclient — il n'existe PAS sur
         # Flathub (404). Et `flatpak install` sur une liste abandonne TOUT le
@@ -159,6 +161,7 @@ modules:
       # selon la version de BlueBuild. Les deux candidats designent le meme
       # dossier in-repo : files/scripts/.
       - for D in "${CONFIG_DIRECTORY}/scripts" "${CONFIG_DIRECTORY}/files/scripts"; do [ -f "$D/install-welcome-rpm.sh" ] && exec bash "$D/install-welcome-rpm.sh"; done; echo "ERREUR - install-welcome-rpm.sh introuvable sous ${CONFIG_DIRECTORY}" >&2; exit 1
+      - for D in "${CONFIG_DIRECTORY}/scripts" "${CONFIG_DIRECTORY}/files/scripts"; do [ -f "$D/install-tailscale-rpm.sh" ] && exec bash "$D/install-tailscale-rpm.sh"; done; echo "ERREUR - install-tailscale-rpm.sh introuvable sous ${CONFIG_DIRECTORY}" >&2; exit 1
       - fc-cache -f /usr/share/fonts/lexend/
       # Les tables MIME de Fedora designent firefox pour http/https/text-html,
       # or la recette le RETIRE de l'image. Un gestionnaire fantome fait
@@ -237,6 +240,8 @@ modules:
     system:
       enabled:
         - rpm-ostreed-automatic.timer
+        - bluefox-flatpaks-verify.timer  # reprise horaire des Flatpak manquants (#25854)
+        - bluefox-refresh-md.timer       # liste des paquets disponibles, chaque jour
         - bluefox-rebase.service   # premier rebase apres install KS, conditionne au sentinelle
         # ⚠️ firstboot.service RETIRE le 2026-09-14. Il lancait l'agent d'accueil
         # EN TANT QUE ROOT, au demarrage, avant toute session : l'agent trouvait

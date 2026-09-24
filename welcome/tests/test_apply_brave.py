@@ -1,10 +1,17 @@
 import json
 from pathlib import Path
 
-from bluefox_welcome.apply.brave_policy import (
-    FLOCCUS_EXT_ID,
-    apply_brave_policy,
-)
+from bluefox_welcome.apply.brave_policy import apply_brave_policy
+
+SIGNETS = "nhekfepjhpbbnpjocfhflekddijjfmjm"
+BITWARDEN = "nngceckbapebfimnlniiiahkandclblb"
+STORE = "https://clients2.google.com/service/update2/crx"
+EXTENSIONS = [
+    {"id": SIGNETS, "name": "Symbifox Signets",
+     "update_url": "https://bf.example/bf_policy/extensions/update.xml",
+     "managed": {"instance": "https://bf.example"}},
+    {"id": BITWARDEN, "name": "Bitwarden", "update_url": STORE},
+]
 
 
 def _policy_path(home: Path) -> Path:
@@ -21,11 +28,38 @@ def test_apply_brave_policy_writes_json(tmp_home: Path, tenant_data: dict):
     assert payload["DefaultBrowserSettingEnabled"] is False
 
 
-def test_apply_brave_policy_includes_floccus(tmp_home: Path, tenant_data: dict):
+def test_extensions_come_from_the_policy(tmp_home: Path, tenant_data: dict):
+    ok, msg = apply_brave_policy(tenant_data, home=tmp_home, extensions=EXTENSIONS)
+    assert ok, msg
+    payload = json.loads(_policy_path(tmp_home).read_text())
+    assert payload["ExtensionInstallForcelist"] == [
+        f"{SIGNETS};https://bf.example/bf_policy/extensions/update.xml",
+        f"{BITWARDEN};{STORE}"]
+    # Seule l'extension qui prend l'instance recoit un stockage gere.
+    assert payload["3rdparty"] == {
+        "extensions": {SIGNETS: {"instance": "https://bf.example"}}}
+    assert "2 extension(s)" in msg
+
+
+def test_no_extension_without_policy(tmp_home: Path, tenant_data: dict):
+    # Floccus n'est plus impose en dur : sans politique, aucune extension.
     apply_brave_policy(tenant_data, home=tmp_home)
     payload = json.loads(_policy_path(tmp_home).read_text())
-    forcelist = payload["ExtensionInstallForcelist"]
-    assert any(FLOCCUS_EXT_ID in entry for entry in forcelist)
+    assert "ExtensionInstallForcelist" not in payload
+    assert "3rdparty" not in payload
+
+
+def test_malformed_extensions_are_skipped(tmp_home: Path, tenant_data: dict):
+    bad = [
+        {"id": "pas-un-id", "update_url": STORE},
+        {"id": SIGNETS.upper(), "update_url": STORE},
+        {"id": BITWARDEN, "update_url": "http://clair.example/update.xml"},
+        {"id": BITWARDEN},
+        None,
+    ]
+    apply_brave_policy(tenant_data, home=tmp_home, extensions=bad + EXTENSIONS[1:])
+    payload = json.loads(_policy_path(tmp_home).read_text())
+    assert payload["ExtensionInstallForcelist"] == [f"{BITWARDEN};{STORE}"]
 
 
 def test_apply_brave_policy_no_nc_url_fails(tmp_home: Path):
@@ -68,3 +102,30 @@ def test_apply_brave_policy_pwas_without_pinned_no_startup(tmp_home: Path,
     payload = json.loads(_policy_path(tmp_home).read_text())
     assert len(payload["WebAppInstallForceList"]) == 1
     assert "RestoreOnStartup" not in payload
+
+
+# --- rafraichissement a chaque ouverture de session (#25966) -----------------
+
+def test_refresh_follows_the_current_policy(tmp_home: Path, tenant_data: dict, monkeypatch):
+    from bluefox_welcome import main
+    prov = {"schema": "bf-policy/v2", "user": {"login": "o@bf.example"},
+            "browser": {"extensions": EXTENSIONS[1:]}}
+    monkeypatch.setattr(main, "load_provisioning", lambda: prov)
+    monkeypatch.setattr(main, "load_tenant", lambda: tenant_data)
+    ok, _ = main.refresh_browser_policy(home=tmp_home)
+    assert ok
+    payload = json.loads(_policy_path(tmp_home).read_text())
+    assert payload["ExtensionInstallForcelist"] == [f"{BITWARDEN};{STORE}"]
+
+
+def test_refresh_without_policy_leaves_brave_alone(tmp_home: Path, tenant_data: dict,
+                                                   monkeypatch):
+    from bluefox_welcome import main
+    target = _policy_path(tmp_home)
+    target.parent.mkdir(parents=True)
+    target.write_text('{"deja": "la"}')
+    monkeypatch.setattr(main, "load_provisioning", lambda: {})
+    monkeypatch.setattr(main, "load_tenant", lambda: tenant_data)
+    ok, _ = main.refresh_browser_policy(home=tmp_home)
+    assert not ok
+    assert target.read_text() == '{"deja": "la"}'

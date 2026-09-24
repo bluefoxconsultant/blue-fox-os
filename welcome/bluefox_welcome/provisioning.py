@@ -99,6 +99,13 @@ def session_pwas(prov: dict) -> list:
     return session(prov).get("pwas", []) or []
 
 
+def browser_extensions(prov: dict) -> list:
+    """Extensions imposees a Brave par bf_policy (bloc `browser`, #25966)."""
+    if not prov:
+        return []
+    return ((prov.get("browser", {}) or {}).get("extensions", []) or [])
+
+
 def merge_branding(tenant: dict, prov: dict) -> dict:
     """Overlay the policy session branding onto a copy of the tenant dict.
 

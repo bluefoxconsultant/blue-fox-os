@@ -31,7 +31,6 @@ from .apply import (
     appliquer_photo,
     apply_bitwarden_prefs,
     apply_brave_policy,
-    apply_kaccounts,
     apply_kde_theme,
     apply_rclone_mount,
     apply_session_mounts,
@@ -39,6 +38,7 @@ from .apply import (
 from .auth.nc_login_flow import initiate as nc_login_initiate
 from .auth.nc_login_flow import poll_once as nc_login_poll_once
 from .provisioning import (
+    browser_extensions,
     load_provisioning,
     merge_branding,
     session_mounts,
@@ -259,7 +259,8 @@ def cli() -> int:
         return 0
 
     if DONE_FLAG.exists():
-        LOG.info("welcome already completed (%s) ; nothing to do", DONE_FLAG)
+        LOG.info("welcome already completed (%s)", DONE_FLAG)
+        refresh_browser_policy()
         return 0
 
     tenant = load_tenant()
@@ -269,6 +270,27 @@ def cli() -> int:
     prov = load_provisioning()
     tenant = merge_branding(tenant, prov)
     return run_wizard(tenant, prefill_email=user_login(prov), prov=prov)
+
+
+def refresh_browser_policy(home: Path | None = None) -> tuple[bool, str]:
+    """A chaque ouverture de session : reecrit la politique Brave depuis la
+    politique courante (#25966).
+
+    La synchronisation quotidienne (bluefox-policy-sync, root) tient a jour la
+    copie expurgee, mais elle ne peut pas ecrire dans le profil de la personne :
+    c'est ici, dans la session, que les extensions et les PWA choisies dans
+    Odoo rejoignent Brave. Effet au prochain demarrage de Brave.
+    Sans politique (installation autonome), on ne touche a rien : on ne
+    remplace pas une politique Brave par une politique vide.
+    """
+    prov = load_provisioning()
+    if not prov:
+        return False, "pas de politique : Brave laisse tel quel"
+    tenant = merge_branding(load_tenant(), prov)
+    ok, msg = apply_brave_policy(tenant, home=home, pwas=session_pwas(prov),
+                                 extensions=browser_extensions(prov))
+    (LOG.info if ok else LOG.warning)("rafraichissement Brave : %s", msg)
+    return ok, msg
 
 
 def select_flow(prov: dict | None) -> str:
@@ -598,7 +620,7 @@ def _done_page(tenant, wizard, QWizardPage, QVBoxLayout, QTextEdit):
             f"<li>Compte BF : {email}</li>"
             f"<li>NC Files (rclone mount, SSO) : {nc_state}</li>"
             f"<li>Bitwarden Desktop : URL Vaultwarden injectée au clic suivant</li>"
-            f"<li>Brave : policy + extension Floccus poussées au clic suivant</li>"
+            f"<li>Brave : policy + extensions de l'organisation poussées au clic suivant</li>"
             f"<li>Mail/Calendar/Contacts : System Settings ouvert au clic suivant</li>"
             f"</ul>"
             f"<p>Cliquez <b>Terminer</b> pour exécuter les configurations.</p>")
@@ -650,11 +672,13 @@ def _finalize_and_apply(
     ok, msg = apply_bitwarden_prefs(tenant)
     results.append(("bitwarden_prefs", ok, msg))
 
-    ok, msg = apply_brave_policy(tenant, pwas=pwas)
+    ok, msg = apply_brave_policy(tenant, pwas=pwas,
+                                 extensions=browser_extensions(prov))
     results.append(("brave_policy", ok, msg))
 
-    ok, msg = apply_kaccounts(tenant)
-    results.append(("kaccounts", ok, msg))
+    # ⚠️ Plus de page « Comptes en ligne » de KDE ici (#25854). Elle s'ouvrait
+    # par-dessus notre propre fenetre au premier demarrage, pour demander a la
+    # main un compte Nextcloud que le SSO (Login Flow v2) vient deja de relier.
 
     ok, msg = apply_kde_theme(tenant)
     results.append(("kde_theme", ok, msg))

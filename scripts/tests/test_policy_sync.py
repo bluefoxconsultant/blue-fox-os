@@ -104,6 +104,7 @@ def _paths(tmp_path):
         "flatpak_dir": str(tmp_path / "flatpaks"),
         "state_path": str(tmp_path / "policy-sync.json"),
         "apply_module": str(APPLY_PATH),
+        "public_path": str(tmp_path / "policy-public.json"),
     }
 
 
@@ -123,6 +124,24 @@ def test_writes_policy_and_both_lists(tmp_path, machine):
     assert "org.mozilla.Thunderbird" in remove
     # Les listes ont change → on declenche la convergence tout de suite.
     assert any("system-flatpak-setup.service" in " ".join(a) for a in runs)
+
+
+def test_session_copy_follows_the_policy(tmp_path, machine):
+    """La copie que lit la session suit la politique, SANS ses secrets."""
+    policy = json.loads(json.dumps(POLICY))
+    policy["install"]["login"] = {"mode": "sssd", "bind_password": "jeton-de-service"}
+    policy["session"] = {"pwas": [{"name": "Odoo", "url": "https://erp.example"}]}
+    policy["browser"] = {"extensions": [{"id": "a" * 32, "update_url": "https://x"}]}
+    sync_mod.sync(machine_path=str(machine), opener=_opener(json.dumps(policy)),
+                  run=_Runs(), **_paths(tmp_path))
+    public_path = tmp_path / "policy-public.json"
+    assert oct(public_path.stat().st_mode)[-3:] == "644"
+    text = public_path.read_text()
+    assert "jeton-de-service" not in text, "le secret de liaison est dans la copie de session"
+    public = json.loads(text)
+    assert public["session"] == policy["session"]
+    assert public["browser"] == policy["browser"]
+    assert public["install"]["login"] == {"mode": "sssd"}
 
 
 def test_second_run_changes_nothing_and_wakes_nobody(tmp_path, machine):

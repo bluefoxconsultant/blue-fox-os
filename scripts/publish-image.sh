@@ -240,6 +240,17 @@ RPM_SRC="$(find "${WORKDIR}/welcome/build/RPMS/noarch" -name 'bluefox-welcome-*.
 cp "$RPM_SRC" "${RPM_STAGING}/bluefox-welcome.noarch.rpm"
 log "    $(basename "$RPM_SRC") -> bluefox-welcome.noarch.rpm"
 
+# 🔴 Le RPM Tailscale, depose ICI plutot que tire pendant la construction.
+# pkgs.tailscale.com coupe en plein transfert depuis cette machine (« Curl
+# error (56) »), le paquet fait 39 Mio et rpm-ostree ne reessaie pas : une
+# coupure emporte la construction du locataire. Le 2026-09-21, trois tours de
+# suite pour bf et bf-surface. Le script rejoue, verifie la somme annoncee par
+# le depot, et depose la cle publique a cote pour la verification de signature
+# faite dans l'image.
+log "2b/7 stage du RPM Tailscale (telechargement avec reprises)"
+python3 "${WORKDIR}/scripts/stage_tailscale_rpm.py" "${WORKDIR}/files" \
+    || die "stage du RPM Tailscale impossible"
+
 # --- 2b. stage de bfos_apply.py --------------------------------------------
 # bluefox-policy-sync reutilise le rendu des listes Flatpak de
 # install/bfos_apply.py plutot que d'en garder sa propre copie : le fichier
