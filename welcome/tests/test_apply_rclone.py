@@ -1,10 +1,24 @@
 import os
 from pathlib import Path
 
+import pytest
+
+from bluefox_welcome.apply import rclone_mount
+
 from bluefox_welcome.apply.rclone_mount import (
     apply_rclone_mount,
     apply_session_mounts,
 )
+
+_OBSCURE_REEL = rclone_mount._obscure_password
+
+
+@pytest.fixture(autouse=True)
+def _rclone_de_remplacement(monkeypatch):
+    """Ces essais portent sur ce qu'on ECRIT, pas sur rclone : ils ne doivent
+    pas dependre de sa presence sur la machine qui les joue (le runner CI ne
+    l'a pas). Le vrai `_obscure_password` reste eprouve plus bas."""
+    monkeypatch.setattr(rclone_mount, "_obscure_password", lambda p: "OBSCURCI")
 
 
 def test_apply_rclone_mount_writes_config(tmp_home: Path, tenant_data: dict):
@@ -83,7 +97,8 @@ def test_w1_meme_garde_sur_les_montages_de_session(tmp_home: Path,
 
 
 def test_rclone_conf_deja_la_en_0644_est_ramene_a_600(tmp_home: Path,
-                                                      tenant_data: dict):
+                                                      tenant_data: dict,
+                                                      monkeypatch):
     """Une machine ayant tourne avec la version fautive porte encore un
     rclone.conf lisible : O_CREAT ignore son mode, O_TRUNC ne le remet pas, il
     faut le fchmod. Ce test garde ce fchmod-la."""
@@ -220,3 +235,19 @@ def test_apply_session_mounts_missing_password_fails(tmp_home: Path, tenant_data
     )
     assert not ok
     assert "manquant" in msg
+
+
+def test_sans_rclone_aucun_mot_de_passe_en_clair(tmp_home: Path, tenant_data: dict,
+                                                 monkeypatch):
+    """rclone absent : l'application echoue franchement, et le mot de passe
+    n'est ecrit nulle part (l'ancien repli l'ecrivait en clair)."""
+    monkeypatch.setattr(rclone_mount, "_obscure_password", _OBSCURE_REEL)
+    monkeypatch.setattr(rclone_mount.shutil, "which", lambda _nom: None)
+    ok, msg = apply_rclone_mount(
+        tenant_data, user="olivier@bluefoxconsultant.com", password="hunter2",
+        home=tmp_home, run_systemctl=False)
+    assert not ok
+    assert "rclone" in msg
+    for f in tmp_home.rglob("*"):
+        if f.is_file():
+            assert "hunter2" not in f.read_text(errors="ignore"), f"clair dans {f}"
