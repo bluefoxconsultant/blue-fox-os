@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""bluefox-flatpaks-verify — les applications voulues sont-elles installees ?
+
+POURQUOI (essai du 2026-09-23, #25854)
+system-flatpak-setup (amont, BlueBuild) sort en SUCCES meme quand
+`flatpak install` echoue : l'essai l'a montre, « Error: Failed to install
+org.freedesktop.Platform » puis `status=0/SUCCESS`, et aucune application.
+Sa minuterie ne passe qu'au demarrage : un rate attend le redemarrage suivant.
+
+Ce script ferme les deux trous sans toucher au script amont :
+  - sans option, il compare la liste VOULUE a ce qui est installe et sort en
+    ECHEC s'il manque quelque chose (branche en ExecStartPost de
+    system-flatpak-setup.service : l'unite passe alors en « failed », visible
+    dans `systemctl --failed`) ;
+  - avec --repair (minuterie horaire), s'il manque quelque chose, il relance
+    system-flatpak-setup.service et attend sa fin. S'il ne manque rien, il ne
+    reveille personne.
+
+La liste voulue se calcule comme l'amont : (liste de l'image − retraits de
+/etc) + ajouts de /etc. stdlib seulement.
+"""
+from __future__ import annotations
+
+import subprocess
+import sys
+
+IMAGE_DIR = "/usr/share/bluebuild/default-flatpaks/system"
+ETC_DIR = "/etc/bluebuild/default-flatpaks/system"
+
+
+def lire_liste(path: str) -> list[str]:
+    try:
+        with open(path) as fh:
+            lignes = [l.strip() for l in fh]
+    except OSError:
+        return []
+    return list(dict.fromkeys(l for l in lignes if l and not l.startswith("#")))
+
+
+def voulues(image_dir: str = IMAGE_DIR, etc_dir: str = ETC_DIR) -> list[str]:
+    """Exactement la liste que l'amont installe (COMBINED_INSTALL_LIST) :
+    (liste de l'image − retraits de /etc) + ajouts de /etc."""
+    retraits_etc = set(lire_liste(f"{etc_dir}/remove"))
+    base = [a for a in lire_liste(f"{image_dir}/install") if a not in retraits_etc]
+    return list(dict.fromkeys(base + lire_liste(f"{etc_dir}/install")))
+
+
+def installees(run=subprocess.run) -> set[str]:
+    r = run(["flatpak", "list", "--system", "--app", "--columns=application"],
+            capture_output=True, text=True, check=False)
+    return {l.strip() for l in r.stdout.splitlines() if l.strip()}
+
+
+def manquantes(run=subprocess.run, image_dir=IMAGE_DIR, etc_dir=ETC_DIR) -> list[str]:
+    present = installees(run)
+    return [a for a in voulues(image_dir, etc_dir) if a not in present]
+
+
+def main(argv=None, run=subprocess.run) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    manque = manquantes(run)
+    if manque and "--repair" in argv:
+        print(f"[flatpaks] {len(manque)} manquante(s), relance de system-flatpak-setup : "
+              + ", ".join(manque), flush=True)
+        run(["systemctl", "start", "system-flatpak-setup.service"], check=False)
+        manque = manquantes(run)
+    if manque:
+        print(f"[flatpaks] INCOMPLET : {len(manque)} application(s) manquante(s) : "
+              + ", ".join(manque), file=sys.stderr, flush=True)
+        return 1
+    print("[flatpaks] toutes les applications voulues sont installees", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,12 @@
+[Unit]
+Description=Minuterie du rafraichissement quotidien de la liste des paquets
+Documentation=https://github.com/bluefoxconsultant/blue-fox-os
+
+[Timer]
+OnBootSec=10min
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

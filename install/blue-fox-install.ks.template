@@ -397,10 +397,14 @@ touch /var/lib/bluefox-welcome/needs-rebase
 %post --log=/var/log/bfos-flatpaks-install.log
 echo "[bfos-flatpaks] debut $(date -Is)"
 if [ -x /usr/bin/system-flatpak-setup ]; then
-  if timeout 1800 /usr/bin/system-flatpak-setup; then
+  # ⚠️ Le code de sortie du script amont ne dit rien : il sort en succes meme
+  # quand `flatpak install` echoue (essai du 2026-09-23). On verifie le
+  # resultat avant d'ecrire « termine ».
+  timeout 1800 /usr/bin/system-flatpak-setup
+  if [ ! -x /usr/libexec/bluefox-flatpaks-verify ] || /usr/libexec/bluefox-flatpaks-verify; then
     echo "[bfos-flatpaks] termine"
   else
-    echo "[bfos-flatpaks] incomplet (code $?) : le minuteur du demarrage rattrapera ce qui manque"
+    echo "[bfos-flatpaks] incomplet : bluefox-flatpaks-verify.timer reprendra ce qui manque, toutes les heures"
   fi
 else
   echo "[bfos-flatpaks] system-flatpak-setup absent de l'image : rien a faire ici"

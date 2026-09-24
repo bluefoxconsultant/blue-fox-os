@@ -1,6 +1,7 @@
 import json
 
 from bluefox_welcome.provisioning import (
+    browser_extensions,
     load_provisioning,
     merge_branding,
     session_mounts,
@@ -48,6 +49,9 @@ def test_accessors():
     assert session_pwas(POLICY)[0]["name"] == "Talk"
     assert user_login({}) == ""
     assert session_mounts({}) == []
+    assert browser_extensions({}) == []
+    assert browser_extensions(POLICY) == []
+    assert browser_extensions({"browser": {"extensions": [{"id": "x"}]}}) == [{"id": "x"}]
 
 
 def test_merge_branding_overlays_accent_and_wallpaper():

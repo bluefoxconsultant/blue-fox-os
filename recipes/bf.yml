@@ -240,6 +240,8 @@ modules:
     system:
       enabled:
         - rpm-ostreed-automatic.timer
+        - bluefox-flatpaks-verify.timer  # reprise horaire des Flatpak manquants (#25854)
+        - bluefox-refresh-md.timer       # liste des paquets disponibles, chaque jour
         - bluefox-rebase.service   # premier rebase apres install KS, conditionne au sentinelle
         # ⚠️ firstboot.service RETIRE le 2026-09-14. Il lancait l'agent d'accueil
         # EN TANT QUE ROOT, au demarrage, avant toute session : l'agent trouvait

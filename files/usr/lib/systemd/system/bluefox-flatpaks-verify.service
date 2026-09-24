@@ -1,0 +1,9 @@
+[Unit]
+Description=Reprise des applications Flatpak manquantes
+Documentation=https://github.com/bluefoxconsultant/blue-fox-os
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/bluefox-flatpaks-verify --repair
