@@ -12,7 +12,7 @@
 # `syft scan` sur une image (registry: ou oci-archive:) passe par stereoscope,
 # qui decompresse chaque couche, en cache le contenu sur disque et construit un
 # arbre de fichiers PAR COUCHE avant d'aplatir. Sur nos ~10 Go, mesure le
-# 2026-07-26 sur charizard :
+# 2026-07-26 sur le poste de construction :
 #
 #   source            pic RSS    duree        cache TMPDIR   resultat
 #   oci-archive:      18,7 Go    >38 min      15 Go          tue (swap epuise)
