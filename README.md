@@ -47,7 +47,7 @@ Reste avant la fusion : l'essai firstboot sur VM réelle (#22436).
 | Signature image | cosign (keypair BlueBuild) + attestation SBOM SPDX (syft) |
 | Signature RPM | clé GPG dédiée ; la publique est en dépôt et vérifiée au build |
 | Versionnement | CalVer `YY.MM` (v26.07 = juillet 2026) |
-| Licence | MIT |
+| Licence | MIT pour le code ; marque et `branding/` exclus (voir [TRADEMARKS.md](TRADEMARKS.md)) |
 
 Tenants : `bf` (interne), `bf-surface` (même image + noyau linux-surface),
 `factice` (bac à sable de validation).
@@ -277,6 +277,17 @@ correctifs d'audit (provenance, dépôt Surface durci, ordre du renommage
 - Les assets KDE générés, `files/usr/share/bluefox/tenant.json` et
   `files/usr/lib/bluefox/` : matérialisés à chaque build. ⚠️ Un artefact laissé
   en place rend l'arbre sale et fait **refuser** la publication suivante.
+
+## Licence et marque
+
+Le code est publié sous licence MIT (voir [LICENSE](LICENSE)). Les noms
+« Blue Fox » et « Blue Fox OS », les logos, le mot-symbole, les fonds d'écran
+et le contenu de `branding/` ne sont pas concédés sous cette licence : ils
+restent la propriété de Les services de consultation Blue Fox, Inc. On peut
+les citer pour désigner le projet, sans laisser croire à une approbation ; un
+dérivé redistribué doit retirer la marque. Détails dans
+[TRADEMARKS.md](TRADEMARKS.md). La police Lexend est sous SIL Open Font
+License 1.1 (`files/usr/share/fonts/lexend/OFL.txt`).
 
 ## Documentation projet
 

@@ -312,7 +312,7 @@ SBOM="${WORKDIR}/sbom-${SLUG}.spdx.json"
 log "5/7 generation du SBOM SPDX -> $(basename "$SBOM")"
 # ⚠️ Cette etape a echoue QUATRE fois, de quatre facons differentes. Les trois
 # premieres tenaient a scanner l'IMAGE ; la quatrieme a montre que c'etait la
-# mauvaise question. Mesures du 2026-07-26 sur charizard (~10 Go d'image) :
+# mauvaise question. Mesures du 2026-07-26 sur le poste de construction (~10 Go d'image) :
 #
 #   1. `syft scan registry:`, sans reglage        -> OOM a 13,1 Go de RSS
 #   2. + GOMEMLIMIT=8GiB                          -> cache de couches dans /tmp

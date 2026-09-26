@@ -32,7 +32,7 @@ BIB_IMAGE="${BIB_IMAGE:-quay.io/centos-bootc/bootc-image-builder:latest}"
 # linux-surface.repo en skip_if_unavailable=0 — un depot injoignable fait donc
 # echouer la construction de l'ISO, a dessein).
 #
-# Panne vecue le 2026-07-25 sur charizard : « Could not resolve host:
+# Panne vecue le 2026-07-25 sur le poste de construction : « Could not resolve host:
 # mirrors.fedoraproject.org » apres ~4 min de pull. Cause : le seul resolveur de
 # l'hote est **Tailscale MagicDNS** (100.100.100.100). tailscaled sert cette
 # adresse aux processus LOCAUX ; les paquets qui arrivent d'un pont podman

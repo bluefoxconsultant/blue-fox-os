@@ -1,6 +1,6 @@
 """Unit tests for scripts/generate_kde_theme.py.
 
-Run with: cd /home/livv/blue-fox-os && python3 -m pytest scripts/test_generate_kde_theme.py
+Run with: cd blue-fox-os && python3 -m pytest scripts/test_generate_kde_theme.py
 """
 from __future__ import annotations
 

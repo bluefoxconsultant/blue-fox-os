@@ -22,7 +22,7 @@ modules:
     repos:
       # ⚠️ Fichier .repo VERSIONNE (files/rpm-ostree/tailscale.repo) plutot
       # que telecharge a chaque construction (2026-09-14). pkgs.tailscale.com
-      # coupe ~1 connexion TLS sur 4 depuis charizard, et le module rpm-ostree
+      # coupe ~1 connexion TLS sur 4 depuis le poste de construction, et le module rpm-ostree
       # le tirait par `curl --retry 5` — mais --retry ne reessaie PAS une
       # erreur TLS (code 35) : il faudrait --retry-all-errors. Une coupure
       # tuait donc la construction entiere, et elle a tue bf, bf-surface et
