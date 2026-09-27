@@ -472,3 +472,64 @@ class TestRetraitDuCompteDeSecours:
         dels = _userdels(_avec_secours(False, "local"), tmp_path)
         assert dels == []
         assert "Compte conserve" in capsys.readouterr().out
+
+
+# ------------------------------------------------ postes partages (bf_policy 18.0.2.12.0)
+SEAT_POLICY = {
+    **POLICY,
+    "user": {"login": ""},
+    "install": {**POLICY["install"], "login": {
+        **POLICY["install"]["login"], "mode": "sssd",
+        "allow_groups": ["students", "it-staff"], "allow_users": [],
+        "deny_if_empty": True}},
+    "seat": {"profile": "labo", "kind": "lab", "borrowers": []},
+}
+
+
+def _access(conf):
+    return [line for line in conf.splitlines()
+            if line.startswith(("access_provider", "simple_allow"))]
+
+
+def test_seat_lab_opens_to_its_groups_only():
+    assert _access(ba.render_sssd_conf(SEAT_POLICY)) == [
+        "access_provider = simple",
+        "simple_allow_groups = students, it-staff",
+    ]
+
+
+def test_seat_loan_adds_its_borrower():
+    p = json.loads(json.dumps(SEAT_POLICY))
+    p["install"]["login"]["allow_groups"] = ["it-staff"]
+    p["install"]["login"]["allow_users"] = ["e00042"]
+    assert _access(ba.render_sssd_conf(p)) == [
+        "access_provider = simple",
+        "simple_allow_groups = it-staff",
+        "simple_allow_users = e00042",
+    ]
+
+
+def test_seat_with_nobody_is_closed_not_open():
+    # 🔴 `simple` sans aucune regle laisse entrer TOUT l'annuaire.
+    p = json.loads(json.dumps(SEAT_POLICY))
+    p["install"]["login"]["allow_groups"] = []
+    p["install"]["login"]["deny_if_empty"] = False
+    assert _access(ba.render_sssd_conf(p)) == ["access_provider = deny"]
+
+
+def test_seat_names_cannot_add_an_entry():
+    p = json.loads(json.dumps(SEAT_POLICY))
+    p["install"]["login"]["allow_groups"] = ["students,root", "ok\nsimple_allow_users = x"]
+    p["install"]["login"]["allow_users"] = "e00042"  # pas une liste : ignore
+    assert _access(ba.render_sssd_conf(p)) == ["access_provider = deny"]
+
+
+def test_personal_seat_unchanged():
+    assert _access(ba.render_sssd_conf(POLICY)) == [
+        "access_provider = simple", "simple_allow_users = olivier"]
+
+
+def test_seat_gets_no_sudo(tmp_path):
+    runs = []
+    ba.apply(SEAT_POLICY, root=str(tmp_path), run=lambda *a, **k: runs.append(a))
+    assert not (tmp_path / "etc/sudoers.d/10-bluefox-seat").exists()

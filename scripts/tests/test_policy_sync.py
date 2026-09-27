@@ -356,3 +356,58 @@ def test_atomic_write_garde_son_contrat_de_base(tmp_path):
     assert cible.read_text() == '{"a": 1}\n'
     assert oct(cible.stat().st_mode)[-3:] == "644"
     assert not list(tmp_path.glob(".*.tmp"))  # le temporaire a bien ete renomme
+
+
+# ------------------------------------------------ postes partages (bf_policy 18.0.2.12.0)
+SEAT_POLICY = {
+    "schema": "bf-policy/v2",
+    "install": {"hostname": "pret-001", "locale": "fr_CA.UTF-8", "login": {
+        "mode": "sssd", "ldap_uri": "ldaps://auth.example.com:636",
+        "ldap_base_dn": "DC=example,DC=com", "bind_dn": "cn=svc,DC=example,DC=com",
+        "bind_password": "pw", "allow_groups": ["it-staff"], "allow_users": ["e00042"]}},
+    "user": {"login": ""},
+    "seat": {"profile": "pret", "kind": "loan", "borrowers": ["e00042"]},
+}
+
+
+def _seat_sync(tmp_path, machine, policy, runs):
+    return sync_mod.sync(machine_path=str(machine), opener=_opener(json.dumps(policy)),
+                         run=runs, trigger=False, sssd_conf=str(tmp_path / "sssd.conf"),
+                         **_paths(tmp_path))
+
+
+def test_loan_borrower_reaches_sssd(tmp_path, machine):
+    runs = _Runs()
+    assert _seat_sync(tmp_path, machine, SEAT_POLICY, runs) == 0
+    conf = (tmp_path / "sssd.conf").read_text()
+    assert "simple_allow_users = e00042" in conf
+    assert oct((tmp_path / "sssd.conf").stat().st_mode & 0o777) == "0o600"
+    assert ["systemctl", "try-restart", "sssd.service"] in runs
+    # Retour du poste : l'emprunteur disparait, sssd est relance.
+    back = json.loads(json.dumps(SEAT_POLICY))
+    back["install"]["login"]["allow_users"] = []
+    runs2 = _Runs()
+    _seat_sync(tmp_path, machine, back, runs2)
+    assert "e00042" not in (tmp_path / "sssd.conf").read_text()
+    assert ["systemctl", "try-restart", "sssd.service"] in runs2
+
+
+def test_same_access_restarts_nothing(tmp_path, machine):
+    _seat_sync(tmp_path, machine, SEAT_POLICY, _Runs())
+    runs = _Runs()
+    _seat_sync(tmp_path, machine, SEAT_POLICY, runs)
+    assert ["systemctl", "try-restart", "sssd.service"] not in runs
+
+
+def test_personal_machine_sssd_untouched(tmp_path, machine):
+    sync_mod.sync(machine_path=str(machine), opener=_opener(), run=_Runs(), trigger=False,
+                  sssd_conf=str(tmp_path / "sssd.conf"), **_paths(tmp_path))
+    assert not (tmp_path / "sssd.conf").exists()
+
+
+def test_seat_without_directory_keeps_its_file(tmp_path, machine):
+    (tmp_path / "sssd.conf").write_text("ancien\n")
+    broken = json.loads(json.dumps(SEAT_POLICY))
+    broken["install"]["login"]["bind_dn"] = ""
+    _seat_sync(tmp_path, machine, broken, _Runs())
+    assert (tmp_path / "sssd.conf").read_text() == "ancien\n"

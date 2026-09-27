@@ -18,6 +18,7 @@ Dans les deux cas _finalize_and_apply() orchestre les apply_* en best-effort :
 un échec d'une intégration ne bloque pas les autres ; tout résultat est journalisé.
 """
 import argparse
+import getpass
 import logging
 import os
 import shutil
@@ -295,9 +296,12 @@ def refresh_browser_policy(home: Path | None = None) -> tuple[bool, str]:
 
 def select_flow(prov: dict | None) -> str:
     """'provisioned' when a valid staged policy names the user (we know who they
-    are + their session prefs -> minimal interaction) ; else 'manual' (the full
-    5-page wizard). A tiny pure function so the dispatch is unit-testable
-    without Qt."""
+    are + their session prefs -> minimal interaction) ; 'seat' on a shared seat
+    (bf_policy 18.0.2.12.0: a lab or a lent computer, the policy names nobody on
+    purpose) ; else 'manual' (the full 5-page wizard). A tiny pure function so
+    the dispatch is unit-testable without Qt."""
+    if prov and isinstance(prov.get("seat"), dict):
+        return "seat"
     return "provisioned" if (prov and user_login(prov)) else "manual"
 
 
@@ -307,9 +311,27 @@ def run_wizard(tenant: dict, prefill_email: str = "", prov: dict | None = None) 
     NC SSO + auto-apply). A built-in-defaults install has no policy -> the manual
     5-page wizard."""
     prov = prov or {}
-    if select_flow(prov) == "provisioned":
+    flow = select_flow(prov)
+    if flow == "seat":
+        return _run_seat_flow(tenant, prov)
+    if flow == "provisioned":
         return _run_provisioned_flow(tenant, prov)
     return _run_manual_wizard(tenant, prefill_email, prov)
+
+
+def _run_seat_flow(tenant: dict, prov: dict) -> int:
+    """Shared seat: apply the session silently, ask nothing.
+
+    Thirty students open a session on a lab computer; none of them should meet
+    a five-page wizard asking who they are, when the directory login already
+    said it. No Nextcloud SSO either: on a seat whose home is wiped at logout
+    it would come back at every session. The person is the Unix user sssd
+    opened the session for.
+    """
+    _finalize_and_apply(tenant=tenant, user_email=getpass.getuser(),
+                        do_mount=False, nc_login_name="", nc_app_password="",
+                        prov=prov)
+    return 0
 
 
 def _apply_from_policy(tenant: dict, prov: dict, nc_creds) -> None:

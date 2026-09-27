@@ -167,3 +167,26 @@ def test_en_usager_l_agent_poursuit(monkeypatch, tmp_path):
          mock.patch.object(main, "run_wizard", return_value=0) as assistant:
         assert main.cli() == 0
     assistant.assert_called_once()
+
+
+SEAT = {"schema": "bf-policy/v2", "user": {"login": ""},
+        "seat": {"profile": "labo", "kind": "lab"}, "session": {"mounts": [], "pwas": []}}
+
+
+def test_select_flow_seat():
+    assert main.select_flow(SEAT) == "seat"
+
+
+def test_seat_flow_asks_nothing():
+    with mock.patch.object(main, "_run_provisioned_flow") as prov, \
+         mock.patch.object(main, "_run_manual_wizard") as man, \
+         mock.patch.object(main, "_finalize_and_apply") as fin, \
+         mock.patch.object(main.getpass, "getuser", return_value="e00042"):
+        rc = main.run_wizard({"slug": "bf"}, prov=SEAT)
+    assert rc == 0
+    prov.assert_not_called()
+    man.assert_not_called()
+    kwargs = fin.call_args.kwargs
+    assert kwargs["user_email"] == "e00042"
+    assert kwargs["do_mount"] is False
+    assert kwargs["prov"] is SEAT
