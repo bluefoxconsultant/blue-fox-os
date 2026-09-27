@@ -203,7 +203,7 @@ def _comparable(policy):
     fichiers octet a octet ferait donc conclure « la politique a change » tous
     les jours, sur toutes les machines : le journal mentirait, le fichier
     changerait de date pour rien, et toute logique branchee plus tard sur « la
-    politique a change » se declencherait quotidiennement."""
+    politique a change » se declencherait a chaque passage."""
     return {k: v for k, v in policy.items() if k != "generated_at"}
 
 

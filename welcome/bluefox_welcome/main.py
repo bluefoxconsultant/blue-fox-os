@@ -277,7 +277,7 @@ def refresh_browser_policy(home: Path | None = None) -> tuple[bool, str]:
     """A chaque ouverture de session : reecrit la politique Brave depuis la
     politique courante (#25966).
 
-    La synchronisation quotidienne (bluefox-policy-sync, root) tient a jour la
+    La synchronisation horaire (bluefox-policy-sync, root) tient a jour la
     copie expurgee, mais elle ne peut pas ecrire dans le profil de la personne :
     c'est ici, dans la session, que les extensions et les PWA choisies dans
     Odoo rejoignent Brave. Effet au prochain demarrage de Brave.
