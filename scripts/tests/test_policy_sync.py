@@ -411,3 +411,45 @@ def test_seat_without_directory_keeps_its_file(tmp_path, machine):
     broken["install"]["login"]["bind_dn"] = ""
     _seat_sync(tmp_path, machine, broken, _Runs())
     assert (tmp_path / "sssd.conf").read_text() == "ancien\n"
+
+
+def _sans_mot_de_passe(policy):
+    """La reponse de /machine depuis bf_policy 18.0.2.11.2 : pas de mot de passe."""
+    withheld = json.loads(json.dumps(policy))
+    withheld["install"]["login"]["bind_password"] = ""
+    return withheld
+
+
+def test_seat_keeps_bind_password_withheld_by_machine(tmp_path, machine):
+    # L'installation a ecrit le mot de passe (reponse de /me).
+    _seat_sync(tmp_path, machine, SEAT_POLICY, _Runs())
+    # La synchro suivante recoit /machine sans mot de passe, et un retour de pret.
+    back = _sans_mot_de_passe(SEAT_POLICY)
+    back["install"]["login"]["allow_users"] = []
+    runs = _Runs()
+    _seat_sync(tmp_path, machine, back, runs)
+    conf = (tmp_path / "sssd.conf").read_text()
+    assert "e00042" not in conf
+    assert "ldap_default_authtok = pw\n" in conf
+    assert ["systemctl", "try-restart", "sssd.service"] in runs
+    # Rien d'autre n'a change : pas de reecriture, pas de relance.
+    runs2 = _Runs()
+    _seat_sync(tmp_path, machine, back, runs2)
+    assert ["systemctl", "try-restart", "sssd.service"] not in runs2
+
+
+def test_seat_withheld_password_alone_changes_nothing(tmp_path, machine):
+    _seat_sync(tmp_path, machine, SEAT_POLICY, _Runs())
+    avant = (tmp_path / "sssd.conf").read_text()
+    runs = _Runs()
+    _seat_sync(tmp_path, machine, _sans_mot_de_passe(SEAT_POLICY), runs)
+    assert (tmp_path / "sssd.conf").read_text() == avant
+    assert ["systemctl", "try-restart", "sssd.service"] not in runs
+
+
+def test_seat_without_any_bind_password_keeps_its_file(tmp_path, machine):
+    (tmp_path / "sssd.conf").write_text("[domain/bluefox]\nldap_uri = ldaps://x\n")
+    runs = _Runs()
+    _seat_sync(tmp_path, machine, _sans_mot_de_passe(SEAT_POLICY), runs)
+    assert (tmp_path / "sssd.conf").read_text() == "[domain/bluefox]\nldap_uri = ldaps://x\n"
+    assert ["systemctl", "try-restart", "sssd.service"] not in runs

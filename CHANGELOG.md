@@ -10,6 +10,7 @@ Format : [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning Ca
 - `bfos.poste=<code>` à l'installation : le poste appartient au profil, pas à la personne qui l'installe ; le serveur le nomme.
 - sssd s'ouvre aux groupes du profil et aux emprunteurs inscrits ; un poste partagé sans personne passe en `deny` (sans règle, `simple` ouvrirait tout l'annuaire).
 - `bluefox-policy-sync` réécrit l'accès des postes partagés quand un prêt commence ou finit ; l'agent d'accueil applique la session sans assistant.
+- Le mot de passe de liaison de l'annuaire reste dans `sssd.conf` quand `/machine` ne le sert plus (bf_policy 18.0.2.11.2) : la synchro le reprend du fichier en place, et sans mot de passe nulle part elle garde le fichier au lieu d'écrire un poste sans session.
 
 ### Changed
 
