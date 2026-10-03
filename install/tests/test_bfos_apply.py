@@ -345,6 +345,37 @@ def test_apply_sssd_refuses_a_bad_username_in_sudoers(tmp_path):
     assert not (tmp_path / "etc/sudoers.d/10-bluefox-seat").exists()
 
 
+# ------------------------------------- politique stagee sans mot de passe (#26137)
+def test_apply_staged_policy_loses_the_bind_password(tmp_path):
+    ba.apply(POLICY, root=str(tmp_path), run=lambda argv, check=False: None)
+    assert "jeton-de-service" in (tmp_path / "etc/sssd/sssd.conf").read_text()
+    staged = tmp_path / ba.STAGED_JSON.lstrip("/")
+    assert "jeton-de-service" not in staged.read_text()
+    assert oct(staged.stat().st_mode)[-3:] == "600"
+    # Ce que relisent encore les outils de la machine est intact.
+    relue = json.loads(staged.read_text())
+    assert relue["user"]["login"] == "olivier@bluefoxconsultant.com"
+    assert relue["install"]["login"]["ldap_uri"] == "ldaps://ldap.example.com:636"
+
+
+def test_apply_staged_policy_kept_when_sssd_conf_failed(tmp_path):
+    ecrits = {}
+
+    def writer(path, content, mode=0o644):
+        if path == "/etc/sssd/sssd.conf":
+            raise OSError("disque plein")
+        ecrits[path] = content
+
+    ba.apply(POLICY, root=str(tmp_path), run=lambda argv, check=False: None, writer=writer)
+    assert ba.STAGED_JSON not in ecrits
+
+
+def test_apply_local_mode_has_nothing_to_redact(tmp_path):
+    p = {**POLICY, "install": {**POLICY["install"], "login": {"mode": "local"}}}
+    ba.apply(p, root=str(tmp_path), run=lambda argv, check=False: None)
+    assert not (tmp_path / ba.STAGED_JSON.lstrip("/")).exists()
+
+
 def test_render_sssd_conf_names_the_user_by_cn():
     """MESURE du 2026-09-11 : l'avant-poste sert une empreinte de 64 caracteres
     dans `uid`, qui est l'attribut de nom par defaut de rfc2307bis. Sans
