@@ -29,6 +29,12 @@ demande hostnamectl, la locale ne prend qu'a la prochaine session, et le mode
 de connexion touche sssd et PAM. C'est un chantier a part, a tester en VM.
 La frontiere est ici pour qu'elle soit lisible, pas parce qu'on l'a oubliee.
 
+UNE exception, les postes partages (bloc « seat », bf_policy 18.0.2.12.0) : qui
+peut ouvrir une session sur un poste prete change a chaque pret, sans
+reinstallation. Sur ces postes-la, et sur eux seuls, sssd.conf est reecrit
+quand ses regles d'acces changent, puis sssd est relance. Un poste personnel
+n'est pas touche.
+
 ⚠️ CE QUE LA MINUTERIE AMONT NE FAIT PAS
 system-flatpak-setup.timer est en `OnBootSec=30` : elle ne passe QU'AU
 DEMARRAGE. Une machine allumee toute la semaine ne convergerait donc jamais,
@@ -66,6 +72,7 @@ MACHINE_JSON = "/etc/bluefox/machine.json"
 PROVISIONING_JSON = "/var/lib/bluefox-welcome/provisioning.json"
 STATE_JSON = "/var/lib/bluefox-welcome/policy-sync.json"
 FLATPAK_DIR = "/etc/bluebuild/default-flatpaks/system"
+SSSD_CONF = "/etc/sssd/sssd.conf"
 # Copie de install/bfos_apply.py posee dans l'image par scripts/publish-image.sh.
 # Une seule source pour le format des listes : le fichier ecrit a l'installation
 # et celui ecrit par la synchronisation ne peuvent pas diverger.
@@ -196,7 +203,7 @@ def _comparable(policy):
     fichiers octet a octet ferait donc conclure « la politique a change » tous
     les jours, sur toutes les machines : le journal mentirait, le fichier
     changerait de date pour rien, et toute logique branchee plus tard sur « la
-    politique a change » se declencherait quotidiennement."""
+    politique a change » se declencherait a chaque passage."""
     return {k: v for k, v in policy.items() if k != "generated_at"}
 
 
@@ -284,6 +291,54 @@ def trigger_flatpak_setup(run=subprocess.run) -> bool:
         return False
 
 
+def _authtok_en_place(sssd_conf):
+    """Le mot de passe de liaison du sssd.conf en place, ou "" s'il n'y en a pas."""
+    try:
+        with open(sssd_conf) as fh:
+            for line in fh:
+                cle, sep, valeur = line.partition("=")
+                if sep and cle.strip() == "ldap_default_authtok":
+                    return valeur.strip()
+    except (OSError, ValueError):
+        pass
+    return ""
+
+
+def apply_seat_access(policy, apply_mod, sssd_conf=SSSD_CONF, run=subprocess.run):
+    """Poste partage : reecrit sssd.conf si ses regles d'acces ont change.
+
+    Rend (change, detail). Ne touche a rien hors d'un poste partage en mode
+    sssd avec un annuaire complet : un fichier rendu sans ldap_uri ou sans
+    identite de liaison donnerait un poste sans AUCUNE session, pire que de
+    garder l'ancien emprunteur un jour de plus.
+
+    ⚠️ Depuis bf_policy 18.0.2.11.2, /machine ne sert plus le mot de passe de
+    liaison : il ne passe sur le reseau qu'a l'installation (/me, jeton du
+    client d'installation). Rendre sssd.conf depuis cette reponse effacait
+    ldap_default_authtok a la premiere synchro horaire, et l'avant-poste
+    refusait ensuite la liaison : plus aucune session, labo comme pret. Le
+    mot de passe se reprend donc du fichier en place quand la politique n'en
+    porte pas, et sans mot de passe nulle part le fichier reste tel quel.
+    """
+    if not isinstance(policy.get("seat"), dict):
+        return False, "poste personnel : acces inchange"
+    install = policy.get("install") or {}
+    login = install.get("login") or {}
+    if login.get("mode") != "sssd" or not (login.get("ldap_uri") and login.get("bind_dn")):
+        return False, "poste partage sans annuaire complet : sssd.conf conserve"
+    if not login.get("bind_password"):
+        en_place = _authtok_en_place(sssd_conf)
+        if not en_place:
+            return False, "poste partage sans mot de passe de liaison : sssd.conf conserve"
+        policy = dict(policy, install=dict(install, login=dict(login, bind_password=en_place)))
+    if not write_if_changed(sssd_conf, apply_mod.render_sssd_conf(policy), mode=0o600):
+        return False, "acces du poste inchange"
+    # Le cache garderait l'ancienne decision d'acces jusqu'a son expiration.
+    run(["sss_cache", "-E"], check=False)
+    run(["systemctl", "try-restart", "sssd.service"], check=False)
+    return True, "acces du poste mis a jour"
+
+
 def write_state(path, **fields):
     """Trace de la derniere synchronisation, pour le diagnostic a froid."""
     try:
@@ -296,7 +351,7 @@ def write_state(path, **fields):
 def sync(machine_path=MACHINE_JSON, provisioning_path=PROVISIONING_JSON,
          flatpak_dir=FLATPAK_DIR, state_path=STATE_JSON,
          apply_module=APPLY_MODULE, opener=None, run=subprocess.run,
-         trigger=True, public_path=None) -> int:
+         trigger=True, public_path=None, sssd_conf=None) -> int:
     machine = read_machine(machine_path)
     if machine is None:
         log("machine non enrolee — rien a synchroniser")
@@ -338,6 +393,15 @@ def sync(machine_path=MACHINE_JSON, provisioning_path=PROVISIONING_JSON,
             changes.append("applications")
             if trigger:
                 trigger_flatpak_setup(run=run)
+        try:
+            access_changed, detail = apply_seat_access(
+                policy, apply_mod, sssd_conf=sssd_conf or SSSD_CONF, run=run)
+        except OSError as exc:
+            log(f"ecriture de sssd.conf impossible ({exc})")
+            access_changed, detail, rc = False, str(exc), 1
+        log(detail)
+        if access_changed:
+            changes.append("acces du poste")
         try:
             if write_public(public_path or apply_mod.PUBLIC_JSON, policy, apply_mod):
                 changes.append("copie de session")

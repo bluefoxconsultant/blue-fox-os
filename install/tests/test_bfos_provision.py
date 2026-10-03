@@ -1970,3 +1970,71 @@ def test_une_reponse_http_de_la_politique_ne_se_rejoue_pas():
     with pytest.raises(bp.ProvisionError, match="HTTP 403"):
         bp.fetch_policy("https://p/me", "TOK", get=get, sleep=lambda s: None)
     assert len(essais) == 1
+
+
+# ------------------------------------------------ postes partages (bf_policy 18.0.2.12.0)
+def test_seat_code_from_env_then_cmdline(tmp_path):
+    cmdline = tmp_path / "cmdline"
+    cmdline.write_text("BOOT_IMAGE=/vmlinuz quiet bfos.domaine=ecole.example bfos.poste=labo-biblio\n")
+    assert bp.seat_code({}, cmdline=str(cmdline)) == "labo-biblio"
+    assert bp.seat_code({"BFOS_SEAT": "pret"}, cmdline=str(cmdline)) == "pret"
+    assert bp.seat_code({}, cmdline=str(tmp_path / "absent")) == ""
+
+
+def test_malformed_seat_code_is_a_personal_install(tmp_path):
+    cmdline = tmp_path / "cmdline"
+    for bad in ("Labo", "x", "labo;rm", "a" * 40, "-labo"):
+        cmdline.write_text(f"bfos.poste={bad}\n")
+        assert bp.seat_code({}, cmdline=str(cmdline)) == "", bad
+
+
+def test_policy_url_for_seat():
+    assert bp.policy_url_for_seat(POLICY_URL, "") == POLICY_URL
+    assert bp.policy_url_for_seat(POLICY_URL, "labo") == POLICY_URL + "?seat=labo"
+
+
+def test_enrol_names_the_seat_profile():
+    seen = {}
+
+    def post(url, payload, token, timeout=30):
+        seen.update(payload)
+        return 200, json.dumps({"token": "S", "endpoint": "https://e/api/v1/policy/machine",
+                                "hostname": "labo-001", "seat_profile": "labo"})
+    policy = {**POLICY, "user": {"login": ""}, "seat": {"profile": "labo", "kind": "lab"}}
+    machine = bp.enrol_machine(ENROLL_URL, "TOK", policy, post=post,
+                               new_uuid=lambda: "uuid-seat-0001", os_version="44")
+    assert seen["seat_profile"] == "labo"
+    assert machine["hostname"] == "labo-001", "the server names a shared seat"
+    assert machine["seat_profile"] == "labo"
+
+
+def test_personal_enrol_sends_no_seat_profile():
+    seen = {}
+
+    def post(url, payload, token, timeout=30):
+        seen.update(payload)
+        return 200, json.dumps({"token": "S", "endpoint": "https://e/x"})
+    bp.enrol_machine(ENROLL_URL, "TOK", POLICY, post=post, os_version="44")
+    assert "seat_profile" not in seen
+
+
+def test_run_asks_the_seat_policy():
+    urls = []
+
+    def post(url, data=None, timeout=30):
+        if url == DEVICE_URL:
+            return 200, json.dumps({"device_code": "DC", "user_code": "WX",
+                                    "verification_uri": "https://auth/device",
+                                    "interval": 1, "expires_in": 300})
+        return 200, json.dumps({"access_token": "TOK"})
+
+    def get(url, token, timeout=30):
+        urls.append(url)
+        return 200, json.dumps({"schema": "bf-policy/v2", "install": {},
+                                "user": {"login": ""}, "seat": {"profile": "labo"}})
+
+    env = {"BFOS_OIDC_DEVICE_URL": DEVICE_URL, "BFOS_OIDC_TOKEN_URL": TOKEN_URL,
+           "BFOS_OIDC_CLIENT_ID": "blue-fox-os", "BFOS_POLICY_URL": POLICY_URL,
+           "BFOS_SEAT": "labo"}
+    bp.run(env=env, post=post, get=get, sleep=lambda s: None, out=lambda m: None)
+    assert urls == [POLICY_URL + "?seat=labo"]

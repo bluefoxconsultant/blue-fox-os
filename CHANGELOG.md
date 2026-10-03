@@ -6,6 +6,17 @@ Format : [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning Ca
 
 ### Added
 
+**Postes partagés : laboratoire et prêt** (#26119, avec bf_policy 18.0.2.12.0) :
+- `bfos.poste=<code>` à l'installation : le poste appartient au profil, pas à la personne qui l'installe ; le serveur le nomme.
+- sssd s'ouvre aux groupes du profil et aux emprunteurs inscrits ; un poste partagé sans personne passe en `deny` (sans règle, `simple` ouvrirait tout l'annuaire).
+- `bluefox-policy-sync` réécrit l'accès des postes partagés quand un prêt commence ou finit ; l'agent d'accueil applique la session sans assistant.
+- Le mot de passe de liaison de l'annuaire reste dans `sssd.conf` quand `/machine` ne le sert plus (bf_policy 18.0.2.11.2) : la synchro le reprend du fichier en place, et sans mot de passe nulle part elle garde le fichier au lieu d'écrire un poste sans session.
+- Une fois `sssd.conf` écrit, l'installation réécrit la politique stagée sans le mot de passe de liaison (#26137, déjà dans la copie servie par bf_zerotouch_install 18.0.4.0.4) ; elle le garde si `sssd.conf` a échoué, pour qu'on puisse rejouer le script à la main.
+
+### Changed
+
+- `bluefox-policy-sync.timer` passe d'une fois par jour à **toutes les heures** (étalé sur 15 min, fixe par machine) : un prêt s'ouvre dans l'heure.
+
 **Re-synchronisation de la politique sur les machines déjà installées** (#23909) :
 - Une machine reçoit désormais une identité à elle. Pendant le `%pre`, tant que le porteur OIDC de l'opérateur est en main, `bfos_provision.py` appelle `POST /api/v1/policy/enroll` et met le secret rendu dans `/etc/bluefox/machine.json` (0600, root). Odoo n'en conserve que le sha256.
 - `bluefox-policy-sync.timer` (au démarrage + une fois par jour, étalée sur une heure) re-tire la politique depuis `GET /api/v1/policy/machine` et réécrit `provisioning.json` puis les deux listes Flatpak. Une politique modifiée dans Odoo atteint donc les postes en service, plus seulement les installations neuves.

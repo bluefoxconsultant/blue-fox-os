@@ -345,6 +345,37 @@ def test_apply_sssd_refuses_a_bad_username_in_sudoers(tmp_path):
     assert not (tmp_path / "etc/sudoers.d/10-bluefox-seat").exists()
 
 
+# ------------------------------------- politique stagee sans mot de passe (#26137)
+def test_apply_staged_policy_loses_the_bind_password(tmp_path):
+    ba.apply(POLICY, root=str(tmp_path), run=lambda argv, check=False: None)
+    assert "jeton-de-service" in (tmp_path / "etc/sssd/sssd.conf").read_text()
+    staged = tmp_path / ba.STAGED_JSON.lstrip("/")
+    assert "jeton-de-service" not in staged.read_text()
+    assert oct(staged.stat().st_mode)[-3:] == "600"
+    # Ce que relisent encore les outils de la machine est intact.
+    relue = json.loads(staged.read_text())
+    assert relue["user"]["login"] == "olivier@bluefoxconsultant.com"
+    assert relue["install"]["login"]["ldap_uri"] == "ldaps://ldap.example.com:636"
+
+
+def test_apply_staged_policy_kept_when_sssd_conf_failed(tmp_path):
+    ecrits = {}
+
+    def writer(path, content, mode=0o644):
+        if path == "/etc/sssd/sssd.conf":
+            raise OSError("disque plein")
+        ecrits[path] = content
+
+    ba.apply(POLICY, root=str(tmp_path), run=lambda argv, check=False: None, writer=writer)
+    assert ba.STAGED_JSON not in ecrits
+
+
+def test_apply_local_mode_has_nothing_to_redact(tmp_path):
+    p = {**POLICY, "install": {**POLICY["install"], "login": {"mode": "local"}}}
+    ba.apply(p, root=str(tmp_path), run=lambda argv, check=False: None)
+    assert not (tmp_path / ba.STAGED_JSON.lstrip("/")).exists()
+
+
 def test_render_sssd_conf_names_the_user_by_cn():
     """MESURE du 2026-09-11 : l'avant-poste sert une empreinte de 64 caracteres
     dans `uid`, qui est l'attribut de nom par defaut de rfc2307bis. Sans
@@ -472,3 +503,64 @@ class TestRetraitDuCompteDeSecours:
         dels = _userdels(_avec_secours(False, "local"), tmp_path)
         assert dels == []
         assert "Compte conserve" in capsys.readouterr().out
+
+
+# ------------------------------------------------ postes partages (bf_policy 18.0.2.12.0)
+SEAT_POLICY = {
+    **POLICY,
+    "user": {"login": ""},
+    "install": {**POLICY["install"], "login": {
+        **POLICY["install"]["login"], "mode": "sssd",
+        "allow_groups": ["students", "it-staff"], "allow_users": [],
+        "deny_if_empty": True}},
+    "seat": {"profile": "labo", "kind": "lab", "borrowers": []},
+}
+
+
+def _access(conf):
+    return [line for line in conf.splitlines()
+            if line.startswith(("access_provider", "simple_allow"))]
+
+
+def test_seat_lab_opens_to_its_groups_only():
+    assert _access(ba.render_sssd_conf(SEAT_POLICY)) == [
+        "access_provider = simple",
+        "simple_allow_groups = students, it-staff",
+    ]
+
+
+def test_seat_loan_adds_its_borrower():
+    p = json.loads(json.dumps(SEAT_POLICY))
+    p["install"]["login"]["allow_groups"] = ["it-staff"]
+    p["install"]["login"]["allow_users"] = ["e00042"]
+    assert _access(ba.render_sssd_conf(p)) == [
+        "access_provider = simple",
+        "simple_allow_groups = it-staff",
+        "simple_allow_users = e00042",
+    ]
+
+
+def test_seat_with_nobody_is_closed_not_open():
+    # 🔴 `simple` sans aucune regle laisse entrer TOUT l'annuaire.
+    p = json.loads(json.dumps(SEAT_POLICY))
+    p["install"]["login"]["allow_groups"] = []
+    p["install"]["login"]["deny_if_empty"] = False
+    assert _access(ba.render_sssd_conf(p)) == ["access_provider = deny"]
+
+
+def test_seat_names_cannot_add_an_entry():
+    p = json.loads(json.dumps(SEAT_POLICY))
+    p["install"]["login"]["allow_groups"] = ["students,root", "ok\nsimple_allow_users = x"]
+    p["install"]["login"]["allow_users"] = "e00042"  # pas une liste : ignore
+    assert _access(ba.render_sssd_conf(p)) == ["access_provider = deny"]
+
+
+def test_personal_seat_unchanged():
+    assert _access(ba.render_sssd_conf(POLICY)) == [
+        "access_provider = simple", "simple_allow_users = olivier"]
+
+
+def test_seat_gets_no_sudo(tmp_path):
+    runs = []
+    ba.apply(SEAT_POLICY, root=str(tmp_path), run=lambda *a, **k: runs.append(a))
+    assert not (tmp_path / "etc/sudoers.d/10-bluefox-seat").exists()
