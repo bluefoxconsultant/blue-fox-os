@@ -1,12 +1,11 @@
 """Blue Fox OS welcome agent — wizard premier démarrage.
 
-Architecture (BFOSP1, BFOSP3, BFOSP4, BFOSI8, BFOSI9, BFOSD8) :
+Architecture (BFOSP1, BFOSP3, BFOSI8, BFOSI9, BFOSD8) :
 
 - KAccounts pour mail / calendar / contacts NC (Akonadi DAV) — kcmshell6 v1
 - rclone WebDAV systemd --user mount pour fichiers NC (KIO trop lent)
 - Bitwarden Flatpak prefs pour Vaultwarden (URL pre-config)
 - Thunderbird : ouvert au firstboot, autoconfig Migadu via CNAME
-- Brave Sync : seed phrase stockee dans Vaultwarden, copy-paste manuelle
 - Login machine : statu quo BFOSI2 (compte local, sssd v1.1)
 
 Deux flux au firstboot (BFOSI10 #22436), dispatchés par select_flow() :
@@ -567,27 +566,18 @@ def _files_page(tenant, QWizardPage, QVBoxLayout, QLabel, QCheckBox, QLineEdit,
 
 def _vault_page(tenant, QWizardPage, QVBoxLayout, QLabel, QPushButton):
     page = QWizardPage()
-    page.setTitle("Vault Bitwarden et Brave Sync")
+    page.setTitle("Vault Bitwarden")
     vault_url = get_service_url(tenant, "vaultwarden",
                                 "https://vault.bluefoxconsultant.com")
     layout = QVBoxLayout()
     layout.addWidget(QLabel(
-        f"<b>1.</b> Bitwarden Desktop sera pré-configuré pour : <code>{vault_url}</code>"))
+        f"Bitwarden Desktop sera pré-configuré pour : <code>{vault_url}</code>"))
     layout.addWidget(QLabel(
         "Lance Bitwarden depuis le menu après l'assistant et connecte-toi "
         "— l'URL self-hosted sera déjà remplie."))
     btn_v = QPushButton(f"Ouvrir {vault_url}")
     btn_v.clicked.connect(lambda: _open_url_logged(vault_url))
     layout.addWidget(btn_v)
-    layout.addWidget(QLabel("<br><b>2.</b> Brave Sync (BFOSP4) — seed phrase via Vaultwarden :"))
-    layout.addWidget(QLabel(
-        "<ol>"
-        "<li>Première machine BF OS : ouvre Brave, Settings → Sync → "
-        "« Start a new sync chain », sauvegarde la seed dans Vaultwarden "
-        "(entrée « Brave Sync — prénom »).</li>"
-        "<li>Machines suivantes : récupère la seed dans Vaultwarden et colle-la "
-        "dans Brave Settings → Sync → « I have a sync code ».</li>"
-        "</ol>"))
     page.setLayout(layout)
     return page
 

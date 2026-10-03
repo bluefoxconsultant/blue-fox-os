@@ -7,9 +7,9 @@ Type=Application
 
 # Texte d'intro affiché sur la page d'accueil (avant le texte standard
 # Plasma/KDE qui suit). Court de préférence.
-Name=Bienvenue dans Blue Fox OS — votre poste de travail libre, configuré, prêt à l'emploi. Le menu vous guidera à travers quelques étapes pour activer Nextcloud, Vaultwarden, Brave Sync et votre identité Blue Fox.
-Name[en_CA]=Welcome to Blue Fox OS — your free, configured, ready-to-use workstation. The menu will guide you through a few steps to enable Nextcloud, Vaultwarden, Brave Sync, and your Blue Fox identity.
-Name[en_US]=Welcome to Blue Fox OS — your free, configured, ready-to-use workstation. The menu will guide you through a few steps to enable Nextcloud, Vaultwarden, Brave Sync, and your Blue Fox identity.
+Name=Bienvenue dans Blue Fox OS — votre poste de travail libre, configuré, prêt à l'emploi. Le menu vous guidera à travers quelques étapes pour activer Nextcloud, Vaultwarden et votre identité Blue Fox.
+Name[en_CA]=Welcome to Blue Fox OS — your free, configured, ready-to-use workstation. The menu will guide you through a few steps to enable Nextcloud, Vaultwarden, and your Blue Fox identity.
+Name[en_US]=Welcome to Blue Fox OS — your free, configured, ready-to-use workstation. The menu will guide you through a few steps to enable Nextcloud, Vaultwarden, and your Blue Fox identity.
 
 # Image affichée sur la page d'intro à la place du Konqi par défaut.
 # `file:` prefix requis pour un chemin absolu sur disque.
