@@ -18,8 +18,8 @@ V1 policy ships:
 - WebAppInstallForceList for any bf-policy/v2 session PWAs (BFOSI10) — each
   force-installed as a standalone window; pinned ones also opened at startup.
 
-BraveSync is intentionally left for the user to opt in via the Vaultwarden
-seed flow (BFOSP4 v1 = manual seed, v1.1 = self-hosted Brave Sync server).
+Brave Sync is not used (BFOSP4 superseded 2026-10-02) : bookmarks and
+extensions follow the person through the Symbifox extensions above (#25966).
 """
 import json
 import logging

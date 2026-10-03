@@ -3,8 +3,7 @@
  * SPDX-License-Identifier: GPL-2.0-only OR GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL
  *
  * Page Plasma Welcome extra-page Blue Fox OS — point d'entrée vers le wizard
- * bluefox-welcome (PyQt6) qui configure Nextcloud + Vaultwarden + Brave Sync
- * + KAccounts. Lance bluefox-welcome via Qt.openUrlExternally sur la Desktop
+ * bluefox-welcome (PyQt6) qui configure Nextcloud + Vaultwarden + KAccounts. Lance bluefox-welcome via Qt.openUrlExternally sur la Desktop
  * Entry /usr/share/applications/bluefox-welcome.desktop. Le bouton sert de
  * relance manuelle ; un autostart /etc/xdg/autostart/bluefox-welcome.desktop
  * déclenche aussi le wizard au premier login KDE.
@@ -36,7 +35,7 @@ Welcome.GenericPage {
     heading: i18nc("@title", "Configurer votre identité Blue Fox")
     description: i18nc("@info:usagetip",
         "Le wizard Blue Fox configure votre compte Authentik (mail, calendrier, " +
-        "contacts via Nextcloud), votre Vaultwarden, votre Brave Sync, et monte " +
+        "contacts via Nextcloud), votre Vaultwarden, et monte " +
         "votre Nextcloud Files. Ce sera complété en quelques minutes ; vous pouvez " +
         "aussi le relancer plus tard depuis le menu d'applications.")
 
