@@ -12,28 +12,25 @@ déjà en service.
 
 ## État
 
-Dernier tag : `v0.1.0-rc.1` (2026-05-22). Le travail courant vit sur
-`feat/local-oci-builds` (**PR #39**, ouverte) ; `main` est resté au 2026-05-18.
+Version courante : **1.0.0** (tag `v1.0.0`, publiée le 2026-09-27), première
+version stable. La [release](https://github.com/bluefoxconsultant/blue-fox-os/releases/tag/v1.0.0)
+fournit les ISO `bf` et `bf-surface`, découpées en parts à recoller, avec leur
+sha256, leur signature cosign et `cosign.pub`.
+
+`main` est la référence. Le workflow `Validate Blue Fox OS` y tourne à chaque
+fusion, comme sur chaque PR.
 
 À savoir avant de conclure quoi que ce soit :
 
-- **`main` n'est pas la référence.** Tant que la PR #39 n'est pas fusionnée,
-  `main` ne porte ni la sortie des builds hors CI, ni la re-synchronisation de
-  politique, ni les correctifs de provenance et de signature.
-- **Les images publiées sur GHCR datent d'avant la bascule.** `make publish`
-  n'a pas encore tourné depuis ; `:latest` vient donc du dernier build CI
-  (2026-05-18). Une image « vieille », c'est ça, pas une panne.
-- **Le workflow GitHub de validation est désactivé** depuis le 2026-07-22
-  (`gh workflow enable 267420271` pour le réactiver). Aucune vérification
-  automatique ne tourne sur les PR en attendant.
+- **Les images publiées sur GHCR sont celles de la 1.0.0.** Les trois
+  `:latest` (`bf`, `bf-surface`, `factice`) ont été bâties depuis `ec8f407`, le
+  commit tagué `v1.0.0`, et sont signées et attestées. Ce qui a été fusionné
+  sur `main` depuis (#41, #42) n'y est pas et n'atteindra les machines qu'au
+  prochain `make publish`.
 - **La politique ne s'applique que sur le chemin zero-touch.** Le kickstart
   autonome `install/bf-os.ks` n'appelle ni `bfos_provision.py` ni
   `bfos_apply.py` : une install par ce chemin donne une machine brandée mais
   non provisionnée.
-- **Le mode de connexion en production est `local`.** L'outpost LDAP Authentik
-  n'est pas déployé, donc pas encore de compte de session central.
-
-Reste avant la fusion : l'essai firstboot sur VM réelle (#22436).
 
 ## Stack
 
