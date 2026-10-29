@@ -4,6 +4,14 @@ Format : [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning Ca
 
 ## [Unreleased]
 
+### Security
+
+**Signature vérifiée des images, à l'installation et aux mises à jour** (#27109) :
+- La politique de conteneurs publiée visait `localhost/blue-fox-os-<slug>` (le build se fait avec `IMAGE_REGISTRY=localhost`) : `ghcr.io/bluefoxconsultant/...` tombait sous `"": insecureAcceptAnything` et aucune mise à jour n'était vérifiée. `files/scripts/politique-conteneurs.sh`, lancé après le module `signing`, écrit une entrée `sigstoreSigned` + `matchRepository` par dépôt (bf, bf-surface, factice) avec la clé `/usr/share/bluefox/keys/cosign-images.pub`, et fait échouer le build si `default` n'est pas `reject`, si une entrée ou la clé manque, ou si aucun `registries.d` ne demande les pièces jointes sigstore.
+- `bluefox-rebase` passe en `ostree-image-signed:` quand la politique couvre l'image ; `bluefox-origine-signee.timer` bascule ensuite les postes existants (sans redémarrage, marqueur une fois démarré sur l'origine signée).
+- Kickstart zero-touch : la ligne `ostreecontainer` vient de `/tmp/bfos-image.ks` (filet non vérifié écrit par le `%pre`, remplacé par la forme vérifiée) ; la politique de l'installateur passe en `matchRepository` et reçoit son `registries.d`.
+- `publish-image.sh`, étape 7b : porte canari (la politique de l'image publiée accepte `factice:canari-signe` et refuse `factice:canari-non-signe`).
+
 ### Added
 
 **Re-synchronisation de la politique sur les machines déjà installées** (#23909) :

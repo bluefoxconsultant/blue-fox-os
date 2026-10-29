@@ -1,0 +1,18 @@
+[Unit]
+Description=Origine du poste vers ostree-image-signed (verification de signature, #27109)
+Documentation=https://github.com/bluefoxconsultant/blue-fox-os
+# Jamais pendant le premier rebase : bluefox-rebase choisit deja son transport.
+ConditionPathExists=!/var/lib/bluefox-welcome/needs-rebase
+ConditionPathExists=!/var/lib/bluefox/origine-signee
+Wants=network-online.target
+After=network-online.target rpm-ostreed.service
+
+[Service]
+Type=oneshot
+# Ne redemarre jamais : le rebase attend le prochain demarrage, comme une mise
+# a jour. Rien n'est ordonne apres cette unite, elle ne bloque rien.
+ExecStart=/usr/libexec/bluefox-origine-signee
+Nice=10
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=2h

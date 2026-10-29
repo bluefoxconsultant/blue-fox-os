@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# files/scripts/politique-conteneurs.sh — fait verifier les mises a jour de
+# l'image par la signature cosign (#27109). Execute DANS l'image, par un module
+# `script` place APRES le module `signing` des recipes.
+#
+# POURQUOI (constats du 2026-10-28, sources d'Anaconda, ostree-ext et skopeo) :
+#   - C'est /etc/containers/policy.json qui juge chaque tirage d'image, MEME en
+#     `ostree-unverified-registry:` : rpm-ostree passe par le proxy skopeo, qui
+#     applique la politique par defaut. `ostree-image-signed:` ajoute seulement
+#     le refus d'un `default` en insecureAcceptAnything.
+#   - Le module `signing` de BlueBuild ecrit son entree pour
+#     ${IMAGE_REGISTRY}/${IMAGE_NAME}, or le build se fait avec
+#     IMAGE_REGISTRY=localhost (scripts/publish-image.sh pousse ensuite vers
+#     ghcr). L'image publiee portait donc `localhost/blue-fox-os-<slug>`, et
+#     ghcr.io/bluefoxconsultant/... tombait sous `"": insecureAcceptAnything` :
+#     AUCUNE mise a jour n'etait verifiee. Mesure sur factice:latest (a9b26d3).
+#
+# CE QUE FAIT CE SCRIPT :
+#   1. retire les entrees `localhost/*` de transports.docker et les fichiers
+#      registries.d/localhost-*.yaml que le module signing vient d'ecrire ;
+#   2. ecrit une entree sigstoreSigned + matchRepository PAR DEPOT (bf,
+#      bf-surface, factice). PAS par espace de noms : ghcr.io/bluefoxconsultant
+#      porte aussi des paquets non signes, qu'une regle d'espace de noms
+#      refuserait a quiconque les tire depuis un poste.
+#      ⚠️ matchRepository, PAS matchRepoDigestOrExact : la signature cosign
+#      porte le depot SANS tag (`docker-reference` =
+#      ghcr.io/bluefoxconsultant/blue-fox-os-<slug>), alors qu'on tire `:latest`.
+#   3. garde `"": insecureAcceptAnything` dans docker (toolbox, distrobox,
+#      images Fedora non signees) : on ne durcit que NOS depots ;
+#   4. ECHOUE LE BUILD si `default` n'est pas `reject`, si une entree manque,
+#      si la cle est absente, ou si aucun registries.d ne demande les pieces
+#      jointes sigstore pour nos depots (sans `use-sigstore-attachments: true`,
+#      skopeo repond « a signature was required, but no signature exists »).
+#
+# 🔴 UNE POLITIQUE FAUSSE GELE LE PARC. Un poste qui demarre cette image juge
+# ses mises a jour suivantes avec ELLE : une cle fausse, un registries.d absent,
+# et plus aucune mise a jour ne passe, correctif compris. D'ou l'echec au build
+# ici, et la porte canari de publish-image.sh (etape 7b) apres la poussee.
+#
+# La cle et le registries.d arrivent par le module `files` (avant celui-ci) :
+#   files/usr/share/bluefox/keys/cosign-images.pub     (= cosign.pub du depot)
+#   files/etc/containers/registries.d/bluefoxconsultant.yaml
+#
+# Essais hors image : BFOS_RACINE=<dossier> prefixe tous les chemins lus et
+# ecrits (les chemins ecrits DANS la politique restent ceux du systeme).
+set -euo pipefail
+
+RACINE="${BFOS_RACINE:-}"
+CLE_SYSTEME="/usr/share/bluefox/keys/cosign-images.pub"
+DEPOTS="ghcr.io/bluefoxconsultant/blue-fox-os-bf ghcr.io/bluefoxconsultant/blue-fox-os-bf-surface ghcr.io/bluefoxconsultant/blue-fox-os-factice"
+
+log() { echo "[politique-conteneurs] $*"; }
+die() { echo "[politique-conteneurs] ERREUR: $*" >&2; exit 1; }
+
+POLICY="${RACINE}/etc/containers/policy.json"
+REGISTRIES_D="${RACINE}/etc/containers/registries.d"
+
+[ -f "$POLICY" ] || die "${POLICY} absent : le module signing doit tourner AVANT ce script."
+[ -s "${RACINE}${CLE_SYSTEME}" ] || die "cle publique absente : ${RACINE}${CLE_SYSTEME} (module files)."
+grep -q "BEGIN PUBLIC KEY" "${RACINE}${CLE_SYSTEME}" || die "${CLE_SYSTEME} n'est pas une cle publique PEM."
+
+# Les fichiers registries.d du module signing visent localhost : ils ne servent
+# a rien sur un poste, et un second fichier qui declarerait la meme portee
+# ferait echouer TOUTE lecture de registries.d (cle en double).
+for F in "$REGISTRIES_D"/localhost-*.yaml "$REGISTRIES_D"/localhost-*.yml; do
+    [ -e "$F" ] || continue
+    rm -f "$F"
+    log "retire $(basename "$F")"
+done
+
+python3 - "$POLICY" "$REGISTRIES_D" "$CLE_SYSTEME" $DEPOTS <<'PY'
+import json
+import os
+import re
+import sys
+
+policy_path, registries_d, cle, *depots = sys.argv[1:]
+
+
+def die(msg):
+    print(f"[politique-conteneurs] ERREUR: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+with open(policy_path, encoding="utf-8") as fh:
+    pol = json.load(fh)
+docker = (pol.get("transports") or {}).get("docker")
+if not isinstance(docker, dict):
+    die("transports.docker absent de la politique : forme inattendue, relire le module signing.")
+
+for portee in [k for k in docker if k == "localhost" or k.startswith(("localhost/", "localhost:"))]:
+    del docker[portee]
+    print(f"[politique-conteneurs] retire l'entree {portee}")
+
+regle = {"type": "sigstoreSigned", "keyPath": cle,
+         "signedIdentity": {"type": "matchRepository"}}
+for depot in depots:
+    docker[depot] = [dict(regle)]
+    print(f"[politique-conteneurs] {depot} : sigstoreSigned, matchRepository, {cle}")
+
+# --- gardes : le build echoue plutot que de publier une politique muette ---
+if pol.get("default") != [{"type": "reject"}]:
+    die(f"default = {pol.get('default')!r}, attendu [{{'type': 'reject'}}] : "
+        "ostree-image-signed refuserait toute mise a jour.")
+for depot in depots:
+    if docker.get(depot) != [regle]:
+        die(f"entree manquante ou alteree pour {depot}")
+
+
+def portees_sigstore(texte):
+    """Portees `docker:` d'un fichier registries.d qui demandent les pieces
+    jointes sigstore. Analyse volontairement etroite (pas de PyYAML garanti
+    dans l'image) : deux niveaux d'indentation, la forme que nous livrons."""
+    trouvees, portee, dans_docker, niveau = set(), None, False, None
+    for brute in texte.splitlines():
+        ligne = brute.split("#", 1)[0].rstrip()
+        contenu = ligne.strip()
+        if not contenu:
+            continue
+        retrait = len(ligne) - len(ligne.lstrip())
+        if retrait == 0:
+            dans_docker, portee, niveau = contenu == "docker:", None, None
+            continue
+        if not dans_docker:
+            continue
+        if niveau is None:
+            niveau = retrait
+        if retrait == niveau:
+            portee = (contenu[:-1].strip().strip("'\"")
+                      if contenu.endswith(":") else None)
+        elif portee and re.fullmatch(r"use-sigstore-attachments:\s*true", contenu):
+            trouvees.add(portee)
+    return trouvees
+
+
+couvertes = {}
+if os.path.isdir(registries_d):
+    for nom in sorted(os.listdir(registries_d)):
+        if nom.endswith((".yaml", ".yml")):
+            with open(os.path.join(registries_d, nom), encoding="utf-8") as fh:
+                for p in portees_sigstore(fh.read()):
+                    couvertes.setdefault(p, []).append(nom)
+for p, noms in couvertes.items():
+    if len(noms) > 1:
+        die(f"portee {p} declaree dans plusieurs fichiers registries.d ({noms}) : "
+            "containers-image refuserait de lire le dossier.")
+for depot in depots:
+    # La portee la plus precise gagne : le depot, puis ses espaces de noms.
+    morceaux = depot.split("/")
+    candidates = ["/".join(morceaux[:i]) for i in range(len(morceaux), 0, -1)]
+    if not any(c in couvertes for c in candidates):
+        die(f"aucun registries.d ne demande use-sigstore-attachments pour {depot} : "
+            "skopeo ne trouverait aucune signature et refuserait tout.")
+
+tmp = policy_path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as fh:
+    json.dump(pol, fh, indent=2)
+    fh.write("\n")
+os.chmod(tmp, 0o644)
+os.replace(tmp, policy_path)
+print(f"[politique-conteneurs] OK : {len(depots)} depots verifies, default reject.")
+PY
