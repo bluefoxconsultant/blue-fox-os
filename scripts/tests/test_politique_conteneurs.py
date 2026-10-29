@@ -16,7 +16,8 @@ Ce qui est garde ici, sans image ni reseau :
   3. bluefox-origine-signee (bascule des postes existants) : jamais de
      redemarrage, jamais d'insistance, marqueur une fois demarre en signe ;
   4. bluefox-rebase choisit son transport sur la politique ;
-  5. la porte canari de publish-image.sh (etape 7b), jouee avec un faux podman.
+  5. la porte canari de publish-image.sh (etape 4b), jouee avec un faux podman et
+     un faux skopeo ; son juge, scripts/proxy-openimage.py, contre un faux proxy.
 """
 
 import importlib.machinery
@@ -27,6 +28,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -662,107 +664,338 @@ def test_bluefox_rebase_choisit_son_transport_sur_la_politique():
 
 
 # ---------------------------------------------------------------------------
-# 6. Porte canari de publish-image.sh (etape 7b)
+# 6. Porte canari de publish-image.sh (etape 4b)
 # ---------------------------------------------------------------------------
+PROXY = REPO_ROOT / "scripts" / "proxy-openimage.py"
+
+
 def _bloc_canari():
     texte = PUBLISH.read_text()
-    debut = texte.index("# --- 7b. porte canari")
-    fin = texte.index('log "OK — ${IMAGE} publie')
-    assert texte.index("cosign verify --key cosign.pub") < debut, "la porte suit la verification"
+    debut = texte.index("# --- 4b. porte canari")
+    fin = texte.index("# --- 5. SBOM")
     return texte[debut:fin]
 
 
+def test_la_porte_suit_la_poussee_et_precede_sbom_et_attestation():
+    """M2 de la relecture : la porte arrivait apres SBOM et attestation."""
+    t = PUBLISH.read_text()
+    ordre = [t.index('PRECEDENT_DIGEST="sha256:'),
+             t.index('\nbluebuild build --push "recipes/'),
+             t.index("\nPUSHED=1\n"),
+             t.index('IMAGE_INDEX_DIGEST="sha256:'),
+             t.index("# --- 4b. porte canari"),
+             t.index("# --- 5. SBOM"),
+             t.index("\ncosign attest --yes"),
+             t.index("\ncosign verify --key cosign.pub")]
+    assert ordre == sorted(ordre)
+    assert "7b" not in t.replace("#  7b.", "")
+
+
+ANCIEN = "index-ancien-signe\n"
+NOUVEAU = "index-nouveau\n"
+
+
+def _sha(texte):
+    import hashlib
+    return "sha256:" + hashlib.sha256(texte.encode()).hexdigest()
+
+
 FAUX_PODMAN = r"""#!/bin/bash
-echo "$*" >> "$JOURNAL"
-[ "$1" = rmi ] && exit 0
-case "$*" in
-  *canari-non-signe*) MODE="$FAUX_NON_SIGNE" ;;
-  *canari-signe*) MODE="$FAUX_SIGNE" ;;
+echo "podman $*" >> "$JOURNAL"
+case "$1" in
+  rmi) exit 0 ;;
+  pull) [ "$FAUX_PULL" = ok ] && exit 0; echo "Error: initializing source: dial tcp: i/o timeout" >&2; exit 125 ;;
+  run) ;;
+  *) exit 99 ;;
+esac
+# Le juge doit arriver par l'entree standard, et c'est proxy-openimage.py.
+grep -q "experimental-image-proxy" || { echo "pas le juge" >&2; exit 98; }
+REF="${!#}"
+case "$REF" in
+  *canari-non-signe) MODE="$FAUX_NON_SIGNE" ;;
+  *canari-signe) MODE="$FAUX_SIGNE" ;;
+  *) MODE="$FAUX_IMAGE" ;;
 esac
 case "$MODE" in
-  ok) echo "Writing manifest to image destination"; exit 0 ;;
-  rejet) echo 'level=fatal msg="Source image rejected: A signature was required, but no signature exists"' >&2; exit 1 ;;
-  cle) echo 'level=fatal msg="Source image rejected: cryptographic signature verification failed"' >&2; exit 1 ;;
-  reseau) echo 'level=fatal msg="pinging container registry ghcr.io: dial tcp: i/o timeout"' >&2; exit 1 ;;
-  absent) echo 'level=fatal msg="reading manifest canari in ghcr.io/x: manifest unknown"' >&2; exit 1 ;;
+  ok) echo "OpenImage $REF : ACCEPTE (protocole 0.2.8)"; exit 0 ;;
+  rejet) echo "OpenImage $REF : REFUSE : A signature was required, but no signature exists"; exit 1 ;;
+  cle) echo "OpenImage $REF : REFUSE : cryptographic signature verification failed: invalid signature"; exit 1 ;;
+  reseau) echo "OpenImage $REF : INCONNU : reading signatures: Get x: i/o timeout"; exit 2 ;;
+  absent) echo "OpenImage $REF : INCONNU : reading manifest canari in ghcr.io/x: manifest unknown"; exit 2 ;;
+  sans_skopeo) echo "OpenImage $REF : INCONNU : skopeo introuvable ([Errno 2] No such file)"; exit 2 ;;
+  sans_python) echo 'Error: crun: executable file `/usr/bin/python3` not found in $PATH' >&2; exit 127 ;;
 esac
-exit 3
+exit 97
+"""
+
+FAUX_SKOPEO = r"""#!/bin/bash
+echo "skopeo $*" >> "$JOURNAL"
+case "$1" in
+  copy) [ "$FAUX_COPIE" = echec ] && exit 1
+        [ "$FAUX_COPIE" = ok ] && printf '%s' "$ANCIEN" > "$ETAT_TAG"; exit 0 ;;
+  inspect) cat "$ETAT_TAG"; exit 0 ;;
+esac
+exit 96
 """
 
 
-def jouer_canari(tmp_path, signe, non_signe, skip=False):
+def jouer_canari(tmp_path, image="ok", signe="ok", non_signe="rejet", skip=False,
+                 copie="ok", precedent=True, pull="ok"):
     bin_ = tmp_path / "bin"
     bin_.mkdir(exist_ok=True)
-    (bin_ / "podman").write_text(FAUX_PODMAN)
-    (bin_ / "podman").chmod(0o755)
-    journal = tmp_path / "podman.log"
+    for nom, code in (("podman", FAUX_PODMAN), ("skopeo", FAUX_SKOPEO)):
+        (bin_ / nom).write_text(code)
+        (bin_ / nom).chmod(0o755)
+    journal = tmp_path / "appels.log"
+    etat_tag = tmp_path / "tag"
+    etat_tag.write_text(NOUVEAU)
     script = ("set -euo pipefail\n"
               'log() { echo "[publish] $*"; }\n'
               'die() { echo "[publish] ERREUR: $*" >&2; exit 1; }\n'
-              # Le trap ERR que publish-image.sh pose apres la poussee : un echec
-              # ATTENDU (canari non signe refuse) ne doit pas le declencher.
+              'post_push_notice() { echo "NOTICE_PUSH" >&2; }\n'
+              # Les traps que publish-image.sh pose apres la poussee : un echec
+              # ATTENDU (canari non signe refuse) ne doit pas les declencher.
               "trap 'echo TRAP_ERR >&2; exit 99' ERR\n"
-              "REGISTRY=ghcr.io/bluefoxconsultant\n"
+              f"WORKDIR={REPO_ROOT}\n"
+              "REGISTRY=ghcr.io/bluefoxconsultant\nPORTE_ETAT=x\n"
               "IMAGE_REPO=$REGISTRY/blue-fox-os-bf\nIMAGE=$IMAGE_REPO:latest\n"
-              "IMAGE_INDEX_DIGEST=sha256:nouveau\nPRECEDENT_DIGEST=sha256:ancien\n"
-              + _bloc_canari() + 'log "FIN"\n')
+              "IMAGE_INDEX_DIGEST=sha256:nouveau\n"
+              f"PRECEDENT_DIGEST={_sha(ANCIEN) if precedent else ''}\n"
+              + _bloc_canari() + 'log "FIN porte=$PORTE_ETAT"\n')
     env = {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}", "JOURNAL": str(journal),
-           "FAUX_SIGNE": signe, "FAUX_NON_SIGNE": non_signe}
+           "ETAT_TAG": str(etat_tag), "ANCIEN": ANCIEN, "FAUX_PULL": pull,
+           "FAUX_IMAGE": image, "FAUX_SIGNE": signe, "FAUX_NON_SIGNE": non_signe,
+           "FAUX_COPIE": copie}
+    env.pop("PUBLISH_SKIP_CANARI", None)
     if skip:
         env["PUBLISH_SKIP_CANARI"] = "1"
     r = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=60)
     appels = journal.read_text().splitlines() if journal.exists() else []
-    return r, appels
+    return r, appels, etat_tag.read_text()
+
+
+def _copies(appels):
+    return [a for a in appels if a.startswith("skopeo copy")]
 
 
 def test_canari_nominal(tmp_path):
-    r, appels = jouer_canari(tmp_path, "ok", "rejet")
+    r, appels, tag = jouer_canari(tmp_path)
     assert r.returncode == 0, r.stderr
-    assert "TRAP_ERR" not in r.stderr
-    assert "[publish] FIN" in r.stdout
-    runs = [a for a in appels if a.startswith("run ")]
-    assert len(runs) == 2
+    assert "TRAP_ERR" not in r.stderr and "NOTICE_PUSH" not in r.stderr
+    assert "[publish] FIN porte=passee" in r.stdout
+    assert appels[0] == "podman pull -q ghcr.io/bluefoxconsultant/blue-fox-os-bf@sha256:nouveau"
+    runs = [a for a in appels if a.startswith("podman run ")]
+    assert len(runs) == 3
     for a in runs:
-        # La politique ET le skopeo de l'image publiee, par digest.
-        assert "ghcr.io/bluefoxconsultant/blue-fox-os-bf@sha256:nouveau" in a
-        assert "--entrypoint /usr/bin/skopeo" in a
-    assert "docker://ghcr.io/bluefoxconsultant/blue-fox-os-factice:canari-signe" in runs[0]
-    assert "docker://ghcr.io/bluefoxconsultant/blue-fox-os-factice:canari-non-signe" in runs[1]
+        # Le juge tourne DANS l'image publiee, par digest, sans nouveau tirage.
+        assert "--pull=never" in a and "--entrypoint /usr/bin/python3" in a
+        assert " ghcr.io/bluefoxconsultant/blue-fox-os-bf@sha256:nouveau - docker://" in a
+    # M3 : l'image publiee elle-meme est jugee, par le chemin de rpm-ostree.
+    assert runs[0].endswith("docker://ghcr.io/bluefoxconsultant/blue-fox-os-bf@sha256:nouveau")
+    assert runs[1].endswith("docker://ghcr.io/bluefoxconsultant/blue-fox-os-factice:canari-signe")
+    assert runs[2].endswith("docker://ghcr.io/bluefoxconsultant/blue-fox-os-factice:canari-non-signe")
+    assert "podman rmi ghcr.io/bluefoxconsultant/blue-fox-os-bf@sha256:nouveau" in appels
+    assert _copies(appels) == [] and tag == NOUVEAU
 
 
-def test_canari_signe_refuse_arrete_et_dit_le_retour_arriere(tmp_path):
-    r, _ = jouer_canari(tmp_path, "cle", "rejet")
-    assert r.returncode == 1
-    assert "REFUSE l'image signee" in r.stderr
-    assert "docker://ghcr.io/bluefoxconsultant/blue-fox-os-bf@sha256:ancien" in r.stderr
+@pytest.mark.parametrize("cas", [dict(signe="cle"), dict(signe="rejet"), dict(image="cle"),
+                                 dict(image="rejet"), dict(image="sans_skopeo")])
+def test_refus_de_la_politique_remet_le_tag_precedent(tmp_path, cas):
+    r, appels, tag = jouer_canari(tmp_path, **cas)
+    assert r.returncode == 3, r.stderr
+    assert "TRAP_ERR" not in r.stderr
+    assert _copies(appels) == [
+        "skopeo copy --all --preserve-digests --retry-times 3 "
+        f"docker://ghcr.io/bluefoxconsultant/blue-fox-os-bf@{_sha(ANCIEN)} "
+        "docker://ghcr.io/bluefoxconsultant/blue-fox-os-bf:latest"]
+    assert tag == ANCIEN
+    assert "REMIS sur l'index precedent" in r.stderr
+    # Le message vrai, pas celui d'un SBOM manquant apres une chaine complete.
+    assert "NOTICE_PUSH" not in r.stderr
+    assert "SBOM et attestation NON produits" in r.stderr
+    assert "Code 3" in r.stderr
 
 
-def test_canari_non_signe_accepte_arrete(tmp_path):
-    r, _ = jouer_canari(tmp_path, "ok", "ok")
-    assert r.returncode == 1
-    assert "ACCEPTE l'image NON signee" in r.stderr
+def test_retour_arriere_impossible_le_dit(tmp_path):
+    r, appels, tag = jouer_canari(tmp_path, signe="cle", copie="echec")
+    assert r.returncode == 3
+    assert "IMPOSSIBLE" in r.stderr and "TOUJOURS l'image refusee" in r.stderr
+    assert f"docker://ghcr.io/bluefoxconsultant/blue-fox-os-bf@{_sha(ANCIEN)}" in r.stderr
+    assert tag == NOUVEAU
 
 
-def test_canari_non_signe_en_panne_reseau_n_est_pas_un_refus(tmp_path):
-    r, _ = jouer_canari(tmp_path, "ok", "reseau")
-    assert r.returncode == 1
-    assert "pas sur la politique" in r.stderr
+def test_retour_arriere_relu_au_registre(tmp_path):
+    """La copie rend 0 mais le tag ne sert pas l'ancien index : IMPOSSIBLE,
+    jamais « remis » sur la foi du code de retour."""
+    r, appels, tag = jouer_canari(tmp_path, signe="cle", copie="muette")
+    assert r.returncode == 3
+    assert any(a == "skopeo inspect --raw docker://ghcr.io/bluefoxconsultant/blue-fox-os-bf:latest"
+               for a in appels)
+    assert "IMPOSSIBLE" in r.stderr and "REMIS" not in r.stderr
+    assert tag == NOUVEAU
 
 
-@pytest.mark.parametrize("signe,non_signe", [("absent", "rejet"), ("ok", "absent")])
-def test_tag_canari_absent_arrete(tmp_path, signe, non_signe):
-    r, _ = jouer_canari(tmp_path, signe, non_signe)
-    assert r.returncode == 1
-    assert "tag canari absent" in r.stderr
+def test_premiere_publication_sans_precedent(tmp_path):
+    r, appels, tag = jouer_canari(tmp_path, signe="cle", precedent=False)
+    assert r.returncode == 3
+    assert _copies(appels) == []
+    assert "premiere publication" in r.stderr
+
+
+@pytest.mark.parametrize("cas,attendu", [
+    (dict(non_signe="ok"), "ACCEPTE l'image NON signee"),
+    (dict(non_signe="reseau"), "pas sur la politique"),
+    (dict(signe="reseau"), "verdict INCONNU"),
+    (dict(image="reseau"), "verdict INCONNU"),
+    (dict(signe="absent"), "tag canari absent"),
+    (dict(non_signe="absent"), "tag canari absent"),
+    (dict(image="sans_python"), "le juge n'a pas tourne"),
+    (dict(pull="echec"), "tirage de"),
+])
+def test_echec_sans_verdict_de_refus_arrete_sans_retour_arriere(tmp_path, cas, attendu):
+    """M3 : un i/o timeout n'est pas un refus. Code 3 (la boucle s'arrete),
+    mais l'image reste : ni la politique ni le parc ne sont en cause."""
+    r, appels, tag = jouer_canari(tmp_path, **cas)
+    assert r.returncode == 3, r.stderr
+    assert attendu in r.stderr
+    assert "TRAP_ERR" not in r.stderr and "NOTICE_PUSH" not in r.stderr
+    assert _copies(appels) == [] and tag == NOUVEAU
+    assert "reste EN LIGNE" in r.stderr
+    assert f"docker://ghcr.io/bluefoxconsultant/blue-fox-os-bf@{_sha(ANCIEN)}" in r.stderr
 
 
 def test_canari_saute_seulement_en_le_disant(tmp_path):
-    r, appels = jouer_canari(tmp_path, "cle", "ok", skip=True)
+    r, appels, _ = jouer_canari(tmp_path, signe="cle", non_signe="ok", skip=True)
     assert r.returncode == 0
     assert "PUBLISH_SKIP_CANARI=1" in r.stdout
+    assert "porte=SAUTEE" in r.stdout
     assert appels == []
 
 
 def test_digest_precedent_lu_avant_la_poussee():
     texte = PUBLISH.read_text()
     assert texte.index('PRECEDENT_DIGEST="sha256:') < texte.index('\nbluebuild build --push "recipes/')
+
+
+def test_le_code_3_est_reserve_a_la_porte():
+    """Un 3 rendu par une autre commande devient 1 : maj-images.sh n'arrete sa
+    boucle que pour la porte."""
+    t = PUBLISH.read_text()
+    traps = re.findall(r"^trap '(.*)' ERR$", t, re.M)
+    assert len(traps) == 2
+    for trap in traps:
+        assert '[ "$rc" = 3 ] && rc=1' in trap
+    assert t.index("trap 'rc=$?; [ \"$rc\" = 3 ] && rc=1; exit $rc' ERR") < t.index('SLUG="${1:-')
+    # Le seul « exit 3 » du script passe par CANARI_RC, dans die_canari.
+    assert re.findall(r"\bexit 3\b", t) == []
+    assert t.count('exit "$CANARI_RC"') == 1
+
+
+def test_post_push_notice_dit_l_etat_de_la_porte():
+    t = PUBLISH.read_text()
+    corps = t[t.index("post_push_notice() {"):t.index("\n}\n", t.index("post_push_notice() {"))]
+    assert "${PORTE_ETAT}" in corps
+    assert 'PORTE_ETAT="pas encore jouee"' in t
+
+
+# ---------------------------------------------------------------------------
+# 7. Le juge : scripts/proxy-openimage.py contre un faux proxy skopeo
+# ---------------------------------------------------------------------------
+FAUX_PROXY = r"""#!/usr/bin/env python3
+import json, os, socket, sys, time
+fd = int(sys.argv[sys.argv.index("--sockfd") + 1])
+s = socket.socket(fileno=fd)
+mode = os.environ["FAUX_PROXY"]
+while True:
+    msg = s.recv(65536)
+    if not msg:
+        break
+    req = json.loads(msg)
+    m = req["method"]
+    if m == "Initialize":
+        rep = {"success": True, "value": "0.2.8", "pipeid": 0, "error": ""}
+    elif m == "OpenImage":
+        if mode == "muet":
+            time.sleep(30)
+        if mode == "meurt":
+            sys.exit(1)
+        erreurs = {
+            "ok": None,
+            "sans_signature": "A signature was required, but no signature exists",
+            "cle": "cryptographic signature verification failed: invalid signature when validating ASN.1 encoded signature",
+            "reject": "Running image docker://alpine:latest is rejected by policy.",
+            "plusieurs": "None of the signatures were accepted, reasons: a; b",
+            "timeout_signatures": "reading signatures: Get \"https://ghcr.io/v2/x\": dial tcp: i/o timeout",
+            "refus_et_panne": "None of the signatures were accepted, reasons: reading signature 1: unexpected EOF",
+            "manifeste": "reading manifest x in ghcr.io/y: manifest unknown",
+            "lookaside": "Get \"http://127.0.0.1:9/sigs/x@sha256=643b502c/signature-1\": dial tcp 127.0.0.1:9: connect: connection refused",
+            "503": "received unexpected HTTP status: 503 Service Unavailable",
+            "digest_502": "cryptographic signature verification failed for sha256:502abc",
+        }
+        e = erreurs[mode]
+        rep = {"success": e is None, "value": 1, "pipeid": 0, "error": e or ""}
+    else:
+        rep = {"success": True, "value": None, "pipeid": 0, "error": ""}
+    s.send(json.dumps(rep).encode())
+"""
+
+
+def _juge():
+    loader = importlib.machinery.SourceFileLoader("proxy_openimage", str(PROXY))
+    spec = importlib.util.spec_from_loader("proxy_openimage", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+juge = _juge()
+
+
+@pytest.fixture
+def faux_proxy(tmp_path):
+    f = tmp_path / "skopeo"
+    f.write_text(FAUX_PROXY)
+    f.chmod(0o755)
+    return str(f)
+
+
+@pytest.mark.parametrize("mode,code", [
+    ("ok", 0),
+    ("sans_signature", 1), ("cle", 1), ("reject", 1), ("plusieurs", 1), ("digest_502", 1),
+    ("timeout_signatures", 2), ("refus_et_panne", 2), ("manifeste", 2), ("lookaside", 2),
+    ("503", 2), ("meurt", 2),
+])
+def test_le_juge_ne_conclut_au_refus_que_sur_un_verdict(faux_proxy, monkeypatch, mode, code):
+    """M3 : « reading signatures: i/o timeout » n'est pas un refus. Les
+    messages viennent des mesures skopeo 1.22.3 du 2026-10-29."""
+    monkeypatch.setenv("FAUX_PROXY", mode)
+    rc, ligne = juge.juger("docker://ghcr.io/x/y:latest", skopeo=faux_proxy, delai=10)
+    assert rc == code, ligne
+    assert ligne.startswith("OpenImage docker://ghcr.io/x/y:latest : ")
+    assert {0: "ACCEPTE", 1: "REFUSE", 2: "INCONNU"}[code] in ligne
+
+
+def test_le_juge_ne_reste_pas_pendu(faux_proxy, monkeypatch):
+    monkeypatch.setenv("FAUX_PROXY", "muet")
+    import time
+    t0 = time.monotonic()
+    rc, ligne = juge.juger("docker://ghcr.io/x/y:latest", skopeo=faux_proxy, delai=1)
+    assert rc == 2 and "INCONNU" in ligne
+    assert time.monotonic() - t0 < 20
+
+
+def test_le_juge_sans_skopeo(tmp_path):
+    rc, ligne = juge.juger("docker://ghcr.io/x/y:latest", skopeo=str(tmp_path / "absent"))
+    assert rc == 2 and "INCONNU : skopeo introuvable" in ligne
+
+
+def test_le_juge_par_l_entree_standard(faux_proxy):
+    """La forme de publish-image.sh : python3 - docker://REF < proxy-openimage.py."""
+    env = {**os.environ, "FAUX_PROXY": "cle", "BF_SKOPEO": faux_proxy, "BF_PROXY_DELAI": "10"}
+    r = subprocess.run([sys.executable, "-", "docker://ghcr.io/x/y:latest"], stdin=PROXY.open(),
+                       env=env, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 1, r.stderr
+    assert "REFUSE : cryptographic signature verification failed" in r.stdout
+    r = subprocess.run([sys.executable, "-", "ghcr.io/sans-transport"], stdin=PROXY.open(),
+                       env=env, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 2
