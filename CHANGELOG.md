@@ -7,10 +7,22 @@ Format : [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning Ca
 ### Security
 
 **Signature vérifiée des images, à l'installation et aux mises à jour** (#27109) :
-- La politique de conteneurs publiée visait `localhost/blue-fox-os-<slug>` (le build se fait avec `IMAGE_REGISTRY=localhost`) : `ghcr.io/bluefoxconsultant/...` tombait sous `"": insecureAcceptAnything` et aucune mise à jour n'était vérifiée. `files/scripts/politique-conteneurs.sh`, lancé après le module `signing`, écrit une entrée `sigstoreSigned` + `matchRepository` par dépôt (bf, bf-surface, factice) avec la clé `/usr/share/bluefox/keys/cosign-images.pub`, et fait échouer le build si `default` n'est pas `reject`, si une entrée ou la clé manque, ou si aucun `registries.d` ne demande les pièces jointes sigstore.
-- `bluefox-rebase` passe en `ostree-image-signed:` quand la politique couvre l'image ; `bluefox-origine-signee.timer` bascule ensuite les postes existants (sans redémarrage, marqueur une fois démarré sur l'origine signée).
+- La politique de conteneurs publiée visait `localhost/blue-fox-os-<slug>` (le build se fait avec `IMAGE_REGISTRY=localhost`) : `ghcr.io/bluefoxconsultant/...` tombait sous `"": insecureAcceptAnything` et aucune mise à jour n'était vérifiée. `files/scripts/politique-conteneurs.sh`, lancé après le module `signing`, écrit une entrée `sigstoreSigned` + `matchRepository` par dépôt (bf, bf-surface, factice) avec deux clés (`keyPaths`) : `/usr/share/bluefox/keys/cosign-images.pub` (publication) et `cosign-images-secours.pub` (secours, clé privée hors ligne). Le build échoue si `default` n'est pas `reject`, si une des deux clés manque ou si elles sont identiques, si la politique relue sur le disque n'est pas celle attendue, si une portée `registries.d` est déclarée deux fois, ou si la portée qui décide ne demande pas les pièces jointes sigstore.
+- `bluefox-rebase` passe en `ostree-image-signed:` quand la politique couvre l'image ; `bluefox-origine-signee.timer` bascule ensuite les postes existants (sans redémarrage, marqueur une fois démarré sur l'origine signée). Un déploiement en attente qui suit une autre image (rebase manuel, version épinglée) n'est jamais écrasé ; délai dépassé et transaction déjà en cours sont passagers.
 - Kickstart zero-touch : la ligne `ostreecontainer` vient de `/tmp/bfos-image.ks` (filet non vérifié écrit par le `%pre`, remplacé par la forme vérifiée) ; la politique de l'installateur passe en `matchRepository` et reçoit son `registries.d`.
-- `publish-image.sh`, étape 7b : porte canari (la politique de l'image publiée accepte `factice:canari-signe` et refuse `factice:canari-non-signe`).
+- `publish-image.sh`, étape 4b (juste après la poussée, avant SBOM et attestation) : porte canari. Dans l'image publiée, son propre skopeo juge par le proxy (`scripts/proxy-openimage.py`, OpenImage, le chemin de rpm-ostree) l'image elle-même, `factice:canari-signe` (doit passer) et `factice:canari-non-signe` (doit être refusé). Un refus de la politique remet l'index précédent sous le tag, relu au registre ; tout échec de la porte sort en code 3, qui arrête la republication des autres locataires (`ops/bfos/maj-images.sh`). Un verdict inconnu (registre lent, signature illisible) n'est jamais pris pour un refus.
+
+### Changed
+
+**Verrouillage d'écran piloté par la politique** (#27109, lot 3) :
+- `bluefox-policy-sync` applique `policies.auto_lock_minutes` (1 à 1440, défaut Odoo 15) : groupe `[Daemon][$i]` de `/etc/xdg/kscreenlockerrc` (`Autolock`, `Timeout`, `Lock`, `LockGrace=5`, `LockOnResume`, `RequirePassword`), immuable et grisé dans les Paramètres. 0 rend la main à la personne ; clé absente ou invalide, rien ne change.
+- Le fichier est régénéré depuis `/usr/etc/xdg/kscreenlockerrc` (l'image y livre le fond) : une altération locale est défaite et notée « réglage local rétabli » dans `policy-sync.json`.
+- À chaud : unité usager `bluefox-lock-reload.path` (`busctl`, Fedora 43 ne livre pas `qdbus6`), activée dans bf, bf-surface et factice. ⚠️ Effet flotte : 15 minutes imposées à tous les postes enrôlés dès l'image à jour. Imposé, pas inviolable (sudoer, inhibition par une application).
+
+**Adresses des services lues dans la politique, phase 1** (#27109, lot 4 ; `bluefox-welcome` 0.3.0) :
+- `merge_branding` superpose `services.{nextcloud,vaultwarden,authentik,odoo}.url` de la politique sur `tenant.json` (liste blanche, https avec un hôte ; vide ou invalide = l'adresse de l'image reste ; jamais `slug` ni `image_ref`). rclone, Bitwarden et Brave lisent le tenant fusionné.
+- Les identifiants Nextcloud déposés par l'installation ne servent que si l'agent monte le Nextcloud pour lequel ils ont été frappés ; sinon le dépôt est effacé et le SSO prend le relais. Corrige le cas d'une autre organisation installée depuis l'image bf, dont le mot de passe d'application serait parti vers le Nextcloud de Blue Fox.
+- Reste pour la phase 2 : replis en dur de l'agent, `%post` des services, libellés.
 
 ### Added
 
