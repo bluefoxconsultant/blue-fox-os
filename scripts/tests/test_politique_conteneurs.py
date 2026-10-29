@@ -34,6 +34,10 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "files" / "scripts" / "politique-conteneurs.sh"
 CLE = REPO_ROOT / "files" / "usr" / "share" / "bluefox" / "keys" / "cosign-images.pub"
+CLE_SECOURS = CLE.with_name("cosign-images-secours.pub")
+# Empreinte de la cle de secours retenue par Olivier le 2026-10-29 (cle privee
+# hors ligne, jamais dans ce depot) : une autre cle ici n'en serait pas une.
+EMPREINTE_SECOURS = "448dc741d3979d96cc62e468c8d8a2b473f5f1302f8272f8fb9d7bed52b21709"
 REGISTRIES = REPO_ROOT / "files" / "etc" / "containers" / "registries.d" / "bluefoxconsultant.yaml"
 ORIGINE = REPO_ROOT / "files" / "usr" / "libexec" / "bluefox-origine-signee"
 REBASE = REPO_ROOT / "files" / "usr" / "libexec" / "bluefox-rebase"
@@ -43,7 +47,8 @@ PUBLIABLES = ("bf.yml", "bf-surface.yml", "factice.yml")
 
 DEPOTS = tuple(f"ghcr.io/bluefoxconsultant/blue-fox-os-{s}" for s in ("bf", "bf-surface", "factice"))
 CLE_SYSTEME = "/usr/share/bluefox/keys/cosign-images.pub"
-REGLE = {"type": "sigstoreSigned", "keyPath": CLE_SYSTEME,
+CLE_SECOURS_SYSTEME = "/usr/share/bluefox/keys/cosign-images-secours.pub"
+REGLE = {"type": "sigstoreSigned", "keyPaths": [CLE_SYSTEME, CLE_SECOURS_SYSTEME],
          "signedIdentity": {"type": "matchRepository"}}
 
 
@@ -84,6 +89,7 @@ def racine(tmp_path):
         "docker:\n  localhost/blue-fox-os-factice:\n    use-sigstore-attachments: true\n")
     shutil.copy(REGISTRIES, r / "etc" / "containers" / "registries.d" / REGISTRIES.name)
     shutil.copy(CLE, r / "usr" / "share" / "bluefox" / "keys" / CLE.name)
+    shutil.copy(CLE_SECOURS, r / "usr" / "share" / "bluefox" / "keys" / CLE_SECOURS.name)
     return r
 
 
@@ -103,6 +109,21 @@ def test_la_cle_des_images_est_celle_qui_signe():
     """La cle gravee dans l'image doit etre cosign.pub, celle que
     publish-image.sh verifie a l'etape 7. Une autre cle gele le parc."""
     assert CLE.read_bytes() == (REPO_ROOT / "cosign.pub").read_bytes()
+
+
+def test_la_cle_de_secours_est_celle_retenue_et_n_est_que_publique():
+    import hashlib
+    contenu = CLE_SECOURS.read_bytes()
+    assert hashlib.sha256(contenu).hexdigest() == EMPREINTE_SECOURS
+    texte = contenu.decode()
+    assert texte.startswith("-----BEGIN PUBLIC KEY-----\n")
+    assert texte.rstrip().endswith("-----END PUBLIC KEY-----")
+    assert "PRIVATE" not in texte
+    assert contenu != CLE.read_bytes()
+    # Aucune cle privee nulle part dans files/ (le module files copie tout).
+    for f in (REPO_ROOT / "files").rglob("*"):
+        if f.is_file() and f.stat().st_size < 1 << 20:
+            assert b"PRIVATE KEY" not in f.read_bytes(), f
 
 
 def test_registries_d_demande_les_pieces_jointes_pour_notre_espace_de_noms():
@@ -203,14 +224,35 @@ def test_portee_en_double_echoue_le_build(racine):
     assert "plusieurs" in r.stderr
 
 
-def test_sans_cle_le_build_echoue(racine):
-    (racine / "usr" / "share" / "bluefox" / "keys" / CLE.name).unlink()
+@pytest.mark.parametrize("nom", [CLE.name, CLE_SECOURS.name])
+def test_sans_cle_le_build_echoue(racine, nom):
+    (racine / "usr" / "share" / "bluefox" / "keys" / nom).unlink()
+    r = jouer(racine)
+    assert r.returncode != 0
+    assert nom in r.stderr
+
+
+@pytest.mark.parametrize("nom", [CLE.name, CLE_SECOURS.name])
+def test_une_cle_qui_n_en_est_pas_une_echoue(racine, nom):
+    (racine / "usr" / "share" / "bluefox" / "keys" / nom).write_text("bonjour\n")
     assert jouer(racine).returncode != 0
 
 
-def test_une_cle_qui_n_en_est_pas_une_echoue(racine):
-    (racine / "usr" / "share" / "bluefox" / "keys" / CLE.name).write_text("bonjour\n")
-    assert jouer(racine).returncode != 0
+def test_deux_fois_la_meme_cle_echoue(racine):
+    shutil.copy(CLE, racine / "usr" / "share" / "bluefox" / "keys" / CLE_SECOURS.name)
+    r = jouer(racine)
+    assert r.returncode != 0
+    assert "aucune cle de secours" in r.stderr
+
+
+def test_la_regle_porte_les_deux_cles_et_rien_d_autre(racine):
+    """containers-policy.json(5) : keyPath et keyPaths s'excluent ; une regle
+    qui garderait keyPath a cote serait refusee a la lecture (parc gele)."""
+    assert jouer(racine).returncode == 0
+    for depot in DEPOTS:
+        (regle,) = politique(racine)["transports"]["docker"][depot]
+        assert "keyPath" not in regle and "keyData" not in regle
+        assert regle["keyPaths"] == [CLE_SYSTEME, CLE_SECOURS_SYSTEME]
 
 
 def test_sans_politique_le_build_echoue(racine):

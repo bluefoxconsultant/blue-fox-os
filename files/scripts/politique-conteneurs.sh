@@ -19,7 +19,12 @@
 #   1. retire les entrees `localhost/*` de transports.docker et les fichiers
 #      registries.d/localhost-*.yaml que le module signing vient d'ecrire ;
 #   2. ecrit une entree sigstoreSigned + matchRepository PAR DEPOT (bf,
-#      bf-surface, factice). PAS par espace de noms : ghcr.io/bluefoxconsultant
+#      bf-surface, factice), avec DEUX cles (`keyPaths`) : la cle de
+#      publication et la cle de secours, hors ligne (decision d'Olivier,
+#      2026-10-29). Une signature valide par l'une OU l'autre passe : si la
+#      cle de publication fuit ou se perd, les postes acceptent deja une image
+#      signee par la cle de secours, sans attendre une image qu'ils ne
+#      pourraient plus verifier. PAS par espace de noms : ghcr.io/bluefoxconsultant
 #      porte aussi des paquets non signes, qu'une regle d'espace de noms
 #      refuserait a quiconque les tire depuis un poste.
 #      ⚠️ matchRepository, PAS matchRepoDigestOrExact : la signature cosign
@@ -28,7 +33,8 @@
 #   3. garde `"": insecureAcceptAnything` dans docker (toolbox, distrobox,
 #      images Fedora non signees) : on ne durcit que NOS depots ;
 #   4. ECHOUE LE BUILD si `default` n'est pas `reject`, si une entree manque,
-#      si la cle est absente, ou si aucun registries.d ne demande les pieces
+#      si l'une des deux cles est absente (ou si ce sont les memes), ou si
+#      aucun registries.d ne demande les pieces
 #      jointes sigstore pour nos depots (sans `use-sigstore-attachments: true`,
 #      skopeo repond « a signature was required, but no signature exists »).
 #
@@ -37,8 +43,9 @@
 # et plus aucune mise a jour ne passe, correctif compris. D'ou l'echec au build
 # ici, et la porte canari de publish-image.sh (etape 7b) apres la poussee.
 #
-# La cle et le registries.d arrivent par le module `files` (avant celui-ci) :
-#   files/usr/share/bluefox/keys/cosign-images.pub     (= cosign.pub du depot)
+# Les cles et le registries.d arrivent par le module `files` (avant celui-ci) :
+#   files/usr/share/bluefox/keys/cosign-images.pub          (= cosign.pub du depot)
+#   files/usr/share/bluefox/keys/cosign-images-secours.pub  (cle de secours, hors ligne)
 #   files/etc/containers/registries.d/bluefoxconsultant.yaml
 #
 # Essais hors image : BFOS_RACINE=<dossier> prefixe tous les chemins lus et
@@ -47,6 +54,7 @@ set -euo pipefail
 
 RACINE="${BFOS_RACINE:-}"
 CLE_SYSTEME="/usr/share/bluefox/keys/cosign-images.pub"
+CLE_SECOURS="/usr/share/bluefox/keys/cosign-images-secours.pub"
 DEPOTS="ghcr.io/bluefoxconsultant/blue-fox-os-bf ghcr.io/bluefoxconsultant/blue-fox-os-bf-surface ghcr.io/bluefoxconsultant/blue-fox-os-factice"
 
 log() { echo "[politique-conteneurs] $*"; }
@@ -56,8 +64,13 @@ POLICY="${RACINE}/etc/containers/policy.json"
 REGISTRIES_D="${RACINE}/etc/containers/registries.d"
 
 [ -f "$POLICY" ] || die "${POLICY} absent : le module signing doit tourner AVANT ce script."
-[ -s "${RACINE}${CLE_SYSTEME}" ] || die "cle publique absente : ${RACINE}${CLE_SYSTEME} (module files)."
-grep -q "BEGIN PUBLIC KEY" "${RACINE}${CLE_SYSTEME}" || die "${CLE_SYSTEME} n'est pas une cle publique PEM."
+for CLE in "$CLE_SYSTEME" "$CLE_SECOURS"; do
+    [ -s "${RACINE}${CLE}" ] || die "cle publique absente : ${RACINE}${CLE} (module files)."
+    grep -q "BEGIN PUBLIC KEY" "${RACINE}${CLE}" || die "${CLE} n'est pas une cle publique PEM."
+done
+# Deux fois la meme cle : le secours n'en serait pas un.
+cmp -s "${RACINE}${CLE_SYSTEME}" "${RACINE}${CLE_SECOURS}" \
+    && die "${CLE_SECOURS} est identique a ${CLE_SYSTEME} : aucune cle de secours."
 
 # Les fichiers registries.d du module signing visent localhost : ils ne servent
 # a rien sur un poste, et un second fichier qui declarerait la meme portee
@@ -68,13 +81,13 @@ for F in "$REGISTRIES_D"/localhost-*.yaml "$REGISTRIES_D"/localhost-*.yml; do
     log "retire $(basename "$F")"
 done
 
-python3 - "$POLICY" "$REGISTRIES_D" "$CLE_SYSTEME" $DEPOTS <<'PY'
+python3 - "$POLICY" "$REGISTRIES_D" "$CLE_SYSTEME" "$CLE_SECOURS" $DEPOTS <<'PY'
 import json
 import os
 import re
 import sys
 
-policy_path, registries_d, cle, *depots = sys.argv[1:]
+policy_path, registries_d, cle, cle_secours, *depots = sys.argv[1:]
 
 
 def die(msg):
@@ -92,11 +105,14 @@ for portee in [k for k in docker if k == "localhost" or k.startswith(("localhost
     del docker[portee]
     print(f"[politique-conteneurs] retire l'entree {portee}")
 
-regle = {"type": "sigstoreSigned", "keyPath": cle,
+# containers-policy.json(5) : keyPaths = plusieurs cles, une signature valide
+# par l'UNE d'elles suffit ; exclusif de keyPath. La politique publiee
+# l'emploie deja pour ghcr.io/ublue-os (meme containers-image que les postes).
+regle = {"type": "sigstoreSigned", "keyPaths": [cle, cle_secours],
          "signedIdentity": {"type": "matchRepository"}}
 for depot in depots:
-    docker[depot] = [dict(regle)]
-    print(f"[politique-conteneurs] {depot} : sigstoreSigned, matchRepository, {cle}")
+    docker[depot] = [json.loads(json.dumps(regle))]
+    print(f"[politique-conteneurs] {depot} : sigstoreSigned, matchRepository, {cle} + {cle_secours}")
 
 # --- gardes : le build echoue plutot que de publier une politique muette ---
 if pol.get("default") != [{"type": "reject"}]:
