@@ -1,5 +1,5 @@
 Name:           bluefox-welcome
-Version:        0.2.0
+Version:        0.3.0
 Release:        1%{?dist}
 Summary:        Blue Fox OS first-boot welcome agent
 
@@ -52,6 +52,11 @@ mkdir -p %{buildroot}%{_localstatedir}/lib/bluefox-welcome
 %dir %{_localstatedir}/lib/bluefox-welcome
 
 %changelog
+* Wed Oct 28 2026 Olivier Morneau <olivier@bluefoxconsultant.com> - 0.3.0-1
+- Adresses des services lues dans la politique (#27109) : nextcloud,
+  vaultwarden, authentik et odoo remplacent celles de l'image (https seulement).
+- Identifiants Nextcloud deposes ignores s'ils visent un autre serveur.
+
 * Tue Apr 28 2026 Olivier Morneau <olivier@bluefoxconsultant.com> - 0.2.0-1
 - Wire P4.1 integrations: rclone mount, kcmshell6 KAccounts launcher,
   Bitwarden Flatpak prefs, Brave managed policy. Add tests + apply/ submodule.

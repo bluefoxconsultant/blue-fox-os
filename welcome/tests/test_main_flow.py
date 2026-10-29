@@ -167,3 +167,95 @@ def test_en_usager_l_agent_poursuit(monkeypatch, tmp_path):
          mock.patch.object(main, "run_wizard", return_value=0) as assistant:
         assert main.cli() == 0
     assistant.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Le Nextcloud de la politique, pas celui de l'image (#27109)
+# ---------------------------------------------------------------------------
+# Le %pre frappe le mot de passe d'application pour services.nextcloud.url de
+# la politique. L'agent doit monter CE serveur-la, et refuser les identifiants
+# s'il en monte un autre.
+
+IMAGE_BF = {
+    "slug": "bf",
+    "services": {"nextcloud": {"url": "https://nextcloud.bluefoxconsultant.com"},
+                 "vaultwarden": {"url": "https://vault.bluefoxconsultant.com"}},
+    "branding": {},
+}
+
+
+def _politique(nc_url):
+    return {"schema": "bf-policy/v2", "user": {"login": "ana@autre.org"},
+            "services": {"nextcloud": {"url": nc_url, "oidc_client_id": "nc"}}}
+
+
+def _depot(tmp_path, url):
+    import json
+    p = tmp_path / "nc-credentials.json"
+    p.write_text(json.dumps({"login": "Ana", "app_password": "mdp", "url": url}))
+    return p
+
+
+def _cli(monkeypatch, tmp_path, prov):
+    monkeypatch.setattr(main, "_euid", lambda: 1000)
+    monkeypatch.setattr(main, "DONE_FLAG", tmp_path / "done")
+    monkeypatch.setattr(sys, "argv", ["bluefox-welcome"])
+    with mock.patch.object(main, "load_tenant", return_value=IMAGE_BF), \
+         mock.patch.object(main, "load_provisioning", return_value=prov), \
+         mock.patch.object(main, "_apply_from_policy") as applique, \
+         mock.patch.object(main, "_run_provisioned_flow_sso",
+                           return_value=0) as sso:
+        rc = main.cli()
+    return rc, applique, sso
+
+
+def test_le_flux_passe_l_url_effective_aux_identifiants():
+    tenant = {"services": {"nextcloud": {"url": "https://cloud.autre.org"}}}
+    with mock.patch.object(main.seat_credentials, "lire", return_value=None) as lire, \
+         mock.patch.object(main, "_run_provisioned_flow_sso", return_value=0):
+        main._run_provisioned_flow(tenant, POLICY)
+    assert lire.call_args.kwargs["attendu"] == "https://cloud.autre.org"
+
+
+def test_autre_organisation_monte_son_nextcloud_avec_ses_identifiants(
+        monkeypatch, tmp_path):
+    monkeypatch.setattr(main.seat_credentials, "FICHIER",
+                        _depot(tmp_path, "https://cloud.autre.org"))
+    rc, applique, sso = _cli(monkeypatch, tmp_path,
+                             _politique("https://cloud.autre.org/"))
+    assert rc == 0
+    sso.assert_not_called()
+    tenant, _prov, creds = applique.call_args.args
+    assert creds == ("Ana", "mdp")
+    assert tenant["services"]["nextcloud"]["url"] == "https://cloud.autre.org"
+    # l'image n'a pas de valeur de remplacement pour le coffre : elle reste
+    assert tenant["services"]["vaultwarden"]["url"] == "https://vault.bluefoxconsultant.com"
+    assert not main.seat_credentials.FICHIER.exists()   # consomme
+
+
+def test_identifiants_pour_un_autre_serveur_retombent_sur_le_sso(
+        monkeypatch, tmp_path):
+    """Politique dont l'url n'est pas https : l'agent garde le Nextcloud de
+    l'image, et le mot de passe frappe pour l'autre serveur ne doit pas y
+    partir."""
+    monkeypatch.setattr(main.seat_credentials, "FICHIER",
+                        _depot(tmp_path, "http://cloud.autre.org"))
+    rc, applique, sso = _cli(monkeypatch, tmp_path,
+                             _politique("http://cloud.autre.org"))
+    assert rc == 0
+    applique.assert_not_called()
+    sso.assert_called_once()
+    tenant = sso.call_args.args[0]
+    assert tenant["services"]["nextcloud"]["url"] == "https://nextcloud.bluefoxconsultant.com"
+    assert main.seat_credentials.FICHIER.exists()   # pas consomme
+
+
+def test_refresh_brave_suit_le_nextcloud_de_la_politique(tmp_path):
+    with mock.patch.object(main, "load_tenant", return_value=IMAGE_BF), \
+         mock.patch.object(main, "load_provisioning",
+                           return_value=_politique("https://cloud.autre.org")), \
+         mock.patch.object(main, "apply_brave_policy",
+                           return_value=(True, "ok")) as brave:
+        main.refresh_browser_policy(home=tmp_path)
+    tenant = brave.call_args.args[0]
+    assert tenant["services"]["nextcloud"]["url"] == "https://cloud.autre.org"

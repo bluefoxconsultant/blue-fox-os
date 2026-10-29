@@ -151,6 +151,29 @@ def test_session_copy_follows_the_policy(tmp_path, machine):
     assert public["install"]["login"] == {"mode": "sssd"}
 
 
+
+def test_un_changement_de_services_reecrit_la_copie_de_session(tmp_path, machine):
+    """#27109 : l'adresse d'un service changee dans Odoo doit atteindre la
+    copie que lit l'agent, sans reinstallation."""
+    def sert(nc_url):
+        policy = json.loads(json.dumps(POLICY))
+        policy["services"] = {"nextcloud": {"url": nc_url, "oidc_client_id": "nc"},
+                              "vaultwarden": {"url": "https://coffre.autre.org"}}
+        return _opener(json.dumps(policy))
+
+    public_path = tmp_path / "policy-public.json"
+    sync_mod.sync(machine_path=str(machine), opener=sert("https://cloud.autre.org"),
+                  run=_Runs(), **_paths(tmp_path))
+    assert json.loads(public_path.read_text())["services"]["nextcloud"]["url"] \
+        == "https://cloud.autre.org"
+    sync_mod.sync(machine_path=str(machine), opener=sert("https://nuage.autre.org"),
+                  run=_Runs(), **_paths(tmp_path))
+    public = json.loads(public_path.read_text())
+    assert public["services"]["nextcloud"]["url"] == "https://nuage.autre.org"
+    assert public["services"]["vaultwarden"]["url"] == "https://coffre.autre.org"
+    assert oct(public_path.stat().st_mode)[-3:] == "644"
+
+
 def test_second_run_changes_nothing_and_wakes_nobody(tmp_path, machine):
     runs = _Runs()
     sync_mod.sync(machine_path=str(machine), opener=_opener(), run=_Runs(),
