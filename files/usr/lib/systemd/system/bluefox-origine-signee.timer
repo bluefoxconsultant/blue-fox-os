@@ -1,0 +1,14 @@
+[Unit]
+Description=Minuterie de la bascule d'origine signee (#27109)
+Documentation=https://github.com/bluefoxconsultant/blue-fox-os
+
+[Timer]
+# Une fois par jour tant que le marqueur manque : la politique arrive par une
+# mise a jour de l'image, pas a heure fixe.
+OnBootSec=30min
+OnCalendar=daily
+RandomizedDelaySec=2h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1263,6 +1263,13 @@ def render_partitionnement(plan, passphrase=None, chiffrer=True):
 
 IMAGE_INCLUDE = "/tmp/bfos-image.ks"
 POLICY_CONTAINERS = "/etc/containers/policy.json"
+# ⚠️ Sans registries.d, la politique ne trouve AUCUNE signature (#27109) :
+# cosign range la sienne sous le tag sha256-<digest>.sig, et containers-image
+# ne va l'y chercher que si `use-sigstore-attachments: true` couvre le depot.
+# Mesure au skopeo le 2026-10-28 : « A signature was required, but no
+# signature exists » sans ce fichier, alors que l'image est bien signee.
+REGISTRIES_D = "/etc/containers/registries.d"
+REGISTRIES_FICHIER = "bfos-image.yaml"
 CLE_ISO = "/run/install/repo/bfos-cosign.pub"
 CLE_POSEE = "/etc/pki/bfos-cosign.pub"
 
@@ -1321,13 +1328,45 @@ def render_containers_policy(url, chemin_cle=None):
                 prefixe: [{
                     "type": "sigstoreSigned",
                     "keyPath": chemin_cle,
-                    "signedIdentity": {"type": "matchRepoDigestOrExact"},
+                    # ⚠️ matchRepository, PAS matchRepoDigestOrExact (#27109) :
+                    # la signature cosign porte le depot SANS tag, et on tire
+                    # `:latest`. matchRepoDigestOrExact refusait donc l'image
+                    # signee (« Signature for identity ... is not accepted »).
+                    "signedIdentity": {"type": "matchRepository"},
                 }],
                 registre: [{"type": "reject"}],
             },
             "containers-storage": {"": [{"type": "insecureAcceptAnything"}]},
         },
     }, indent=2) + "\n"
+
+
+def render_registries_d(url):
+    """Le fichier registries.d qui dit OU chercher les signatures cosign."""
+    return ("docker:\n"
+            f"  {_prefixe_registre(url)}:\n"
+            "    use-sigstore-attachments: true\n")
+
+
+def _portee_deja_declaree(dossier, portee, sauf):
+    """Une portee declaree dans deux fichiers de registries.d fait refuser le
+    dossier entier par containers-image. On n'ecrit donc pas la notre si un
+    autre fichier la porte deja."""
+    try:
+        noms = os.listdir(dossier)
+    except OSError:
+        return False
+    motif = re.compile(rf"^\s+{re.escape(portee)}:\s*$", re.M)
+    for nom in noms:
+        if nom == sauf or not nom.endswith((".yaml", ".yml")):
+            continue
+        try:
+            with open(os.path.join(dossier, nom), encoding="utf-8") as fh:
+                if motif.search(fh.read()):
+                    return True
+        except OSError:
+            continue
+    return False
 
 
 def render_image_line(url, verifier):
@@ -1340,7 +1379,7 @@ def render_image_line(url, verifier):
 
 def armer_verification_image(url, exiger=False, out=None, chemin_iso=None,
                              policy_path=None, cle_path=None,
-                             include_path=None):
+                             include_path=None, registries_d=None):
     """Pose la politique et la ligne d'image. Rend True si la signature sera
     verifiee.
 
@@ -1354,12 +1393,20 @@ def armer_verification_image(url, exiger=False, out=None, chemin_iso=None,
     policy_path = policy_path or POLICY_CONTAINERS
     cle_path = cle_path or CLE_POSEE
     include_path = include_path or IMAGE_INCLUDE
+    registries_d = registries_d or REGISTRIES_D
     try:
         cle, provenance = lire_cle_cosign(chemin_iso, exiger=exiger)
         if exiger and provenance != "iso":
             raise ProvisionError("cle embarquee refusee pour une reference "
                                  "issue d'une decouverte")
         write_public(cle_path, cle)   # publique par nature
+        # registries.d AVANT la politique : une politique qui exige une
+        # signature sans savoir ou la trouver refuserait l'image.
+        os.makedirs(registries_d, exist_ok=True)
+        if not _portee_deja_declaree(registries_d, _prefixe_registre(url),
+                                     REGISTRIES_FICHIER):
+            write_public(os.path.join(registries_d, REGISTRIES_FICHIER),
+                         render_registries_d(url))
         write_public(policy_path, render_containers_policy(url, cle_path))
         write_public(include_path, render_image_line(url, True))
         out(f"[bfos] signature de l'image verifiee a la poussee "
@@ -1974,6 +2021,19 @@ def assurer_plan_de_partitionnement(out=None, path=None, plan_fn=None):
 
 def main(argv=None):
     out = _console_writer()
+    # Ligne d'image d'abord (#27109) : le %pre a deja ecrit le filet (forme non
+    # verifiee) ; on le remplace par la forme verifiee si la politique se pose.
+    # exiger=False : reference servie par l'organisation en HTTPS, pas tapee ;
+    # une panne ici retombe sur le comportement d'avant, en le disant.
+    image_ref = os.environ.get("BFOS_IMAGE_REF", "").strip()
+    if image_ref:
+        try:
+            armer_verification_image(image_ref, exiger=False, out=out)
+        except Exception as exc:  # noqa: BLE001 — never abort the install
+            out(f"[bfos] verification de l'image non armee ({exc}) ; "
+                "le filet du %pre reste en place.\n")
+    else:
+        out("[bfos] BFOS_IMAGE_REF absent : ligne d'image laissee au filet du %pre.\n")
     try:
         policy = run(out=out,
                      after_policy=lambda tok, pol: _apres_politique(

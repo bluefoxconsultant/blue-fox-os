@@ -72,9 +72,13 @@ def test_le_vrai_kickstart_perd_ses_blocs_pre_et_garde_tout_le_reste():
     # Plus aucun bloc pre : la seconde passe d'Anaconda ne peut rien rejouer.
     assert not re.search(r"^%pre(\s|$)", reste, re.M)
     # Tout le reste est intact : commandes, includes, blocs post.
-    for motif in (r"^ostreecontainer ", r"^%include /tmp/bfos-autopart\.ks$",
+    for motif in (r"^%include /tmp/bfos-image\.ks$", r"^%include /tmp/bfos-autopart\.ks$",
                   r"^%include /tmp/bfos-compte\.ks$", r"^rootpw --lock$"):
         assert re.search(motif, reste, re.M), motif
+    # La ligne d'image vit dans le %pre depuis #27109 (filet, document en
+    # ligne) : une ligne qui COMMENCE par `ostreecontainer`, que l'amorce des
+    # ISO deja gravees exige pour reconnaitre le kickstart.
+    assert re.search(r"^ostreecontainer --url=\S+ --transport=registry", blocs[0][1], re.M)
     assert (len(re.findall(r"^%post", reste, re.M))
             == len(re.findall(r"^%post", KS_BF, re.M)) >= 1)
     assert (len(re.findall(r"^%end", reste, re.M))

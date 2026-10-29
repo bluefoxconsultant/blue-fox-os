@@ -52,6 +52,8 @@
 #                            podman unshare : scan du rootfs monte)
 #   6. attestation        <- cosign attest
 #   7. verification       <- cosign verify + verify-attestation + provenance
+#  7b. porte canari       <- la politique de l'image accepte un canari signe et
+#                            refuse un canari non signe (#27109)
 
 set -euo pipefail
 
@@ -288,6 +290,17 @@ if [ "$DRY_RUN" = "1" ]; then
     exit 0
 fi
 
+# Digest de l'index publie AVANT cette poussee : c'est le retour arriere que
+# la porte canari (7b) indique si la politique de la nouvelle image est fausse.
+# Vide a la toute premiere publication d'un locataire.
+PRECEDENT_DIGEST=""
+RAW_PRECEDENT="$(mktemp "${TMPDIR:-/tmp}/.bf-precedent.XXXXXX")"
+if skopeo inspect --raw "docker://${IMAGE}" > "$RAW_PRECEDENT" 2>/dev/null; then
+    PRECEDENT_DIGEST="sha256:$(sha256sum "$RAW_PRECEDENT" | cut -d' ' -f1)"
+    log "    index publie avant la poussee : ${PRECEDENT_DIGEST}"
+fi
+rm -f "$RAW_PRECEDENT"
+
 log "4/7 build + push + signature cosign"
 bluebuild build --push "recipes/${SLUG}.yml"
 
@@ -475,6 +488,70 @@ verifiable vers son commit source (#23810)."
   publie  : ${REVISION_LABEL}
 Un litteral « \${BF_GIT_REVISION} » signale une recipe qui declare l'etiquette
 sans que la variable soit exportee au moment du build."
+
+# --- 7b. porte canari : la politique PUBLIEE juge-t-elle juste ? (#27109) --
+# 🔴 Un poste qui demarre cette image juge ses mises a jour suivantes avec SA
+# politique (/etc/containers/policy.json, ecrite par
+# files/scripts/politique-conteneurs.sh). Une cle fausse, un registries.d
+# absent, une identite en matchRepoDigestOrExact, et plus aucune mise a jour ne
+# passe sur le parc, correctif compris. Le garde du build verifie la FORME ;
+# cette porte verifie le VERDICT, avec le skopeo et la politique de l'image
+# elle-meme, sur deux images minuscules du depot factice :
+#   :canari-signe      signee par notre cle   -> doit PASSER
+#   :canari-non-signe  autre digest, non signe -> doit etre REFUSEE par la politique
+# Les deux tags se creent une fois (geste decrit dans la note #27109) ; un tag
+# absent fait echouer la porte, il ne la saute pas.
+CANARI_DEPOT="${CANARI_DEPOT:-${REGISTRY}/blue-fox-os-factice}"
+retour_arriere() {
+    if [ -n "$PRECEDENT_DIGEST" ]; then
+        echo "Retour arriere (remet l'index precedent, deja signe, sous le tag) :
+    skopeo copy --all --preserve-digests docker://${IMAGE_REPO}@${PRECEDENT_DIGEST} docker://${IMAGE}"
+    else
+        echo "Aucun index precedent connu : retirer le tag a la main."
+    fi
+}
+if [ "${PUBLISH_SKIP_CANARI:-0}" = "1" ]; then
+    log "⚠️  PUBLISH_SKIP_CANARI=1 — porte canari SAUTEE : la politique de ${IMAGE} n'est pas eprouvee."
+else
+    log "7b/7 porte canari : politique de ${IMAGE_REPO}@${IMAGE_INDEX_DIGEST} contre ${CANARI_DEPOT}"
+    canari() {
+        # dir: plutot qu'une destination morte : les canaris pesent quelques Kio.
+        # --remove-signatures : dir: n'a pas a recevoir les pieces jointes, la
+        # politique juge la SOURCE de toute facon, avant la premiere couche.
+        podman run --rm --pull=missing --entrypoint /usr/bin/skopeo \
+            "${IMAGE_REPO}@${IMAGE_INDEX_DIGEST}" \
+            copy --remove-signatures "docker://${CANARI_DEPOT}:$1" dir:/tmp/canari 2>&1
+    }
+    # ⚠️ En condition de `if` : un echec ATTENDU (le canari non signe) ne doit
+    # pas declencher le trap ERR pose apres la poussee.
+    if SORTIE_SIGNE="$(canari canari-signe)"; then RC_SIGNE=0; else RC_SIGNE=$?; fi
+    if SORTIE_NON_SIGNE="$(canari canari-non-signe)"; then RC_NON_SIGNE=0; else RC_NON_SIGNE=$?; fi
+    podman rmi "${IMAGE_REPO}@${IMAGE_INDEX_DIGEST}" >/dev/null 2>&1 || true
+    for S in "$SORTIE_SIGNE" "$SORTIE_NON_SIGNE"; do
+        if grep -qiE "executable file .*not found|no such file or directory: OCI" <<<"$S"; then
+            die "porte canari : skopeo introuvable dans ${IMAGE} : $(tail -n 1 <<<"$S")"
+        fi
+        if grep -qi "manifest unknown" <<<"$S"; then
+            die "porte canari : tag canari absent de ${CANARI_DEPOT} :
+$(tail -n 2 <<<"$S")
+Creer :canari-signe et :canari-non-signe (note #27109), ou assumer avec
+PUBLISH_SKIP_CANARI=1."
+        fi
+    done
+    [ "$RC_SIGNE" = "0" ] || die "porte canari : la politique de ${IMAGE} REFUSE l'image signee ${CANARI_DEPOT}:canari-signe.
+$(tail -n 3 <<<"$SORTIE_SIGNE")
+🔴 Les postes qui demarreront cette image ne pourront plus se mettre a jour.
+$(retour_arriere)"
+    if [ "$RC_NON_SIGNE" = "0" ]; then
+        die "porte canari : la politique de ${IMAGE} ACCEPTE l'image NON signee ${CANARI_DEPOT}:canari-non-signe : aucune verification reelle.
+$(retour_arriere)"
+    fi
+    grep -qE "Source image rejected|rejected by policy|signature" <<<"$SORTIE_NON_SIGNE" || die \
+        "porte canari : :canari-non-signe a echoue, mais pas sur la politique (reseau ?) :
+$(tail -n 3 <<<"$SORTIE_NON_SIGNE")
+Verdict inconnu : rejouer l'etape, ou assumer avec PUBLISH_SKIP_CANARI=1."
+    log "    canari-signe accepte, canari-non-signe refuse : $(grep -oE 'Source image rejected[^"]*' <<<"$SORTIE_NON_SIGNE" | head -n 1)"
+fi
 
 log "OK — ${IMAGE} publie, signe, atteste, revision ${BF_GIT_REVISION}."
 log "Controle : cosign tree ${IMAGE}  (doit lister Signatures ET Attestations)"
