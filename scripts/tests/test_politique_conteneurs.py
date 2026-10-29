@@ -665,11 +665,43 @@ def test_une_mise_a_jour_en_attente_du_meme_depot_n_empeche_pas_la_bascule(pol_r
 
 
 def test_apres_le_demarrage_du_choix_la_bascule_suit_sa_reference(pol_rendue, tmp_path):
-    epinglee = f"ostree-unverified-registry:{DEPOTS[1]}@sha256:" + "b" * 64
-    run = FauxRpmOstree(epinglee)
+    autre = f"ostree-unverified-registry:{DEPOTS[1]}:latest"
+    run = FauxRpmOstree(autre)
     assert os_.basculer(run=run, policy_path=pol_rendue, marqueur=str(tmp_path / "m")) == 0
-    assert run.appels[-1] == ["rpm-ostree", "rebase",
-                              f"ostree-image-signed:docker://{DEPOTS[1]}@sha256:" + "b" * 64]
+    assert run.appels[-1] == ["rpm-ostree", "rebase", f"ostree-image-signed:docker://{DEPOTS[1]}:latest"]
+
+
+@pytest.mark.parametrize("check", [1, 77])
+def test_origine_epinglee_par_digest_n_est_pas_touchee(pol_rendue, tmp_path, capsys, check):
+    """m8 : `upgrade --check` echoue chaque jour sur une origine epinglee ; ni
+    sonde ni rebase, code 0, et le journal le dit."""
+    epinglee = f"ostree-unverified-registry:{DEPOTS[1]}@sha256:" + "b" * 64
+    run = FauxRpmOstree(epinglee, check=check)
+    assert os_.basculer(run=run, policy_path=pol_rendue, marqueur=str(tmp_path / "m")) == 0
+    assert [c for c in run.appels if c[1] != "status"] == []
+    assert "epinglee par digest" in capsys.readouterr().out
+    assert not (tmp_path / "m").exists()
+
+
+def _secondes(valeur):
+    m = re.fullmatch(r"(?:(\d+)h)?\s*(?:(\d+)min)?\s*(?:(\d+)s?)?", valeur.strip())
+    assert m and any(m.groups()), valeur
+    h, mn, s = (int(x or 0) for x in m.groups())
+    return h * 3600 + mn * 60 + s
+
+
+def test_la_somme_des_delais_tient_sous_la_limite_de_l_unite(monkeypatch):
+    """m8 : trois commandes a 3600 s contre TimeoutStartSec=2h."""
+    service = (UNITES / "bluefox-origine-signee.service").read_text()
+    (limite,) = re.findall(r"^TimeoutStartSec=(.+)$", service, re.M)
+    assert set(os_.DELAIS) == {"status", "upgrade", "rebase"}
+    assert sum(os_.DELAIS.values()) < _secondes(limite)
+    vus = []
+    monkeypatch.setattr(os_.subprocess, "run",
+                        lambda cmd, **kw: vus.append((cmd[1], kw["timeout"])))
+    for sous in ("status", "upgrade", "rebase"):
+        os_._run(["rpm-ostree", sous])
+    assert vus == [(s, os_.DELAIS[s]) for s in ("status", "upgrade", "rebase")]
 
 
 @pytest.mark.parametrize("etape", ["status", "upgrade", "rebase"])

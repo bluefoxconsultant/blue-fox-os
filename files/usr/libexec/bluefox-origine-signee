@@ -24,7 +24,15 @@ CE QU'ELLE NE FAIT JAMAIS
   - insister : politique sans entree, registre injoignable, transaction
     rpm-ostree en cours, commande qui depasse son delai, tout cela se retente
     le lendemain. Seul l'echec du rebase lui-meme rend un code non nul
-    (visible dans `systemctl --failed`), et rien ne depend de cette unite.
+    (visible dans `systemctl --failed`), et rien ne depend de cette unite ;
+  - toucher une origine epinglee par digest (`...@sha256:`) : choix de
+    l'administrateur, et `rpm-ostree upgrade --check` y echoue chaque jour.
+    On le note, code 0 (relecture adverse 2, m8).
+
+DELAIS
+Chaque commande rpm-ostree a son delai (DELAIS) ; leur somme reste sous
+TimeoutStartSec de l'unite (2 h) : un delai depasse est passager, alors qu'un
+arret par systemd laisserait l'unite en echec.
 
 MARQUEUR
 /var/lib/bluefox/origine-signee, ecrit une fois le poste DEMARRE sur l'origine
@@ -118,8 +126,19 @@ def defaut_insecure(policy_path=None):
         return True
 
 
+# Secondes par sous-commande. Somme (3600) sous TimeoutStartSec=2h de
+# bluefox-origine-signee.service : trois commandes a 3600 s chacune pouvaient
+# la depasser, et systemd tuait alors l'unite (relecture adverse 2, m8).
+DELAIS = {"status": 600, "upgrade": 1500, "rebase": 1500}
+
+
 def _run(cmd):
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=DELAIS[cmd[1]])
+
+
+def epinglee(ref):
+    """Vrai pour une origine epinglee par digest (`depot@sha256:...`)."""
+    return "@" in reference_nue(ref)
 
 
 def origines(run=_run):
@@ -191,6 +210,13 @@ def _basculer(run, policy_path, marqueur):
         log(f"origine verifiee par remote ostree ({origine}) ; on n'y touche pas")
         return 0
     ref = reference_nue(origine)
+    if epinglee(origine):
+        # Epinglee par digest : aucune mise a jour a suivre, `upgrade --check`
+        # y echoue chaque jour, et ce choix appartient a l'administrateur. La
+        # politique juge deja chaque tirage ; rien a basculer.
+        log(f"origine epinglee par digest ({origine}) ; on n'y touche pas "
+            "(le marqueur n'est pas pose : la bascule reprendra si l'epingle est levee)")
+        return 0
     if not politique_couvre(ref, policy_path):
         log(f"la politique n'exige pas encore de signature pour {ref} ; "
             "on reessaie au prochain passage (image pas encore a jour ?)")
