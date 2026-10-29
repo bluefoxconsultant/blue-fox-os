@@ -1,0 +1,14 @@
+[Unit]
+Description=Blue Fox OS - rechargement a chaud du verrouillage d'ecran
+Documentation=https://github.com/bluefoxconsultant/blue-fox-os
+
+[Service]
+Type=oneshot
+# La methode que le module des Parametres appelle lui-meme apres un
+# enregistrement (dbus/org.kde.screensaver.xml de kscreenlocker) : relit
+# kscreenlockerrc et rearme la minuterie d'inactivite.
+# busctl plutot que qdbus6 : Fedora 43 ne livre que /usr/bin/qdbus-qt6, et
+# busctl vient avec systemd. Le `-` : hors session Plasma (session de l'ecran
+# de connexion, bus sans org.kde.screensaver), l'appel echoue sans que l'unite
+# passe en echec.
+ExecStart=-/usr/bin/busctl --user call org.kde.screensaver /ScreenSaver org.kde.screensaver configure
