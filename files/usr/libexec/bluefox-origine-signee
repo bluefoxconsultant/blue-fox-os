@@ -17,10 +17,14 @@ CE QU'ELLE NE FAIT JAMAIS
   - redemarrer : le rebase est mis en attente, il prend au prochain demarrage
     comme n'importe quelle mise a jour ;
   - changer d'image : meme depot, meme tag, seul le transport change ;
+  - defaire un choix en attente : si le deploiement du PROCHAIN demarrage
+    suit une autre image que le deploiement demarre (rebase manuel bf ->
+    bf-surface, version epinglee par digest), on n'y touche pas ; la bascule
+    reprend une fois ce deploiement demarre, sur SA reference ;
   - insister : politique sans entree, registre injoignable, transaction
-    rpm-ostree en cours, tout cela se retente le lendemain. Seul l'echec du
-    rebase lui-meme rend un code non nul (visible dans `systemctl --failed`),
-    et rien ne depend de cette unite.
+    rpm-ostree en cours, commande qui depasse son delai, tout cela se retente
+    le lendemain. Seul l'echec du rebase lui-meme rend un code non nul
+    (visible dans `systemctl --failed`), et rien ne depend de cette unite.
 
 MARQUEUR
 /var/lib/bluefox/origine-signee, ecrit une fois le poste DEMARRE sur l'origine
@@ -44,6 +48,10 @@ POLICY = "/etc/containers/policy.json"
 MARQUEUR = "/var/lib/bluefox/origine-signee"
 SIGNE = "ostree-image-signed:docker://"
 EXIGENCES_SIGNEES = ("sigstoreSigned", "signedBy")
+# rpm-ostree refuse une seconde transaction pendant qu'une autre tourne
+# (« Transaction in progress: ... ») : la mise a jour automatique de
+# rpm-ostreed-automatic, un rebase lance a la main. Passager, pas un echec.
+TRANSACTION_EN_COURS = re.compile(r"transaction in progress", re.I)
 
 
 def log(msg):
@@ -143,8 +151,17 @@ def ecrire_marqueur(chemin):
 
 def basculer(run=_run, policy_path=None, marqueur=None):
     """Rend le code de sortie de l'unite."""
-    policy_path = policy_path or POLICY
-    marqueur = marqueur or MARQUEUR
+    try:
+        return _basculer(run, policy_path or POLICY, marqueur or MARQUEUR)
+    except subprocess.TimeoutExpired as exc:
+        # Registre lent, daemon occupe : rien n'a change cote poste (une
+        # transaction lancee continue dans rpm-ostreed et se verra au passage
+        # suivant). Pas de trace, pas d'echec.
+        log(f"{' '.join(exc.cmd)} a depasse {exc.timeout:.0f} s ; on reessaie au prochain passage")
+        return 0
+
+
+def _basculer(run, policy_path, marqueur):
     if os.path.exists(marqueur):
         log("marqueur present ; rien a faire")
         return 0
@@ -155,6 +172,14 @@ def basculer(run=_run, policy_path=None, marqueur=None):
     if est_signee(origine):
         log(f"origine deja signee ({origine})")
         ecrire_marqueur(marqueur)
+        return 0
+    if reference_nue(prochaine) != reference_nue(origine):
+        # Le prochain demarrage suit une AUTRE image (rebase manuel vers un
+        # autre depot, version epinglee par digest, deploiement non conteneur) :
+        # rebaser depuis l'origine demarree ecraserait ce choix. On attend
+        # qu'il soit demarre ; la bascule reprendra alors sur sa reference.
+        log(f"le prochain demarrage suit une autre image ({prochaine}) que le "
+            f"deploiement demarre ({origine}) ; on n'y touche pas")
         return 0
     if est_signee(prochaine):
         # Le marqueur n'est ecrit qu'une fois DEMARRE sur l'origine signee : un
@@ -184,6 +209,9 @@ def basculer(run=_run, policy_path=None, marqueur=None):
     cible = SIGNE + ref
     log(f"rebase {origine} -> {cible} (sans redemarrage)")
     r = run(["rpm-ostree", "rebase", cible])
+    if r.returncode != 0 and TRANSACTION_EN_COURS.search(f"{r.stderr}\n{r.stdout}"):
+        log("une transaction rpm-ostree est deja en cours ; on reessaie au prochain passage")
+        return 0
     if r.returncode != 0:
         log(f"ECHEC du rebase (code {r.returncode}) ; origine inchangee : "
             f"{(r.stderr or r.stdout).strip()[-400:]}")

@@ -323,23 +323,32 @@ def test_politique_illisible_ne_couvre_rien(tmp_path):
     assert os_.defaut_insecure(str(p))      # dans le doute : on ne bascule pas
 
 
+SANS_CONTENEUR = object()   # deploiement en attente sans reference conteneur
+
+
 class FauxRpmOstree:
-    def __init__(self, booted, prochain=None, check=77, rebase=0):
+    def __init__(self, booted, prochain=None, check=77, rebase=0, rebase_err="rebase",
+                 delai=None):
         dep = [{"booted": True, "container-image-reference": booted}]
-        if prochain:
+        if prochain is SANS_CONTENEUR:
+            dep.insert(0, {"booted": False, "origin": "fedora:fedora/43/x86_64/kinoite"})
+        elif prochain:
             dep.insert(0, {"booted": False, "container-image-reference": prochain})
         self.status = json.dumps({"deployments": dep})
-        self.check, self.rebase, self.appels = check, rebase, []
+        self.check, self.rebase, self.rebase_err, self.appels = check, rebase, rebase_err, []
+        self.delai = delai      # sous-commande qui depasse son delai
 
     def __call__(self, cmd):
         self.appels.append(cmd)
         assert cmd[0] == "rpm-ostree", f"commande inattendue : {cmd}"
+        if self.delai and cmd[1] == self.delai:
+            raise subprocess.TimeoutExpired(cmd, 3600)
         if cmd[1] == "status":
             return subprocess.CompletedProcess(cmd, 0, self.status, "")
         if cmd[1:] == ["upgrade", "--check"]:
             return subprocess.CompletedProcess(cmd, self.check, "", "check")
         if cmd[1] == "rebase":
-            return subprocess.CompletedProcess(cmd, self.rebase, "", "rebase")
+            return subprocess.CompletedProcess(cmd, self.rebase, "", self.rebase_err)
         raise AssertionError(f"commande inattendue : {cmd}")
 
 
@@ -428,6 +437,62 @@ def test_origine_remote_ostree_intouchee(pol_rendue, tmp_path):
     run = FauxRpmOstree(f"ostree-remote-image:fedora:docker://{DEPOTS[0]}:latest")
     assert os_.basculer(run=run, policy_path=pol_rendue, marqueur=str(tmp_path / "m")) == 0
     assert [c for c in run.appels if c[1] != "status"] == []
+
+
+@pytest.mark.parametrize("prochain", [
+    # rebase manuel vers un autre depot, encore en attente
+    f"ostree-unverified-registry:{DEPOTS[1]}:latest",
+    f"ostree-image-signed:docker://{DEPOTS[1]}:latest",
+    # version epinglee par digest
+    f"ostree-unverified-registry:{DEPOTS[0]}@sha256:" + "a" * 64,
+    # autre tag du meme depot
+    f"ostree-unverified-registry:{DEPOTS[0]}:20261025",
+    # deploiement en attente qui n'est plus une image conteneur
+    SANS_CONTENEUR,
+])
+def test_un_choix_en_attente_vers_une_autre_image_n_est_pas_ecrase(pol_rendue, tmp_path, prochain,
+                                                                     capsys):
+    """M1 de la relecture : la cible venait de l'origine DEMARREE. Un rebase
+    manuel bf -> bf-surface, ou une version epinglee, en attente du prochain
+    demarrage, aurait ete ecrase par un rebase vers bf:latest signe."""
+    run = FauxRpmOstree(NON_VERIFIEE, prochain=prochain)
+    marqueur = tmp_path / "m"
+    assert os_.basculer(run=run, policy_path=pol_rendue, marqueur=str(marqueur)) == 0
+    assert [c for c in run.appels if c[1] != "status"] == []
+    assert not marqueur.exists()
+    assert "autre image" in capsys.readouterr().out
+
+
+def test_une_mise_a_jour_en_attente_du_meme_depot_n_empeche_pas_la_bascule(pol_rendue, tmp_path):
+    """Meme reference, seul le deploiement change (mise a jour en attente) :
+    la bascule a lieu, vers cette meme reference."""
+    run = FauxRpmOstree(NON_VERIFIEE, prochain=f"ostree-unverified-image:docker://{DEPOTS[0]}:latest")
+    assert os_.basculer(run=run, policy_path=pol_rendue, marqueur=str(tmp_path / "m")) == 0
+    assert run.appels[-1] == ["rpm-ostree", "rebase", SIGNEE]
+
+
+def test_apres_le_demarrage_du_choix_la_bascule_suit_sa_reference(pol_rendue, tmp_path):
+    epinglee = f"ostree-unverified-registry:{DEPOTS[1]}@sha256:" + "b" * 64
+    run = FauxRpmOstree(epinglee)
+    assert os_.basculer(run=run, policy_path=pol_rendue, marqueur=str(tmp_path / "m")) == 0
+    assert run.appels[-1] == ["rpm-ostree", "rebase",
+                              f"ostree-image-signed:docker://{DEPOTS[1]}@sha256:" + "b" * 64]
+
+
+@pytest.mark.parametrize("etape", ["status", "upgrade", "rebase"])
+def test_delai_depasse_est_passager(pol_rendue, tmp_path, etape, capsys):
+    run = FauxRpmOstree(NON_VERIFIEE, delai=etape)
+    assert os_.basculer(run=run, policy_path=pol_rendue, marqueur=str(tmp_path / "m")) == 0
+    assert "depasse" in capsys.readouterr().out
+    assert not (tmp_path / "m").exists()
+
+
+def test_transaction_deja_en_cours_est_passagere(pol_rendue, tmp_path):
+    run = FauxRpmOstree(NON_VERIFIEE, rebase=1, rebase_err=(
+        "error: Transaction in progress: upgrade\n"
+        " You can cancel the current transaction with `rpm-ostree cancel`"))
+    assert os_.basculer(run=run, policy_path=pol_rendue, marqueur=str(tmp_path / "m")) == 0
+    assert run.appels[-1][1] == "rebase"
 
 
 def test_cli_politique_couvre(pol_rendue, monkeypatch):
