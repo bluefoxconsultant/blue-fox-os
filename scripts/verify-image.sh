@@ -24,6 +24,7 @@
 #   ./scripts/verify-image.sh                 # bf
 #   ./scripts/verify-image.sh bf-surface
 #   SLUG=factice ./scripts/verify-image.sh
+#   COSIGN_PUB=<cle.pub> ./scripts/verify-image.sh   # autre cle que cosign.pub
 #   ./scripts/verify-image.sh --all           # les 3 tenants
 #
 # Sortie non nulle des qu'un controle echoue. Les controles s'enchainent tous :
@@ -34,7 +35,10 @@ set -uo pipefail
 REGISTRY="${REGISTRY:-ghcr.io/bluefoxconsultant}"
 TAG="${TAG:-latest}"
 WORKDIR="$(cd "$(dirname "$0")/.." && pwd)"
-PUBKEY="${WORKDIR}/cosign.pub"
+# COSIGN_PUB : la cle publique qui verifie (cosign.pub du depot par defaut).
+# Image de transition signee par la cle de secours (README, « Cle de secours ») :
+#   COSIGN_PUB=files/usr/share/bluefox/keys/cosign-images-secours.pub ./scripts/verify-image.sh
+PUBKEY="${COSIGN_PUB:-${WORKDIR}/cosign.pub}"
 
 log() { echo "[verify] $*"; }
 ok()   { echo "[verify]   ✅ $*"; }
@@ -43,7 +47,7 @@ bad()  { echo "[verify]   ❌ $*" >&2; }
 for tool in cosign skopeo python3; do
     command -v "$tool" >/dev/null 2>&1 || { bad "$tool introuvable"; exit 1; }
 done
-[ -f "$PUBKEY" ] || { bad "cosign.pub introuvable a la racine du depot"; exit 1; }
+[ -f "$PUBKEY" ] || { bad "cle publique introuvable : ${PUBKEY} (COSIGN_PUB, cosign.pub par defaut)"; exit 1; }
 
 # `cosign verify` ecrit son rapport sur stdout et ses avertissements sur stderr :
 # on ne garde ni l'un ni l'autre, seul le code de sortie nous interesse.

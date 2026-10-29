@@ -20,10 +20,17 @@ SORTIE (une ligne sur stdout)
   0  ACCEPTE   la politique laisse passer REF
   1  REFUSE    la politique a JUGE et refuse : l'erreur porte un message de
                verdict de containers-image (VERDICTS) et aucun signe de panne
-               passagere (PASSAGERS)
+               passagere (PASSAGERS) ; OU une cle de la politique ne se lit pas
+               (CLE_ILLISIBLE : « parsing public key », « PEM decoding failed »,
+               cle absente du disque), refus deterministe que rien ne rattrape
   2  INCONNU   tout le reste (registre injoignable, tag absent, delai depasse,
-               proxy absent ou muet, cle illisible). ⚠️ Un « reading
-               signatures: ... i/o timeout » n'est PAS un refus.
+               proxy absent ou muet). ⚠️ Un « reading signatures: ... i/o
+               timeout » n'est PAS un refus. Le mot devient « INCONNU
+               (passager) » quand l'erreur porte un signe de panne passagere
+               reconnue (PASSAGERS) : publish-image.sh ne remet l'index
+               precedent que sur un INCONNU SANS motif passager.
+  Tout plantage du client lui-meme rend 2 (jamais 1) : seule une ligne
+  « : REFUSE : » vaut refus, et publish-image.sh l'exige aussi.
 
 ⚠️ « Source image rejected » est le prefixe de `skopeo copy` (copy/single.go
 enveloppe TOUTE erreur de la politique, panne de lecture des signatures
@@ -54,6 +61,14 @@ VERDICTS = (
     "signature for identity",
     "invalid signature",
 )
+# Une cle de la politique illisible : containers-image echoue a CHAQUE tirage
+# de nos depots, quel que soit le registre (signature/policy_eval_sigstore.go,
+# cryptoutils.UnmarshalPEMToPublicKey, os.ReadFile). Deterministe : un refus,
+# meme si l'erreur cite au passage une adresse ou un delai. Relecture adverse 2,
+# M1 : ces messages donnaient INCONNU, donc ni refus ni retour arriere.
+CLE_ILLISIBLE = re.compile(
+    r"parsing public key|pem decoding failed|"
+    r"open \S*(?:\.pub|key)\S*: no such file")
 # Une panne de transport pendant le jugement (lecture des signatures, cle de
 # Rekor...) remonte par le meme chemin : elle annule le verdict.
 # (Mots entiers : un digest en hexadecimal contient volontiers « 502 ».)
@@ -63,14 +78,21 @@ PASSAGERS = re.compile(
     r"too ?many ?requests|service unavailable|bad gateway|\b50[234]\b")
 
 
+def inconnu(texte):
+    """Le mot d'un verdict inconnu : passager ou non."""
+    return "INCONNU (passager)" if PASSAGERS.search((texte or "").lower()) else "INCONNU"
+
+
 def verdict(succes, erreur):
     """(code, mot) pour une reponse d'OpenImage."""
     if succes:
         return 0, "ACCEPTE"
     texte = (erreur or "").lower()
+    if CLE_ILLISIBLE.search(texte):
+        return 1, "REFUSE"
     if any(v in texte for v in VERDICTS) and not PASSAGERS.search(texte):
         return 1, "REFUSE"
-    return 2, "INCONNU"
+    return 2, inconnu(texte)
 
 
 def _appel(sock, methode, args):
@@ -102,7 +124,8 @@ def juger(ref, skopeo="skopeo", delai=120.0):
     try:
         init = _appel(a, "Initialize", [])
         if not init.get("success"):
-            return 2, f"OpenImage {ref} : INCONNU : Initialize : {init.get('error')}"
+            erreur = init.get("error")
+            return 2, f"OpenImage {ref} : {inconnu(str(erreur))} : Initialize : {erreur}"
         r = _appel(a, "OpenImage", [ref])
         code, mot = verdict(r.get("success"), r.get("error"))
         if code == 0:
@@ -113,7 +136,8 @@ def juger(ref, skopeo="skopeo", delai=120.0):
             return 0, f"OpenImage {ref} : {mot} (protocole {init.get('value')})"
         return code, f"OpenImage {ref} : {mot} : {str(r.get('error'))[:600]}"
     except (OSError, ValueError) as exc:     # socket.timeout est un OSError
-        return 2, f"OpenImage {ref} : INCONNU : {type(exc).__name__} : {exc}"
+        texte = f"{type(exc).__name__} : {exc}"
+        return 2, f"OpenImage {ref} : {inconnu(texte)} : {texte}"
     finally:
         a.close()
         try:
@@ -128,8 +152,11 @@ def main(argv=None):
     if len(argv) != 1 or not argv[0].startswith("docker://"):
         print("usage : proxy-openimage.py docker://REF", file=sys.stderr)
         return 2
-    code, ligne = juger(argv[0], skopeo=os.environ.get("BF_SKOPEO", "skopeo"),
-                        delai=float(os.environ.get("BF_PROXY_DELAI", "120")))
+    try:
+        code, ligne = juger(argv[0], skopeo=os.environ.get("BF_SKOPEO", "skopeo"),
+                            delai=float(os.environ.get("BF_PROXY_DELAI", "120")))
+    except Exception as exc:  # noqa: BLE001 : un plantage n'est jamais un refus
+        code, ligne = 2, f"OpenImage {argv[0]} : INCONNU : plantage du client : {exc!r}"
     print(ligne, flush=True)
     return code
 

@@ -41,7 +41,16 @@
 # 🔴 UNE POLITIQUE FAUSSE GELE LE PARC. Un poste qui demarre cette image juge
 # ses mises a jour suivantes avec ELLE : une cle fausse, un registries.d absent,
 # et plus aucune mise a jour ne passe, correctif compris. D'ou l'echec au build
-# ici, et la porte canari de publish-image.sh (etape 7b) apres la poussee.
+# ici, et la porte canari de publish-image.sh (etape 4b, juste apres la poussee).
+#
+# Chaque cle est DECODEE au build, pas seulement reconnue a son en-tete
+# (relecture adverse 2, M1) : un corps PEM abime passait l'ancien `grep BEGIN`,
+# et containers-image le refusait ensuite sur les postes (« parsing public key »,
+# « PEM decoding failed ») : plus aucune mise a jour. Deux lectures
+# independantes : python3 (bibliotheque standard, toujours dans l'image : base64
+# strict, SubjectPublicKeyInfo ECDSA P-256 exact, point sur la courbe) et
+# `openssl pkey -pubin` quand openssl est present. cosign generate-key-pair rend
+# du P-256 ; une cle d'un autre type demanderait d'elargir ce controle.
 #
 # Les cles et le registries.d arrivent par le module `files` (avant celui-ci) :
 #   files/usr/share/bluefox/keys/cosign-images.pub          (= cosign.pub du depot)
@@ -53,6 +62,8 @@
 set -euo pipefail
 
 RACINE="${BFOS_RACINE:-}"
+# Essais hors image : BFOS_OPENSSL designe un autre openssl (ou un absent).
+OPENSSL="${BFOS_OPENSSL:-openssl}"
 CLE_SYSTEME="/usr/share/bluefox/keys/cosign-images.pub"
 CLE_SECOURS="/usr/share/bluefox/keys/cosign-images-secours.pub"
 DEPOTS="ghcr.io/bluefoxconsultant/blue-fox-os-bf ghcr.io/bluefoxconsultant/blue-fox-os-bf-surface ghcr.io/bluefoxconsultant/blue-fox-os-factice"
@@ -64,9 +75,46 @@ POLICY="${RACINE}/etc/containers/policy.json"
 REGISTRIES_D="${RACINE}/etc/containers/registries.d"
 
 [ -f "$POLICY" ] || die "${POLICY} absent : le module signing doit tourner AVANT ce script."
+verifier_cle() {  # chemin : la cle doit se lire comme containers-image la lira
+    local f="$1"
+    python3 - "$f" <<'PY' || die "${f} : cle publique illisible (corps PEM abime ?) : les postes refuseraient toute mise a jour."
+import base64
+import binascii
+import sys
+
+chemin = sys.argv[1]
+lignes = open(chemin, encoding="ascii", errors="strict").read().splitlines()
+try:
+    debut = lignes.index("-----BEGIN PUBLIC KEY-----")
+    fin = lignes.index("-----END PUBLIC KEY-----", debut + 1)
+except ValueError:
+    sys.exit(f"{chemin} : pas de bloc PEM BEGIN/END PUBLIC KEY")
+try:
+    der = base64.b64decode("".join(l.strip() for l in lignes[debut + 1:fin]), validate=True)
+except (binascii.Error, ValueError) as exc:
+    sys.exit(f"{chemin} : base64 invalide ({exc})")
+# SubjectPublicKeyInfo { ecPublicKey, prime256v1 } BIT STRING 00 04 X Y
+ENTETE = bytes.fromhex("3059301306072a8648ce3d020106082a8648ce3d030107034200" "04")
+if len(der) != len(ENTETE) + 64 or not der.startswith(ENTETE):
+    sys.exit(f"{chemin} : pas une cle ECDSA P-256 non compressee ({len(der)} octets)")
+x = int.from_bytes(der[-64:-32], "big")
+y = int.from_bytes(der[-32:], "big")
+P = 2**256 - 2**224 + 2**192 + 2**96 - 1
+B = 0x5AC635D8AA3A93E7B3EBBD55769886BC651D06B0CC53B0F63BCE3C3E27D2604B
+if not (x < P and y < P and (y * y - (x * x * x - 3 * x + B)) % P == 0):
+    sys.exit(f"{chemin} : le point n'est pas sur la courbe P-256")
+PY
+    if command -v "$OPENSSL" >/dev/null 2>&1; then
+        "$OPENSSL" pkey -pubin -noout -in "$f" >/dev/null 2>&1 \
+            || die "${f} : openssl ne la lit pas comme cle publique."
+    else
+        log "openssl absent : ${f} lue par python3 seulement"
+    fi
+}
 for CLE in "$CLE_SYSTEME" "$CLE_SECOURS"; do
     [ -s "${RACINE}${CLE}" ] || die "cle publique absente : ${RACINE}${CLE} (module files)."
     grep -q "BEGIN PUBLIC KEY" "${RACINE}${CLE}" || die "${CLE} n'est pas une cle publique PEM."
+    verifier_cle "${RACINE}${CLE}"
 done
 # Deux fois la meme cle : le secours n'en serait pas un.
 cmp -s "${RACINE}${CLE_SYSTEME}" "${RACINE}${CLE_SECOURS}" \
