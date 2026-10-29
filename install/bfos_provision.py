@@ -777,6 +777,17 @@ def _valid_policy(d) -> bool:
             and isinstance(d.get("user"), dict))
 
 
+# Affiche sur la console de l'installateur quand Odoo refuse la politique
+# faute de second facteur (#27109). ASCII, comme le reste de la console.
+MESSAGE_MFA_REQUISE = (
+    "\n" + "=" * 70 + "\n"
+    "  Double authentification requise : activez-la dans Authentik puis\n"
+    "  recommencez l'installation.\n"
+    "  Cette installation continue SANS la politique de l'organisation\n"
+    "  (poste autonome, non gere).\n"
+    + "=" * 70 + "\n")
+
+
 def fetch_policy(policy_url, token, get=_get, sleep=time.sleep, out=None):
     """Tire la politique fusionnee pour l'operateur qui vient d'autoriser.
 
@@ -793,6 +804,16 @@ def fetch_policy(policy_url, token, get=_get, sleep=time.sleep, out=None):
         except urllib.error.HTTPError as exc:
             # Une reponse du serveur reste une reponse : meme forme d'erreur
             # qu'avant les reprises, pour que le journal se lise pareil.
+            # ⚠️ Un 403 « second factor required » (bf_policy 18.0.2.11.5,
+            # #27109) n'est PAS une panne : l'operateur s'est connecte sans
+            # double authentification. Sans ce message, l'installation
+            # retombait sur la politique de repli sans rien dire, et la
+            # machine sortait non geree. On le dit en clair ; le repli reste.
+            if exc.code == 403 and _error_code(exc) == "second factor required":
+                if out is not None:
+                    out(MESSAGE_MFA_REQUISE)
+                raise ProvisionError(
+                    "policy fetch HTTP 403 (second factor required)") from exc
             raise ProvisionError(f"policy fetch HTTP {exc.code}") from exc
         except Exception as exc:  # noqa: BLE001
             dernier = exc
@@ -1272,12 +1293,26 @@ REGISTRIES_D = "/etc/containers/registries.d"
 REGISTRIES_FICHIER = "bfos-image.yaml"
 CLE_ISO = "/run/install/repo/bfos-cosign.pub"
 CLE_POSEE = "/etc/pki/bfos-cosign.pub"
+CLE_SECOURS_POSEE = "/etc/pki/bfos-cosign-secours.pub"
 
 # Copie de secours. Publique par nature — ce n'est pas un secret, c'est un
 # point d'ancrage de confiance.
 CLE_EMBARQUEE = """-----BEGIN PUBLIC KEY-----
 MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaHUAdYyRGWeSzvkyiLn1Wp/uDhD9
 7M3rVr32kljeuXsqRXc93Fv3Zi2afSQzNO3FSaeBwILDjndJf0EbrXAEow==
+-----END PUBLIC KEY-----
+"""
+
+# Cle de SECOURS (#27109, decision d'Olivier du 2026-10-29), meme contenu que
+# files/usr/share/bluefox/keys/cosign-images-secours.pub de l'image (sha256
+# 448dc741d397...). Sa cle privee vit hors ligne : si la cle de publication,
+# sans phrase de passe sur la machine de build, fuit ou se perd, l'image
+# re-signee par celle-ci s'installe encore. La politique l'accepte A COTE de
+# la cle de publication (`keyPaths`, une signature valide par l'une suffit).
+# Une cle d'ISO remplace la seule cle de publication, jamais celle-ci.
+CLE_SECOURS_EMBARQUEE = """-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAErrhNVj/uFtPG07bfLKjHBhPoV8nI
+KA7qlWTQ1U5uzMnmumg3WY3cS3eB2H276g8cu2tIpkMgmeHWgOh0Nc/26Q==
 -----END PUBLIC KEY-----
 """
 
@@ -1311,14 +1346,15 @@ def _prefixe_registre(url):
     return "/".join(morceaux[:2])
 
 
-def render_containers_policy(url, chemin_cle=None):
+def render_containers_policy(url, chemin_cle=None, chemin_secours=None):
     """Politique containers-image : tout refuser, sauf notre espace de noms
-    signe par notre cle.
+    signe par notre cle de publication ou par la cle de secours.
 
     Le defaut est `reject`, pas `insecureAcceptAnything` : une image hors de
     l'espace de noms attendu doit etre REFUSEE, pas acceptee faute de regle.
     """
     chemin_cle = chemin_cle or CLE_POSEE
+    chemin_secours = chemin_secours or CLE_SECOURS_POSEE
     prefixe = _prefixe_registre(url)
     registre = prefixe.split("/")[0]
     return json.dumps({
@@ -1327,7 +1363,10 @@ def render_containers_policy(url, chemin_cle=None):
             "docker": {
                 prefixe: [{
                     "type": "sigstoreSigned",
-                    "keyPath": chemin_cle,
+                    # keyPaths (containers-policy.json(5)) : une signature
+                    # valide par l'UNE des deux cles suffit ; exclusif de
+                    # keyPath. Meme regle que la politique de l'image.
+                    "keyPaths": [chemin_cle, chemin_secours],
                     # ⚠️ matchRepository, PAS matchRepoDigestOrExact (#27109) :
                     # la signature cosign porte le depot SANS tag, et on tire
                     # `:latest`. matchRepoDigestOrExact refusait donc l'image
@@ -1379,7 +1418,8 @@ def render_image_line(url, verifier):
 
 def armer_verification_image(url, exiger=False, out=None, chemin_iso=None,
                              policy_path=None, cle_path=None,
-                             include_path=None, registries_d=None):
+                             include_path=None, registries_d=None,
+                             cle_secours_path=None):
     """Pose la politique et la ligne d'image. Rend True si la signature sera
     verifiee.
 
@@ -1392,6 +1432,7 @@ def armer_verification_image(url, exiger=False, out=None, chemin_iso=None,
     out = out or (lambda msg: None)
     policy_path = policy_path or POLICY_CONTAINERS
     cle_path = cle_path or CLE_POSEE
+    cle_secours_path = cle_secours_path or CLE_SECOURS_POSEE
     include_path = include_path or IMAGE_INCLUDE
     registries_d = registries_d or REGISTRIES_D
     try:
@@ -1400,6 +1441,7 @@ def armer_verification_image(url, exiger=False, out=None, chemin_iso=None,
             raise ProvisionError("cle embarquee refusee pour une reference "
                                  "issue d'une decouverte")
         write_public(cle_path, cle)   # publique par nature
+        write_public(cle_secours_path, CLE_SECOURS_EMBARQUEE)
         # registries.d AVANT la politique : une politique qui exige une
         # signature sans savoir ou la trouver refuserait l'image.
         os.makedirs(registries_d, exist_ok=True)
@@ -1407,10 +1449,11 @@ def armer_verification_image(url, exiger=False, out=None, chemin_iso=None,
                                      REGISTRIES_FICHIER):
             write_public(os.path.join(registries_d, REGISTRIES_FICHIER),
                          render_registries_d(url))
-        write_public(policy_path, render_containers_policy(url, cle_path))
+        write_public(policy_path, render_containers_policy(
+            url, cle_path, cle_secours_path))
         write_public(include_path, render_image_line(url, True))
         out(f"[bfos] signature de l'image verifiee a la poussee "
-            f"(cle {provenance}).\n")
+            f"(cle {provenance}, ou cle de secours).\n")
         return True
     except Exception as exc:  # noqa: BLE001
         if exiger:
@@ -1425,6 +1468,104 @@ def armer_verification_image(url, exiger=False, out=None, chemin_iso=None,
         out(f"[bfos] signature de l'image NON verifiee ({exc}) ; "
             "comportement inchange par rapport a avant.\n")
         return False
+
+
+# --- Verification prealable de la signature (#27109, relecture adverse 1, M1)
+# Arbitre par Olivier le 2026-10-29 : une image `:latest` poussee mais pas
+# encore signee fait REFUSER l'installation par Anaconda (la politique armee
+# ci-dessus juge au telechargement), et c'est accepte. Ce qui ne l'est pas,
+# c'est que l'operateur voie tomber Anaconda sans savoir pourquoi. On pose donc
+# la question une fois avant, au meme juge : le skopeo de l'installateur
+# (celui qu'ostree-ext lance pour tirer l'image), avec NOTRE politique et
+# NOTRE registries.d.
+#
+# COMMENT, SANS TELECHARGER L'IMAGE. `skopeo copy` verifie la signature AVANT
+# de toucher aux couches, puis demande a la destination si elle a deja la
+# premiere couche. On lui donne une destination qui n'existe pas
+# (127.0.0.1:1, port ferme ; Go ne passe jamais 127.0.0.1 par un mandataire) :
+#   - « Source image rejected » : signature absente ou invalide ;
+#   - echec sur 127.0.0.1:1 : la signature a ete acceptee, rien n'a ete tire.
+# Mesure le 2026-10-29 (skopeo 1.22, ghcr.io) : factice:latest et
+# canari-signe acceptes en 2 s ; canari-non-signe (« no signature exists »),
+# cle jetable (« invalid signature »), registries.d absent : refuses.
+#
+# ⚠️ CE N'EST QU'UN AVERTISSEMENT. Le verdict qui compte reste celui du
+# telechargement (pas d'intervalle entre controle et usage, voir plus haut).
+# Un refus ici ne retombe JAMAIS sur la ligne non verifiee : ce serait
+# installer precisement l'image qu'on ne sait pas authentifier.
+SONDE_DESTINATION = "docker://127.0.0.1:1/bfos-verification-prealable:essai"
+SONDE_DELAI = 90
+PAUSE_IMAGE_NON_SIGNEE = 20
+MESSAGE_IMAGE_NON_SIGNEE = (
+    "\n" + "=" * 70 + "\n"
+    "  L'image du systeme n'est pas encore signee : reessayez dans quelques\n"
+    "  minutes ou contactez Blue Fox.\n"
+    "  (L'installateur refusera de la telecharger : une image dont la\n"
+    "  signature ne se verifie pas n'est jamais installee.)\n"
+    + "=" * 70 + "\n")
+
+
+def sonder_signature_image(url, run=None, which=None, policy_path=None,
+                           registries_d=None, delai=None):
+    """Demande au skopeo de l'installateur si la signature de `url` passe la
+    politique posee. Rend (etat, detail), etat parmi "signee", "refusee",
+    "inconnue". Ne leve jamais."""
+    import shutil
+    import subprocess
+    policy_path = policy_path or POLICY_CONTAINERS
+    registries_d = registries_d or REGISTRIES_D
+    skopeo = (which or shutil.which)("skopeo")
+    if not skopeo:
+        return "inconnue", "skopeo absent de l'installateur"
+    ref = "docker://" + re.sub(r"^[a-z0-9+.-]+://", "", url)
+    cmd = [skopeo, "--policy", policy_path, "--registries.d", registries_d,
+           "copy", "--quiet", "--remove-signatures", ref, SONDE_DESTINATION]
+    run = run or (lambda c, t: subprocess.run(
+        c, capture_output=True, text=True, timeout=t))
+    try:
+        res = run(cmd, delai or SONDE_DELAI)
+    except Exception as exc:  # noqa: BLE001 : delai, binaire illisible...
+        return "inconnue", f"skopeo n'a pas repondu ({exc})"
+    sortie = ((res.stderr or "") + "\n" + (res.stdout or "")).strip()
+    derniere = sortie.splitlines()[-1][:300] if sortie else ""
+    if "Source image rejected" in sortie:
+        return "refusee", derniere
+    if res.returncode == 0 or "127.0.0.1:1" in sortie:
+        return "signee", "signature acceptee par la politique de l'installateur"
+    return "inconnue", derniere or f"skopeo a rendu le code {res.returncode}"
+
+
+def annoncer_signature(url, out, sonde=None):
+    """Sonde et dit le resultat a l'operateur. Rend l'etat."""
+    etat, detail = (sonde or sonder_signature_image)(url)
+    if etat == "signee":
+        out("[bfos] signature de l'image confirmee avant l'installation "
+            "(l'installateur la verifie de nouveau au telechargement).\n")
+    elif etat == "refusee":
+        out(MESSAGE_IMAGE_NON_SIGNEE)
+        out(f"[bfos] verification prealable : {detail}\n")
+    else:
+        out(f"[bfos] verification prealable de la signature impossible "
+            f"({detail}) ; l'installateur la fera au telechargement. S'il "
+            "refuse l'image : elle n'est pas encore signee, reessayez dans "
+            "quelques minutes ou contactez Blue Fox.\n")
+    return etat
+
+
+def rappeler_signature(url, out, sonde=None, sleep=None):
+    """En fin de %pre, si la signature manquait au debut : on resonde (le flux
+    d'appareil a pris des minutes, la signature a pu arriver entre-temps) et,
+    si elle manque encore, on le redit et on laisse le temps de lire avant
+    qu'Anaconda ne reprenne l'ecran. Rend l'etat final."""
+    etat, detail = (sonde or sonder_signature_image)(url)
+    if etat == "refusee":
+        out(MESSAGE_IMAGE_NON_SIGNEE)
+        out(f"[bfos] verification prealable (rappel) : {detail}\n")
+        (sleep or time.sleep)(PAUSE_IMAGE_NON_SIGNEE)
+    elif etat == "signee":
+        out("[bfos] signature de l'image maintenant publiee : l'installation "
+            "peut continuer.\n")
+    return etat
 
 
 def plan_par_defaut(run=None):
@@ -2026,12 +2167,22 @@ def main(argv=None):
     # exiger=False : reference servie par l'organisation en HTTPS, pas tapee ;
     # une panne ici retombe sur le comportement d'avant, en le disant.
     image_ref = os.environ.get("BFOS_IMAGE_REF", "").strip()
+    signature = None
     if image_ref:
+        armee = False
         try:
-            armer_verification_image(image_ref, exiger=False, out=out)
+            armee = armer_verification_image(image_ref, exiger=False, out=out)
         except Exception as exc:  # noqa: BLE001 — never abort the install
             out(f"[bfos] verification de l'image non armee ({exc}) ; "
                 "le filet du %pre reste en place.\n")
+        if armee:
+            # Avertissement seulement (M1) : la ligne verifiee reste en place
+            # quoi que dise la sonde, jamais de retour au filet.
+            try:
+                signature = annoncer_signature(image_ref, out)
+            except Exception as exc:  # noqa: BLE001 — never abort the install
+                out(f"[bfos] verification prealable de la signature "
+                    f"impossible ({exc}).\n")
     else:
         out("[bfos] BFOS_IMAGE_REF absent : ligne d'image laissee au filet du %pre.\n")
     try:
@@ -2048,6 +2199,11 @@ def main(argv=None):
     write_private(STAGED_JSON, json.dumps(policy))
     # Toujours, reussite comme repli : voir assurer_plan_de_partitionnement.
     assurer_plan_de_partitionnement(out=out)
+    if signature == "refusee":
+        try:
+            rappeler_signature(image_ref, out)
+        except Exception:  # noqa: BLE001 — never abort the install
+            pass
     return 0
 
 

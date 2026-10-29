@@ -23,6 +23,8 @@ PLAN_VIERGE = {"mode": "disque_entier", "disque": "/dev/sda"}
 PLAN_PAR_DEFAUT_REEL = bp.plan_par_defaut
 # Idem pour le chemin du fichier inclus, que _image_hors_etc redirige.
 IMAGE_INCLUDE_REEL = bp.IMAGE_INCLUDE
+# La sonde de signature, que _image_hors_etc remplace.
+SONDER_SIGNATURE_IMAGE_REEL = bp.sonder_signature_image
 
 
 @pytest.fixture(autouse=True)
@@ -45,6 +47,9 @@ def _image_hors_etc(tmp_path, monkeypatch):
     monkeypatch.setattr(bp, "IMAGE_INCLUDE", str(racine / "bfos-image.ks"))
     monkeypatch.setattr(bp, "POLICY_CONTAINERS", str(racine / "policy.json"))
     monkeypatch.setattr(bp, "CLE_POSEE", str(racine / "bfos-cosign.pub"))
+    monkeypatch.setattr(bp, "CLE_SECOURS_POSEE", str(racine / "bfos-cosign-secours.pub"))
+    # La sonde de signature (M1) lancerait le VRAI skopeo de la machine.
+    monkeypatch.setattr(bp, "sonder_signature_image", lambda url: ("signee", ""))
     monkeypatch.setattr(bp, "CLE_ISO", str(racine / "absente.pub"))
     monkeypatch.setattr(bp, "REGISTRIES_D", str(racine / "registries.d"))
     racine.mkdir()
@@ -1526,7 +1531,8 @@ class TestPolitiqueConteneurs:
         pol = json.loads(bp.render_containers_policy(IMG, "/etc/pki/k.pub"))
         regle = pol["transports"]["docker"]["ghcr.io/bluefoxconsultant"][0]
         assert regle["type"] == "sigstoreSigned"
-        assert regle["keyPath"] == "/etc/pki/k.pub"
+        assert regle["keyPaths"] == ["/etc/pki/k.pub", bp.CLE_SECOURS_POSEE]
+        assert "keyPath" not in regle
 
     def test_le_reste_du_registre_est_refuse(self):
         pol = json.loads(bp.render_containers_policy(IMG, "/etc/pki/k.pub"))
@@ -1612,6 +1618,7 @@ class TestArmerVerification:
         return {"policy_path": str(tmp_path / "policy.json"),
                 "cle_path": str(tmp_path / "k.pub"),
                 "include_path": str(tmp_path / "image.ks"),
+                "cle_secours_path": str(tmp_path / "secours.pub"),
                 # Absent expres : l'installateur n'a pas forcement le dossier.
                 "registries_d": str(tmp_path / "containers" / "registries.d")}
 
@@ -2154,3 +2161,122 @@ class TestMainArmeLaVerification:
         assert open(bp.IMAGE_INCLUDE).read() == bp.render_image_line(IMG, False)
         assert os.path.exists(tmp_path / "p.json")      # la suite a tourne
         assert any("non armee" in m for m in dit)
+
+
+# ===========================================================================
+# Relecture adverse 1 de #27109 : cle de secours, refus MFA, sonde de signature
+# ===========================================================================
+
+class TestCleDeSecours:
+    """Decision d'Olivier (2026-10-29) : la politique de l'installateur
+    accepte la cle de publication OU la cle de secours (keyPaths), comme
+    celle des postes (files/scripts/politique-conteneurs.sh)."""
+
+    def test_constante_identique_a_la_cle_de_l_image(self):
+        import hashlib
+        import pathlib
+        racine = pathlib.Path(__file__).resolve().parents[2]
+        fichier = racine / "files/usr/share/bluefox/keys/cosign-images-secours.pub"
+        attendu = "448dc741d3979d96cc62e468c8d8a2b473f5f1302f8272f8fb9d7bed52b21709"
+        assert hashlib.sha256(bp.CLE_SECOURS_EMBARQUEE.encode()).hexdigest() == attendu
+        if fichier.exists():
+            assert fichier.read_text() == bp.CLE_SECOURS_EMBARQUEE
+        assert bp.CLE_SECOURS_EMBARQUEE != bp.CLE_EMBARQUEE
+        assert "PRIVATE" not in bp.CLE_SECOURS_EMBARQUEE
+
+    def _armer(self, tmp_path, iso=None):
+        c = {"policy_path": str(tmp_path / "policy.json"),
+             "cle_path": str(tmp_path / "k.pub"),
+             "cle_secours_path": str(tmp_path / "secours.pub"),
+             "include_path": str(tmp_path / "image.ks"),
+             "registries_d": str(tmp_path / "registries.d")}
+        chemin_iso = tmp_path / "iso.pub"
+        if iso:
+            chemin_iso.write_text(iso)
+        assert bp.armer_verification_image(IMG, chemin_iso=str(chemin_iso), **c) is True
+        regle = json.loads(open(c["policy_path"]).read())[
+            "transports"]["docker"]["ghcr.io/bluefoxconsultant"][0]
+        return regle, c
+
+    def test_deux_cles_posees_et_dans_keypaths(self, tmp_path):
+        regle, c = self._armer(tmp_path)
+        assert regle["keyPaths"] == [c["cle_path"], c["cle_secours_path"]]
+        assert open(c["cle_path"]).read() == bp.CLE_EMBARQUEE
+        assert open(c["cle_secours_path"]).read() == bp.CLE_SECOURS_EMBARQUEE
+        assert oct(os.stat(c["cle_secours_path"]).st_mode & 0o777) == "0o644"
+
+    def test_la_cle_d_iso_ne_remplace_que_la_publication(self, tmp_path):
+        regle, c = self._armer(
+            tmp_path, iso="-----BEGIN PUBLIC KEY-----\nISO\n-----END PUBLIC KEY-----")
+        assert "ISO" in open(c["cle_path"]).read()
+        assert open(c["cle_secours_path"]).read() == bp.CLE_SECOURS_EMBARQUEE
+        assert len(regle["keyPaths"]) == 2
+
+
+class TestRefusMfaEnClair:
+    def test_second_facteur_dit_en_clair_et_repli_garde(self):
+        def get(url, token):
+            raise _http_error(403, '{"error": "second factor required"}')
+        dit = []
+        with pytest.raises(bp.ProvisionError, match="second factor required"):
+            bp.fetch_policy(POLICY_URL, "TOK", get=get, out=dit.append)
+        assert any("Double authentification requise : activez-la dans Authentik puis"
+                   in m for m in dit)
+
+    def test_autres_403_inchanges(self):
+        for corps in ('{"error": "not authorized"}', "pas du json"):
+            def get(url, token, corps=corps):
+                raise _http_error(403, corps)
+            dit = []
+            with pytest.raises(bp.ProvisionError, match=r"^policy fetch HTTP 403$"):
+                bp.fetch_policy(POLICY_URL, "TOK", get=get, out=dit.append)
+            assert dit == []
+
+
+class _Res:
+    def __init__(self, rc, stderr=""):
+        self.returncode, self.stderr, self.stdout = rc, stderr, ""
+
+
+class TestSondeSignature:
+    """M1 : avertissement seulement, au meme juge que le telechargement."""
+
+    def _sonde(self, res):
+        vus = []
+        def run(cmd, delai):
+            vus.append(cmd)
+            return res
+        etat = SONDER_SIGNATURE_IMAGE_REEL(IMG, run=run, which=lambda n: "/usr/bin/skopeo",
+                                              policy_path="/p.json", registries_d="/r.d")
+        return etat[0], vus
+
+    def test_verdicts(self):
+        assert self._sonde(_Res(1, 'msg="Source image rejected: A signature was '
+                                   'required, but no signature exists"'))[0] == "refusee"
+        etat, vus = self._sonde(_Res(1, 'msg="trying to reuse blob at destination: '
+                                        'pinging container registry 127.0.0.1:1"'))
+        assert etat == "signee"
+        assert vus[0][:5] == ["/usr/bin/skopeo", "--policy", "/p.json", "--registries.d", "/r.d"]
+        assert vus[0][-1] == bp.SONDE_DESTINATION == \
+            "docker://127.0.0.1:1/bfos-verification-prealable:essai"
+        assert self._sonde(_Res(2, "manifest unknown"))[0] == "inconnue"
+        assert SONDER_SIGNATURE_IMAGE_REEL(IMG, which=lambda n: None)[0] == "inconnue"
+
+    def test_main_refusee_garde_la_ligne_verifiee(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(bp, "sonder_signature_image",
+                            lambda url: ("refusee", "no signature exists"))
+        pauses = []
+        monkeypatch.setattr(bp.time, "sleep", pauses.append)
+        monkeypatch.setattr(bp, "STAGED_JSON", str(tmp_path / "p.json"))
+        monkeypatch.setattr(bp, "AUTOPART_INCLUDE", str(tmp_path / "autopart.ks"))
+        dit = []
+        monkeypatch.setattr(bp, "_console_writer", lambda: dit.append)
+        for var in ("BFOS_OIDC_DEVICE_URL", "BFOS_OIDC_TOKEN_URL",
+                    "BFOS_OIDC_CLIENT_ID", "BFOS_POLICY_URL"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("BFOS_IMAGE_REF", IMG)
+        assert bp.main([]) == 0
+        assert open(bp.IMAGE_INCLUDE).read() == bp.render_image_line(IMG, True)
+        texte = "".join(dit)
+        assert texte.count("pas encore signee") == 2       # annonce + rappel
+        assert pauses == [bp.PAUSE_IMAGE_NON_SIGNEE]
