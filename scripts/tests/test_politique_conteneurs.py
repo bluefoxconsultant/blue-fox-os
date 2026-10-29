@@ -224,6 +224,91 @@ def test_portee_en_double_echoue_le_build(racine):
     assert "plusieurs" in r.stderr
 
 
+def test_doublon_de_portee_sans_pieces_jointes_echoue_aussi(racine):
+    """Mesure skopeo 1.22.3 (2026-10-29) : une portee declaree deux fois casse
+    la lecture du dossier meme si le second fichier ne parle pas de sigstore
+    (« namespace ... defined both in ... »). Le doublon se cherche donc parmi
+    TOUTES les portees docker."""
+    (racine / "etc" / "containers" / "registries.d" / "z-autre.yaml").write_text(
+        "docker:\n  ghcr.io/bluefoxconsultant:\n    lookaside-staging: file:///var/tmp/x\n")
+    r = jouer(racine)
+    assert r.returncode != 0
+    assert "plusieurs" in r.stderr and "z-autre.yaml" in r.stderr
+
+
+def test_default_docker_en_double_echoue(racine):
+    d = racine / "etc" / "containers" / "registries.d"
+    for nom in ("default.yaml", "z-autre.yaml"):
+        (d / nom).write_text("default-docker:\n  lookaside-staging: file:///var/lib/containers/sigstore\n")
+    r = jouer(racine)
+    assert r.returncode != 0
+    assert "default-docker" in r.stderr
+
+
+def test_les_fichiers_de_fedora_ne_genent_pas(racine):
+    """La forme livree par containers-common (Fedora 43)."""
+    d = racine / "etc" / "containers" / "registries.d"
+    (d / "default.yaml").write_text(
+        "# This is a default registries.d configuration file.\n"
+        "default-docker:\n#  lookaside: file:///var/lib/containers/sigstore\n"
+        "  lookaside-staging: file:///var/lib/containers/sigstore\n")
+    (d / "registry.access.redhat.com.yaml").write_text(
+        "docker:\n     registry.access.redhat.com:\n"
+        "         lookaside: https://access.redhat.com/webassets/docker/content/sigstore\n")
+    assert jouer(racine).returncode == 0, jouer(racine).stderr
+
+
+def test_un_false_plus_precis_annule_notre_true(racine):
+    """Mesure skopeo 1.22.3 : `use-sigstore-attachments: false` sur le depot bf,
+    dans un autre fichier, l'emporte sur notre `true` d'espace de noms
+    (« no signature exists » pour bf, factice accepte)."""
+    (racine / "etc" / "containers" / "registries.d" / "z-autre.yaml").write_text(
+        f"docker:\n  {DEPOTS[0]}:\n    use-sigstore-attachments: false\n")
+    r = jouer(racine)
+    assert r.returncode != 0
+    assert DEPOTS[0] in r.stderr and "z-autre.yaml" in r.stderr
+
+
+def test_une_portee_plus_precise_sans_la_cle_ne_decide_pas(racine):
+    """Mesure skopeo 1.22.3 : une portee plus precise qui ne regle pas
+    use-sigstore-attachments laisse decider l'espace de noms (bf accepte)."""
+    (racine / "etc" / "containers" / "registries.d" / "z-autre.yaml").write_text(
+        f"docker:\n  {DEPOTS[0]}:\n    lookaside-staging: file:///var/tmp/x\n")
+    assert jouer(racine).returncode == 0
+
+
+def _script_mute(tmp_path, avant, apres):
+    texte = SCRIPT.read_text()
+    assert avant in texte, avant
+    copie = tmp_path / "politique-mutee.sh"
+    copie.write_text(texte.replace(avant, apres))
+    return copie
+
+
+@pytest.mark.parametrize("avant,apres", [
+    # La regle en memoire est fausse : l'ancienne garde la comparait a elle-meme.
+    ('regle = {"type": "sigstoreSigned", "keyPaths": [cle, cle_secours],',
+     'regle = {"type": "sigstoreSigned", "keyPath": cle,'),
+    ('regle = {"type": "sigstoreSigned", "keyPaths": [cle, cle_secours],',
+     'regle = {"type": "sigstoreSigned", "keyPaths": [cle],'),
+    # Ce qui part sur le disque n'est pas ce qui est en memoire.
+    ("json.dump(pol, fh, indent=2)",
+     'json.dump({"default": pol["default"], "transports": {"docker": {}}}, fh, indent=2)'),
+    ("json.dump(pol, fh, indent=2)",
+     'json.dump({**pol, "default": [{"type": "insecureAcceptAnything"}]}, fh, indent=2)'),
+])
+def test_la_garde_relit_ce_qui_est_ecrit(racine, tmp_path, avant, apres):
+    copie = _script_mute(tmp_path, avant, apres)
+    original = (racine / "etc" / "containers" / "policy.json").read_text()
+    r = subprocess.run(["bash", str(copie)], env={**os.environ, "BFOS_RACINE": str(racine)},
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode != 0
+    assert "politique relue" in r.stderr
+    # Rien n'a remplace la politique d'origine, et aucun .tmp ne traine.
+    assert (racine / "etc" / "containers" / "policy.json").read_text() == original
+    assert not (racine / "etc" / "containers" / "policy.json.tmp").exists()
+
+
 @pytest.mark.parametrize("nom", [CLE.name, CLE_SECOURS.name])
 def test_sans_cle_le_build_echoue(racine, nom):
     (racine / "usr" / "share" / "bluefox" / "keys" / nom).unlink()

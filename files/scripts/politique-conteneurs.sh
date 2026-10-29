@@ -118,16 +118,14 @@ for depot in depots:
 if pol.get("default") != [{"type": "reject"}]:
     die(f"default = {pol.get('default')!r}, attendu [{{'type': 'reject'}}] : "
         "ostree-image-signed refuserait toute mise a jour.")
-for depot in depots:
-    if docker.get(depot) != [regle]:
-        die(f"entree manquante ou alteree pour {depot}")
 
 
-def portees_sigstore(texte):
-    """Portees `docker:` d'un fichier registries.d qui demandent les pieces
-    jointes sigstore. Analyse volontairement etroite (pas de PyYAML garanti
-    dans l'image) : deux niveaux d'indentation, la forme que nous livrons."""
-    trouvees, portee, dans_docker, niveau = set(), None, False, None
+def portees_docker(texte):
+    """({portee: valeur de use-sigstore-attachments (True, False ou None)},
+    default-docker present ?) pour un fichier registries.d. Analyse
+    volontairement etroite (pas de PyYAML garanti dans l'image) : deux niveaux
+    d'indentation, la forme que livrent Fedora et ce depot."""
+    portees, portee, dans_docker, niveau, defaut = {}, None, False, None, False
     for brute in texte.splitlines():
         ligne = brute.split("#", 1)[0].rstrip()
         contenu = ligne.strip()
@@ -136,6 +134,7 @@ def portees_sigstore(texte):
         retrait = len(ligne) - len(ligne.lstrip())
         if retrait == 0:
             dans_docker, portee, niveau = contenu == "docker:", None, None
+            defaut = defaut or contenu.startswith("default-docker:")
             continue
         if not dans_docker:
             continue
@@ -144,34 +143,74 @@ def portees_sigstore(texte):
         if retrait == niveau:
             portee = (contenu[:-1].strip().strip("'\"")
                       if contenu.endswith(":") else None)
-        elif portee and re.fullmatch(r"use-sigstore-attachments:\s*true", contenu):
-            trouvees.add(portee)
-    return trouvees
+            if portee:
+                portees.setdefault(portee, None)
+        elif portee:
+            m = re.fullmatch(r"use-sigstore-attachments:\s*(\S+)", contenu)
+            if m:
+                portees[portee] = m.group(1).lower() == "true"
+    return portees, defaut
 
 
-couvertes = {}
+# containers-image (docker/registries_d.go) refuse de lire TOUT le dossier si
+# une portee docker, quelle qu'elle soit, ou default-docker figure dans deux
+# fichiers : plus aucune signature ne serait trouvee.
+declarees, defauts = {}, []
 if os.path.isdir(registries_d):
     for nom in sorted(os.listdir(registries_d)):
         if nom.endswith((".yaml", ".yml")):
             with open(os.path.join(registries_d, nom), encoding="utf-8") as fh:
-                for p in portees_sigstore(fh.read()):
-                    couvertes.setdefault(p, []).append(nom)
-for p, noms in couvertes.items():
-    if len(noms) > 1:
-        die(f"portee {p} declaree dans plusieurs fichiers registries.d ({noms}) : "
-            "containers-image refuserait de lire le dossier.")
+                portees, defaut = portees_docker(fh.read())
+            for p, valeur in portees.items():
+                declarees.setdefault(p, []).append((nom, valeur))
+            if defaut:
+                defauts.append(nom)
+for p, decl in declarees.items():
+    if len(decl) > 1:
+        die(f"portee {p} declaree dans plusieurs fichiers registries.d "
+            f"({[n for n, _ in decl]}) : containers-image refuserait de lire le dossier.")
+if len(defauts) > 1:
+    die(f"default-docker declare dans plusieurs fichiers registries.d ({defauts}) : "
+        "containers-image refuserait de lire le dossier.")
 for depot in depots:
-    # La portee la plus precise gagne : le depot, puis ses espaces de noms.
+    # La portee la plus precise QUI REGLE use-sigstore-attachments decide : le
+    # depot, puis ses espaces de noms. Un `false` plus precis que notre `true`
+    # l'annule.
     morceaux = depot.split("/")
     candidates = ["/".join(morceaux[:i]) for i in range(len(morceaux), 0, -1)]
-    if not any(c in couvertes for c in candidates):
-        die(f"aucun registries.d ne demande use-sigstore-attachments pour {depot} : "
-            "skopeo ne trouverait aucune signature et refuserait tout.")
+    decide = next(((c, declarees[c][0]) for c in candidates
+                   if c in declarees and declarees[c][0][1] is not None), None)
+    if decide is None or decide[1][1] is not True:
+        ou = f"{decide[0]} dans {decide[1][0]}" if decide else "aucune portee"
+        die(f"aucun registries.d ne demande use-sigstore-attachments pour {depot} "
+            f"(decide : {ou}) : skopeo ne trouverait aucune signature et refuserait tout.")
 
 tmp = policy_path + ".tmp"
 with open(tmp, "w", encoding="utf-8") as fh:
     json.dump(pol, fh, indent=2)
     fh.write("\n")
+
+# --- relecture : ce qui est SUR LE DISQUE, contre une attente ecrite a part ---
+# (Ne pas comparer a `regle` : une regle fausse se comparerait a elle-meme.)
+ATTENDUE = [{"type": "sigstoreSigned",
+             "keyPaths": ["/usr/share/bluefox/keys/cosign-images.pub",
+                          "/usr/share/bluefox/keys/cosign-images-secours.pub"],
+             "signedIdentity": {"type": "matchRepository"}}]
+with open(tmp, encoding="utf-8") as fh:
+    relue = json.load(fh)
+relu_docker = (relue.get("transports") or {}).get("docker") or {}
+if relue.get("default") != [{"type": "reject"}]:
+    os.unlink(tmp)
+    die(f"politique relue : default = {relue.get('default')!r}")
+for depot in depots:
+    if relu_docker.get(depot) != ATTENDUE:
+        os.unlink(tmp)
+        die(f"politique relue : entree manquante ou alteree pour {depot} : "
+            f"{relu_docker.get(depot)!r}")
+restes = [k for k in relu_docker if k == "localhost" or k.startswith(("localhost/", "localhost:"))]
+if restes:
+    os.unlink(tmp)
+    die(f"politique relue : entrees localhost restantes {restes}")
 os.chmod(tmp, 0o644)
 os.replace(tmp, policy_path)
 print(f"[politique-conteneurs] OK : {len(depots)} depots verifies, default reject.")
