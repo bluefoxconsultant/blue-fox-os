@@ -178,6 +178,13 @@ modules:
         # l'unite le documentait elle-meme sans en tirer la consequence.
       masked:
         - tailscaled.service
+    # Rechargement a chaud du verrouillage d'ecran impose par la politique
+    # (#27109) : bluefox-policy-sync reecrit /etc/xdg/kscreenlockerrc en root,
+    # la session le voit changer et demande a l'ecran de verrouillage de le
+    # relire. `systemctl --global enable` : actif pour toute session.
+    user:
+      enabled:
+        - bluefox-lock-reload.path
 
   - type: signing
 

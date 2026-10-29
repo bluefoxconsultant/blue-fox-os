@@ -115,6 +115,14 @@ Cycle de vie d'une machine :
   `GET /api/v1/policy/machine` avec son propre secret et réécrit
   `provisioning.json` + les deux listes Flatpak. Une politique modifiée dans
   Odoo atteint donc les postes déjà en service.
+- **Verrouillage d'écran** (#27109) : `policies.auto_lock_minutes` (1 à 1440)
+  devient un groupe `[Daemon][$i]` de `/etc/xdg/kscreenlockerrc`, régénéré
+  depuis la base de l'image (`/usr/etc`, qui porte le fond) ; grisé dans les
+  Paramètres, rétabli à la synchro suivante s'il est altéré. 0 rend la main à
+  la personne ; clé absente ou invalide, rien ne change. L'unité usager
+  `bluefox-lock-reload.path` le fait relire à chaud par la session. Imposé,
+  pas inviolable : un sudoer peut le réécrire jusqu'à la synchro suivante, et
+  une application peut inhiber le verrouillage.
 - **Révocation** depuis Policy > Machines : coupée à la synchro suivante, et
   aucune ré-inscription possible sous la même identité. L'autorisation est
   rejouée à chaque synchro, donc sortir quelqu'un d'un groupe coupe ses postes.
