@@ -111,6 +111,28 @@ class TestServeurAttendu:
         assert sc.lire(self._depot(tmp_path, url=None),
                        attendu="https://cloud.autre.org") is None
 
+    def test_le_depot_refuse_est_efface(self, tmp_path):
+        """Decision du 2026-10-29 : un depot frappe pour un autre serveur ne
+        servira jamais ; le laisser, c'est laisser dormir un mot de passe
+        d'application valide chez l'usager."""
+        p = self._depot(tmp_path)
+        assert sc.lire(p, attendu="https://nextcloud.bluefoxconsultant.com") is None
+        assert not p.exists()
+
+    def test_le_depot_accepte_n_est_pas_efface_par_la_lecture(self, tmp_path):
+        """L'effacement apres emploi reste a l'appelant (main), une fois le
+        montage applique."""
+        p = self._depot(tmp_path)
+        assert sc.lire(p, attendu="https://cloud.autre.org") == ("Ana", self.MDP)
+        assert p.exists()
+
+    @pytest.mark.parametrize("contenu", [{"login": "Ana"}, {"app_password": "x"}])
+    def test_un_depot_incomplet_n_est_pas_efface(self, tmp_path, contenu):
+        """Seul le refus de serveur efface : un depot incomplet se diagnostique."""
+        p = _ecrire(tmp_path, {**contenu, "url": "https://cloud.autre.org"})
+        assert sc.lire(p, attendu="https://autre.example") is None
+        assert p.exists()
+
     def test_sans_attendu_le_contrat_d_avant_reste(self, tmp_path):
         assert sc.lire(self._depot(tmp_path, url=None)) == ("Ana", self.MDP)
 

@@ -52,6 +52,9 @@ def lire(path: Path | None = None, attendu: str | None = None):
     sur le Nextcloud de la POLITIQUE et l'inscrit dans `url`. Si l'agent monte
     un autre serveur (celui de l'image), il y enverrait ce mot de passe : on
     rend None et le parcours SSO prend le relais, vers le serveur monte.
+    Le depot refuse est EFFACE (decision du 2026-10-29) : il ne servira
+    jamais, et un mot de passe d'application valide n'a pas a dormir chez
+    l'usager.
     """
     path = path or FICHIER
     if not path.exists():
@@ -79,8 +82,9 @@ def lire(path: Path | None = None, attendu: str | None = None):
         return None
     if attendu is not None and not _meme_nextcloud(data.get("url"), attendu):
         LOG.error("%s a ete prepare pour %r, l'agent monte %r : les identifiants "
-                  "ne seront PAS envoyes a un autre serveur ; repli sur le SSO",
-                  path, data.get("url"), attendu)
+                  "ne seront PAS envoyes a un autre serveur ; depot efface, repli "
+                  "sur le SSO", path, data.get("url"), attendu)
+        effacer(path)
         return None
     return login, mot_de_passe
 

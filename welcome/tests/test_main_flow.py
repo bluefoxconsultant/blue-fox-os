@@ -247,7 +247,8 @@ def test_identifiants_pour_un_autre_serveur_retombent_sur_le_sso(
     sso.assert_called_once()
     tenant = sso.call_args.args[0]
     assert tenant["services"]["nextcloud"]["url"] == "https://nextcloud.bluefoxconsultant.com"
-    assert main.seat_credentials.FICHIER.exists()   # pas consomme
+    # Refuse, donc efface : il ne servira jamais (decision du 2026-10-29).
+    assert not main.seat_credentials.FICHIER.exists()
 
 
 def test_refresh_brave_suit_le_nextcloud_de_la_politique(tmp_path):
