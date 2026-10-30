@@ -172,7 +172,17 @@ def test_deux_passes_danaconda_avec_pykickstart(tmp_path, monkeypatch):
 
     ks_bf = render_zerotouch_ks.render("bf", generated_at="2026-01-01T00:00:00Z")
     blocs, reste = bfos_amorce.separer_pre(ks_bf)
-    inclus.write_text(reste)
+    # La ligne d'image vient d'un %include que le %pre du locataire depose
+    # (#27109). On depose ici le FILET tel que le %pre l'ecrit, a la place
+    # du fichier : c'est lui qu'Anaconda lit si bfos_provision.py ne l'a pas
+    # remplace.
+    filet = re.search(r"cat > /tmp/bfos-image\.ks <<'BFOSIMAGEEOF'\n(.*?)\nBFOSIMAGEEOF",
+                      blocs[0][1], re.S)
+    assert filet, "le %pre du locataire n'ecrit plus le filet de la ligne d'image"
+    image_ks = tmp_path / "bfos-image.ks"
+    image_ks.write_text(filet.group(1) + "\n")
+    assert "%include /tmp/bfos-image.ks" in reste
+    inclus.write_text(reste.replace("/tmp/bfos-image.ks", str(image_ks)))
     # Les includes du locataire (/tmp/bfos-autopart.ks...) viennent de ses
     # blocs pre : ici on les tolere absents, comme l'ISO les trouverait ecrits.
     complet = KickstartParser(makeVersion(), missingIncludeIsFatal=False)

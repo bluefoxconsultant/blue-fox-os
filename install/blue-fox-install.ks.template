@@ -9,8 +9,18 @@
 
 # Pull the per-tenant OCI image directly. Anaconda's bootc support reads
 # ostreecontainer and pulls + commits in one shot, no post-install rebase
-# needed. Kickstart syntax has no line continuation — keep on one line.
-ostreecontainer --url={{OCI_IMAGE_REF}} --transport=registry --no-signature-verification
+# needed.
+#
+# La ligne `ostreecontainer` vient d'un fichier que le %pre depose (#27109) :
+#   - le filet, ecrit en tete du %pre AVANT tout python : la forme d'avant,
+#     `--no-signature-verification`, pour qu'un %pre qui meurt n'empeche pas
+#     d'installer ;
+#   - bfos_provision.py (armer_verification_image) la remplace par la forme
+#     VERIFIEE une fois la politique de conteneurs de l'installateur posee
+#     (cle, registries.d, sigstoreSigned + matchRepository).
+# ⚠️ Retirer le drapeau ne suffisait pas : c'est /etc/containers/policy.json de
+# l'installateur qui juge, et elle y est en insecureAcceptAnything.
+%include /tmp/bfos-image.ks
 
 # Installer-environment locale + keyboard (fallback defaults). The *installed*
 # system's locale / keymap / timezone / hostname / login come from the policy
@@ -93,6 +103,16 @@ export BFOS_POLICY_URL="{{POLICY_URL}}"
 export BFOS_FALLBACK_LANG="{{LANG}}"
 export BFOS_FALLBACK_KEYMAP="{{KEYBOARD_VC}}"
 export BFOS_FALLBACK_TIMEZONE="{{TIMEZONE}}"
+export BFOS_IMAGE_REF="{{OCI_IMAGE_REF}}"
+# Filet de la ligne d'image (#27109), AVANT tout le reste : la forme non
+# verifiee d'avant. bfos_provision.py la remplace par la forme verifiee.
+# ⚠️ En document en ligne, PAS en printf : l'amorce des ISO deja gravees
+# (install/bfos_amorce.py, `verifier_kickstart`) reconnait un kickstart Blue
+# Fox OS a une ligne qui COMMENCE par `ostreecontainer`. Sans elle, toutes les
+# cles en service refuseraient ce kickstart (« n'installe aucune image »).
+cat > /tmp/bfos-image.ks <<'BFOSIMAGEEOF'
+ostreecontainer --url={{OCI_IMAGE_REF}} --transport=registry --no-signature-verification
+BFOSIMAGEEOF
 # La ligne autopart par defaut, AVANT tout le reste : c'est le filet. Si la
 # suite de ce bloc meurt pour n'importe quelle raison, Anaconda lit ce
 # fichier-ci et demande la phrase de passe comme il l'a toujours fait.

@@ -143,7 +143,10 @@ else
 fi
 
 # 3. Copier la config dans /usr/share/bluefox/tenant.json (lue par welcome agent).
-cp "$TMP_CFG" "${FILES_DIR}/share/bluefox/tenant.json"
+# 0644 : l'agent tourne en tant que l'usager. Un `cp` du mktemp (0600) la
+# rendait illisible : sans URL de services, ni montage Nextcloud ni coffre
+# Vaultwarden (#26870, essai du 2026-10-26). Rien de secret dedans.
+install -m 0644 "$TMP_CFG" "${FILES_DIR}/share/bluefox/tenant.json"
 
 # 4. Generer la stack KDE (color scheme, look-and-feel, SDDM, kdeglobals)
 # a partir de tenant.json. Symlinke wallpaper/logo vers /usr/share/bluefox/branding/.

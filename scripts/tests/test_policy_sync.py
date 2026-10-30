@@ -14,6 +14,9 @@ Les cas qui comptent, et pourquoi :
 - Rien n'a change → on ne reveille pas system-flatpak-setup pour rien.
 - Quelque chose a change → on le reveille, parce que sa propre minuterie est en
   OnBootSec=30 et ne repasserait qu'au prochain demarrage.
+- Verrouillage d'ecran (#27109) : le fichier se regenere depuis la base de
+  l'image (le fond y vit), une cle absente n'est PAS un 0, et une alteration
+  locale est defaite et notee.
 
 ⚠️ Stdlib uniquement (lane `test-wizard` de la CI).
 """
@@ -105,6 +108,10 @@ def _paths(tmp_path):
         "state_path": str(tmp_path / "policy-sync.json"),
         "apply_module": str(APPLY_PATH),
         "public_path": str(tmp_path / "policy-public.json"),
+        # Jamais le vrai /etc/xdg : sans ces deux chemins, un essai qui sert
+        # une politique avec auto_lock_minutes ecrirait sur le poste de dev.
+        "lock_path": str(tmp_path / "etc" / "xdg" / "kscreenlockerrc"),
+        "lock_base": str(tmp_path / "usr" / "etc" / "xdg" / "kscreenlockerrc"),
     }
 
 
@@ -142,6 +149,29 @@ def test_session_copy_follows_the_policy(tmp_path, machine):
     assert public["session"] == policy["session"]
     assert public["browser"] == policy["browser"]
     assert public["install"]["login"] == {"mode": "sssd"}
+
+
+
+def test_un_changement_de_services_reecrit_la_copie_de_session(tmp_path, machine):
+    """#27109 : l'adresse d'un service changee dans Odoo doit atteindre la
+    copie que lit l'agent, sans reinstallation."""
+    def sert(nc_url):
+        policy = json.loads(json.dumps(POLICY))
+        policy["services"] = {"nextcloud": {"url": nc_url, "oidc_client_id": "nc"},
+                              "vaultwarden": {"url": "https://coffre.autre.org"}}
+        return _opener(json.dumps(policy))
+
+    public_path = tmp_path / "policy-public.json"
+    sync_mod.sync(machine_path=str(machine), opener=sert("https://cloud.autre.org"),
+                  run=_Runs(), **_paths(tmp_path))
+    assert json.loads(public_path.read_text())["services"]["nextcloud"]["url"] \
+        == "https://cloud.autre.org"
+    sync_mod.sync(machine_path=str(machine), opener=sert("https://nuage.autre.org"),
+                  run=_Runs(), **_paths(tmp_path))
+    public = json.loads(public_path.read_text())
+    assert public["services"]["nextcloud"]["url"] == "https://nuage.autre.org"
+    assert public["services"]["vaultwarden"]["url"] == "https://coffre.autre.org"
+    assert oct(public_path.stat().st_mode)[-3:] == "644"
 
 
 def test_second_run_changes_nothing_and_wakes_nobody(tmp_path, machine):
@@ -356,3 +386,312 @@ def test_atomic_write_garde_son_contrat_de_base(tmp_path):
     assert cible.read_text() == '{"a": 1}\n'
     assert oct(cible.stat().st_mode)[-3:] == "644"
     assert not list(tmp_path.glob(".*.tmp"))  # le temporaire a bien ete renomme
+
+
+# ------------------------------------------------- verrouillage d'ecran (#27109)
+FOND = ("# Genere par scripts/generate_kde_theme.py — tenant bf.\n"
+        "[Greeter][Wallpaper][org.kde.image][General]\n"
+        "Image=file:///usr/share/wallpapers/bf/contents/images/wallpaper.jpg\n"
+        "FillMode=2\n")
+
+
+def _lock_policy(minutes=15, **extra):
+    policy = json.loads(json.dumps(POLICY))
+    policy["policies"] = {"mfa_required": True, **extra}
+    if minutes is not _ABSENT:
+        policy["policies"]["auto_lock_minutes"] = minutes
+    return policy
+
+
+_ABSENT = object()
+
+
+def _lock_files(tmp_path, base=FOND):
+    paths = _paths(tmp_path)
+    if base is not None:
+        b = Path(paths["lock_base"])
+        b.parent.mkdir(parents=True, exist_ok=True)
+        b.write_text(base)
+        # L'image livre le meme fichier dans /etc : c'est l'etat d'un poste neuf.
+        t = Path(paths["lock_path"])
+        t.parent.mkdir(parents=True, exist_ok=True)
+        t.write_text(base)
+    return paths, Path(paths["lock_path"])
+
+
+def _run(machine, policy, paths):
+    return sync_mod.sync(machine_path=str(machine),
+                         opener=_opener(body=json.dumps(policy)), run=_Runs(),
+                         **paths)
+
+
+def _state(paths):
+    return json.loads(Path(paths["state_path"]).read_text())
+
+
+def _lock_changes(paths):
+    """La part du verrouillage dans `changes` : la politique, elle, change
+    aussi quand auto_lock_minutes change."""
+    return [c for c in _state(paths)["changes"] if c.startswith("verrouillage")]
+
+
+def _bloc(minutes):
+    return (sync_mod.LOCK_BEGIN + "\n"
+            "[Daemon][$i]\n"
+            "Autolock=true\n"
+            f"Timeout={minutes}\n"
+            "Lock=true\n"
+            "LockGrace=5\n"
+            "LockOnResume=true\n"
+            "RequirePassword=true\n"
+            + sync_mod.LOCK_END + "\n")
+
+
+def test_verrouillage_rendu_fond_puis_bloc_immuable(tmp_path, machine):
+    paths, cible = _lock_files(tmp_path)
+    assert _run(machine, _lock_policy(15), paths) == 0
+    assert cible.read_text() == FOND + "\n" + _bloc(15)
+    assert oct(cible.stat().st_mode)[-3:] == "644"
+    state = _state(paths)
+    assert "verrouillage" in state["changes"]
+    assert "15 min" in state["screen_lock"]
+    assert state["status"] == "ok"
+
+
+def test_verrouillage_idempotent(tmp_path, machine):
+    paths, cible = _lock_files(tmp_path)
+    _run(machine, _lock_policy(15), paths)
+    inode = cible.stat().st_ino
+    assert _run(machine, _lock_policy(15), paths) == 0
+    # os.replace change l'inode : le meme inode prouve qu'on n'a rien reecrit.
+    assert cible.stat().st_ino == inode
+    assert _state(paths)["changes"] == []
+
+
+def test_verrouillage_15_puis_5(tmp_path, machine):
+    paths, cible = _lock_files(tmp_path)
+    _run(machine, _lock_policy(15), paths)
+    _run(machine, _lock_policy(5), paths)
+    texte = cible.read_text()
+    assert texte == FOND + "\n" + _bloc(5)
+    assert texte.count("[Daemon]") == 1
+    # Un changement de politique n'est pas une alteration locale.
+    assert _lock_changes(paths) == ["verrouillage"]
+
+
+def test_verrouillage_zero_rend_la_base(tmp_path, machine):
+    paths, cible = _lock_files(tmp_path)
+    _run(machine, _lock_policy(15), paths)
+    _run(machine, _lock_policy(0), paths)
+    assert cible.read_text() == FOND
+    assert _lock_changes(paths) == ["verrouillage"]
+    assert "non impose" in _state(paths)["screen_lock"]
+
+
+def test_verrouillage_zero_sur_poste_neuf_ne_touche_rien(tmp_path, machine):
+    paths, cible = _lock_files(tmp_path)
+    inode = cible.stat().st_ino
+    _run(machine, _lock_policy(0), paths)
+    assert cible.stat().st_ino == inode
+    assert _lock_changes(paths) == []
+
+
+def test_verrouillage_cle_absente_n_est_pas_zero(tmp_path, machine):
+    """Absente = serveur anterieur : le dernier reglage connu reste."""
+    paths, cible = _lock_files(tmp_path)
+    _run(machine, _lock_policy(15), paths)
+    avant = cible.read_text()
+    assert _run(machine, _lock_policy(_ABSENT), paths) == 0
+    assert cible.read_text() == avant
+    assert "sans auto_lock_minutes" in _state(paths)["screen_lock"]
+
+
+def test_verrouillage_politique_sans_bloc_policies(tmp_path, machine):
+    paths = _paths(tmp_path)
+    assert _run(machine, POLICY, paths) == 0
+    assert not Path(paths["lock_path"]).exists()
+
+
+@pytest.mark.parametrize("valeur", [True, False, "15", -3, 10**6, 1441, 1.5, None])
+def test_verrouillage_valeur_invalide_laisse_intact(tmp_path, machine, valeur):
+    paths, cible = _lock_files(tmp_path)
+    inode = cible.stat().st_ino
+    assert _run(machine, _lock_policy(valeur), paths) == 0
+    assert cible.read_text() == FOND
+    assert cible.stat().st_ino == inode
+    assert "laisse intact" in _state(paths)["screen_lock"]
+
+
+@pytest.mark.parametrize("valeur", [1, 1440])
+def test_verrouillage_bornes_acceptees(tmp_path, machine, valeur):
+    paths, cible = _lock_files(tmp_path)
+    _run(machine, _lock_policy(valeur), paths)
+    assert f"\nTimeout={valeur}\n" in cible.read_text()
+
+
+def test_verrouillage_daemon_de_la_base_retire(tmp_path, machine):
+    base = ("[Daemon]\nAutolock=false\nTimeout=60\n\n" + FOND
+            + "\n[Daemon][Sous]\nX=1\n\n[Daemon][$i]\nLock=false\n")
+    paths, cible = _lock_files(tmp_path, base=base)
+    _run(machine, _lock_policy(15), paths)
+    texte = cible.read_text()
+    assert "Autolock=false" not in texte and "Lock=false" not in texte
+    assert "[Daemon][Sous]" not in texte
+    assert texte.count("[Daemon]") == 1
+    assert FOND.strip() in texte
+    assert texte.endswith(_bloc(15))
+
+
+def test_verrouillage_sans_base_remplace_son_bloc(tmp_path, machine):
+    """Image sans base : on repart du fichier en place, sans doubler le bloc."""
+    paths, cible = _lock_files(tmp_path, base=None)
+    cible.parent.mkdir(parents=True)
+    cible.write_text(FOND)
+    _run(machine, _lock_policy(15), paths)
+    _run(machine, _lock_policy(5), paths)
+    texte = cible.read_text()
+    assert texte == FOND + "\n" + _bloc(5)
+    assert texte.count(sync_mod.LOCK_BEGIN) == 1
+    # Le passage de 15 a 5 n'est pas une alteration locale, meme sans base.
+    assert _lock_changes(paths) == ["verrouillage"]
+    # 0 : le bloc s'en va, le reste du fichier reste.
+    _run(machine, _lock_policy(0), paths)
+    assert cible.read_text() == FOND
+
+
+def test_verrouillage_sans_base_ni_fichier(tmp_path, machine):
+    paths = _paths(tmp_path)
+    _run(machine, _lock_policy(10), paths)
+    assert Path(paths["lock_path"]).read_text() == _bloc(10)
+    assert _lock_changes(paths) == ["verrouillage"]
+
+
+def test_verrouillage_sans_base_daemon_local_retire(tmp_path, machine):
+    paths, cible = _lock_files(tmp_path, base=None)
+    cible.parent.mkdir(parents=True)
+    cible.write_text(FOND + "\n[Daemon]\nAutolock=false\n")
+    _run(machine, _lock_policy(15), paths)
+    assert cible.read_text() == FOND + "\n" + _bloc(15)
+    assert _lock_changes(paths) == ["verrouillage (reglage local retabli)"]
+
+
+ALTERATIONS = {
+    "immuabilite retiree": lambda t: t.replace("[Daemon][$i]", "[Daemon]"),
+    "autolock coupe": lambda t: t.replace("Autolock=true", "Autolock=false"),
+    "delai hors bornes": lambda t: t.replace("Timeout=15", "Timeout=99999"),
+    "sans mot de passe": lambda t: t.replace("RequirePassword=true",
+                                             "RequirePassword=false"),
+    "groupe ajoute avant": lambda t: "[Daemon]\nLock=false\n\n" + t,
+    "groupe ajoute apres": lambda t: t + "[Daemon]\nTimeout=600\n",
+    "bloc supprime": lambda t: FOND + "\n[Daemon]\nAutolock=false\n",
+    "balise de fin perdue": lambda t: t.replace(sync_mod.LOCK_END + "\n", ""),
+}
+
+
+@pytest.mark.parametrize("nom", sorted(ALTERATIONS))
+def test_verrouillage_alteration_locale_retablie(tmp_path, machine, nom):
+    paths, cible = _lock_files(tmp_path)
+    _run(machine, _lock_policy(15), paths)
+    attendu = cible.read_text()
+    cible.write_text(ALTERATIONS[nom](attendu))
+    assert _run(machine, _lock_policy(15), paths) == 0
+    assert cible.read_text() == attendu
+    state = _state(paths)
+    assert state["changes"] == ["verrouillage (reglage local retabli)"]
+    assert "reglage local retabli" in state["screen_lock"]
+
+
+def test_verrouillage_fond_d_une_nouvelle_image_propage(tmp_path, machine):
+    """🔴 ostree garde le /etc modifie localement : sans regeneration depuis
+    /usr/etc, le fond d'une nouvelle image n'atteindrait jamais l'ecran."""
+    paths, cible = _lock_files(tmp_path)
+    _run(machine, _lock_policy(15), paths)
+    nouveau = FOND.replace("wallpaper.jpg", "wallpaper-v2.jpg")
+    Path(paths["lock_base"]).write_text(nouveau)
+    _run(machine, _lock_policy(15), paths)
+    assert cible.read_text() == nouveau + "\n" + _bloc(15)
+    # Mise a jour de l'image, pas alteration locale.
+    assert _lock_changes(paths) == ["verrouillage"]
+
+
+def test_verrouillage_fond_altere_localement_rendu_a_l_image(tmp_path, machine):
+    """Le fond suit l'image. Il est remis sans etre note « retabli » : sans
+    memoire de l'ancienne base, une retouche locale et une mise a jour de
+    l'image se ressemblent, et la note est reservee au verrouillage."""
+    paths, cible = _lock_files(tmp_path)
+    _run(machine, _lock_policy(15), paths)
+    attendu = cible.read_text()
+    cible.write_text(attendu.replace("wallpaper.jpg", "autre.jpg"))
+    _run(machine, _lock_policy(15), paths)
+    assert cible.read_text() == attendu
+    assert _lock_changes(paths) == ["verrouillage"]
+
+
+def test_verrouillage_ecriture_impossible_rc_partiel(tmp_path, machine):
+    paths = _paths(tmp_path)
+    bloque = tmp_path / "pas-un-dossier"
+    bloque.write_text("")
+    paths["lock_path"] = str(bloque / "kscreenlockerrc")
+    rc = _run(machine, _lock_policy(15), paths)
+    assert rc == 1
+    assert _state(paths)["status"] == "partial"
+    # La politique et les listes passent quand meme.
+    assert (tmp_path / "provisioning.json").exists()
+    assert (tmp_path / "flatpaks" / "install").exists()
+
+
+def test_verrouillage_s_applique_sans_bfos_apply(tmp_path, machine):
+    paths, cible = _lock_files(tmp_path)
+    paths["apply_module"] = str(tmp_path / "pas-la.py")
+    assert _run(machine, _lock_policy(15), paths) == 1
+    assert cible.read_text().endswith(_bloc(15))
+
+
+# ----------------------------------------------- rechargement a chaud (#27109)
+UNITES_USAGER = REPO_ROOT / "files" / "usr" / "lib" / "systemd" / "user"
+
+
+def _systemd_user_enabled(recipe_text):
+    """Les unites de `user: enabled:` des modules systemd d'une recette.
+    Lecture a la ligne (stdlib seulement) : assez pour la forme des recettes."""
+    units, module, section, liste = [], None, None, None
+    for line in recipe_text.splitlines():
+        if line.startswith("  - type:"):
+            module = line.split(":", 1)[1].strip()
+            section = liste = None
+            continue
+        if module != "systemd" or not line.strip() or line.strip().startswith("#"):
+            continue
+        if line.startswith("    ") and not line.startswith("     "):
+            section = line.strip().rstrip(":")
+            liste = None
+        elif line.startswith("      ") and not line.startswith("       "):
+            liste = line.strip().rstrip(":")
+        elif line.strip().startswith("- ") and section == "user" and liste == "enabled":
+            units.append(line.strip()[2:].split("#")[0].strip())
+    return units
+
+
+@pytest.mark.parametrize("recette", ["bf.yml", "bf-surface.yml", "factice.yml"])
+def test_les_recettes_activent_le_rechargement(recette):
+    texte = (REPO_ROOT / "recipes" / recette).read_text()
+    assert "bluefox-lock-reload.path" in _systemd_user_enabled(texte), (
+        f"{recette} n'active pas bluefox-lock-reload.path pour les sessions : "
+        "le verrouillage impose ne prendrait qu'a la session suivante")
+
+
+def test_l_unite_path_surveille_le_fichier_ecrit():
+    texte = (UNITES_USAGER / "bluefox-lock-reload.path").read_text()
+    assert f"PathChanged={sync_mod.LOCK_PATH}\n" in texte
+    assert "Unit=bluefox-lock-reload.service\n" in texte
+    assert "WantedBy=" in texte, "sans [Install], systemctl --global enable echoue"
+
+
+def test_le_service_redemande_la_configuration_sans_echouer():
+    texte = (UNITES_USAGER / "bluefox-lock-reload.service").read_text()
+    lignes = [l for l in texte.splitlines() if l.startswith("ExecStart=")]
+    assert len(lignes) == 1
+    cmd = lignes[0].split("=", 1)[1]
+    assert cmd.startswith("-"), "hors session Plasma l'appel echoue : il doit etre tolere"
+    assert cmd.split()[1:] == ["--user", "call", "org.kde.screensaver",
+                               "/ScreenSaver", "org.kde.screensaver", "configure"]

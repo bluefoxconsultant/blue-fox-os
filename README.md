@@ -115,6 +115,14 @@ Cycle de vie d'une machine :
   `GET /api/v1/policy/machine` avec son propre secret et réécrit
   `provisioning.json` + les deux listes Flatpak. Une politique modifiée dans
   Odoo atteint donc les postes déjà en service.
+- **Verrouillage d'écran** (#27109) : `policies.auto_lock_minutes` (1 à 1440)
+  devient un groupe `[Daemon][$i]` de `/etc/xdg/kscreenlockerrc`, régénéré
+  depuis la base de l'image (`/usr/etc`, qui porte le fond) ; grisé dans les
+  Paramètres, rétabli à la synchro suivante s'il est altéré. 0 rend la main à
+  la personne ; clé absente ou invalide, rien ne change. L'unité usager
+  `bluefox-lock-reload.path` le fait relire à chaud par la session. Imposé,
+  pas inviolable : un sudoer peut le réécrire jusqu'à la synchro suivante, et
+  une application peut inhiber le verrouillage.
 - **Révocation** depuis Policy > Machines : coupée à la synchro suivante, et
   aucune ré-inscription possible sous la même identité. L'autorisation est
   rejouée à chaque synchro, donc sortir quelqu'un d'un groupe coupe ses postes.
@@ -179,9 +187,12 @@ BLUEFOX_RPM_GPG_NAME="Blue Fox OS Package Signing <info@bluefoxconsultant.com>" 
 - `BLUEFOX_RPM_GPG_NAME` est exigée aussi par `make image` : sans elle le RPM
   welcome sort non signé et la vérification en-image fait échouer le build.
 - `scripts/publish-image.sh` fait 7 étapes : RPM welcome → staging → branding
-  KDE → `bluebuild --push` (qui signe) → SBOM syft → attestation cosign →
+  KDE → `bluebuild --push` (qui signe) → porte canari (4b, la politique de
+  l'image publiée juge l'image et deux canaris ; code 3 et retour arrière
+  automatique si elle gèlerait le parc) → SBOM syft → attestation cosign →
   relecture de l'étiquette publiée. Il refuse de publier depuis un arbre sale,
-  en retard ou non poussé.
+  en retard ou non poussé, et s'arrête avant le build si l'index publié (le
+  retour arrière de la porte) ne se lit pas.
 
 ### Provenance et signatures
 
@@ -195,6 +206,118 @@ descend jamais dans le container `fedora:43`) et sa signature est **vérifiée
 avant installation** dans l'image. La clé publique vit en dépôt
 (`files/usr/share/bluefox/keys/`) : sans elle, tout build échoue, et c'est
 voulu.
+
+### Clé de secours cosign
+
+Les postes acceptent une image signée par l'une de **deux** clés (`keyPaths`
+de `/etc/containers/policy.json`, écrite par `files/scripts/politique-conteneurs.sh`) :
+
+| Clé | Publique | Privée |
+|---|---|---|
+| publication | `cosign.pub` = `files/usr/share/bluefox/keys/cosign-images.pub` | machine de build, `~/.config/bluefox/keys/cosign.key` (sans phrase) |
+| secours | `files/usr/share/bluefox/keys/cosign-images-secours.pub` (sha256 `448dc741d397…`) | coffre de Blue Fox (hors ligne) : `cosign-secours.key` et sa phrase de passe, jamais sur la machine de build |
+
+**Quand s'en servir** : uniquement si la clé privée de publication **fuit**
+(copiée hors de la machine de build, machine compromise, clé vue dans un
+journal ou un dépôt) ou se **perd** (disque, effacement). Une clé perdue,
+sans secours, gèle le parc : plus aucune image que les postes sachent
+vérifier. Une clé qui fuit laisse quiconque la détient publier une image
+acceptée. Dans les deux cas il faut une image de **transition** que les
+postes en service acceptent (signée par le secours) et dont la politique ne
+croit plus l'ancienne clé.
+
+**Procédure**, une image de transition par locataire (bf, bf-surface, factice) :
+
+1. Arrêter la republication automatique sur la machine de build :
+   `systemctl --user stop bfos-maj-images.timer`.
+2. Nouvelle clé de publication : `cosign generate-key-pair` dans
+   `~/.config/bluefox/keys/` (effacer l'ancienne `cosign.key` si elle a fui).
+   Copier la nouvelle `cosign.pub` à la racine **et** dans
+   `files/usr/share/bluefox/keys/cosign-images.pub` (un test exige qu'elles
+   soient identiques), et dans `CLE_EMBARQUEE` de `install/bfos_provision.py`
+   et de sa copie du module Odoo `bf_zerotouch_install` (`make
+   zerotouch-sync`), sinon les installations neuves refuseront les images
+   suivantes. La clé de secours ne change pas. Commit, push sur main : la
+   politique de l'image de transition ne croit plus que [nouvelle, secours].
+3. Re-signer le canari signé avec la nouvelle clé, sinon la porte canari
+   (étape 4b) le refuse sous la nouvelle politique et remet l'index précédent :
+
+   ```sh
+   D="$(skopeo inspect --format '{{.Digest}}' docker://ghcr.io/bluefoxconsultant/blue-fox-os-factice:canari-signe)"
+   cosign sign --new-bundle-format=false --use-signing-config=false \
+     --key ~/.config/bluefox/keys/cosign.key "ghcr.io/bluefoxconsultant/blue-fox-os-factice@${D}"
+   ```
+
+   L'ancien format (`--new-bundle-format=false --use-signing-config=false`)
+   est celui que lit le skopeo des postes.
+4. Publier avec la nouvelle clé (`make publish SLUG=<slug>`, `COSIGN_PRIVATE_KEY`
+   = la nouvelle). Relever au journal l'« index publié avant la poussée »
+   (N, l'image des postes) et l'index publié (N+1).
+5. Contre-signer N+1 avec la clé de secours, index **et** manifestes enfants
+   (`--recursive`). Sortir `cosign-secours.key` et sa phrase du coffre dans un
+   dossier 0700 hors du dépôt, puis :
+
+   ```sh
+   COSIGN_PASSWORD="<phrase>" cosign sign --new-bundle-format=false \
+     --use-signing-config=false --recursive \
+     --key <dossier>/cosign-secours.key \
+     "ghcr.io/bluefoxconsultant/blue-fox-os-<slug>@<index N+1>"
+   ```
+
+   Effacer le dossier ensuite. Entre 4 et 5, les postes refusent N+1 (mise à
+   jour en échec, ils gardent N, pas de gel) : enchaîner sans attendre.
+6. Juger N+1 avec la politique **des postes** (celle de N), pas avec la
+   sienne (voir le piège ci-dessous) :
+
+   ```sh
+   podman run -i --rm --entrypoint /usr/bin/python3 \
+     ghcr.io/bluefoxconsultant/blue-fox-os-<slug>@<index N> \
+     - docker://ghcr.io/bluefoxconsultant/blue-fox-os-<slug>@<index N+1> \
+     < scripts/proxy-openimage.py
+   ```
+
+   Attendu : `ACCEPTE`. Sinon, remettre N sous le tag sans attendre :
+   `skopeo copy --all --preserve-digests docker://ghcr.io/bluefoxconsultant/blue-fox-os-<slug>@<index N> docker://ghcr.io/bluefoxconsultant/blue-fox-os-<slug>:latest`.
+7. Vérifier : `./scripts/verify-image.sh <slug>` (nouvelle clé) et
+   `cosign verify --key files/usr/share/bluefox/keys/cosign-images-secours.pub ghcr.io/bluefoxconsultant/blue-fox-os-<slug>@<index N+1>`.
+8. Remettre la minuterie (`systemctl --user start bfos-maj-images.timer`).
+   La clé de secours est sortie du coffre : la remplacer à froid à l'image
+   suivante (nouvelle paire, `.pub` dans `files/`, empreinte du test
+   `test_politique_conteneurs.py`, `CLE_SECOURS_EMBARQUEE` de l'installateur).
+
+**Clé de vérification configurable.** L'étape 7 de `publish-image.sh` et
+`scripts/verify-image.sh` vérifient avec `COSIGN_PUB` (chemin d'une clé
+publique ; défaut : `cosign.pub` du dépôt). Une image dont la signature **et**
+l'attestation viennent d'une autre clé (par exemple une republication signée
+par la seule clé de secours, `COSIGN_PRIVATE_KEY` = clé de secours, le temps
+de générer la nouvelle clé) se publie et se vérifie avec
+`COSIGN_PUB=files/usr/share/bluefox/keys/cosign-images-secours.pub`.
+
+🔴 **Piège : la porte canari juge l'image N avec la politique de N, pas avec
+celle des postes (N-1).** Elle tire l'image qu'elle vient de pousser et la
+juge avec ses propres clés. Une image signée par une clé que N connaît et que
+N-1 ignore (nouvelle clé de publication, étape 4 seule) passe la porte, puis
+se fait refuser par tout le parc. Pas de gel (les postes gardent N-1 et
+réessaient), mais aucune mise à jour ne passe tant que l'image n'est pas
+contre-signée par une clé que N-1 connaît : d'où les étapes 5 et 6.
+
+### Limites connues
+
+- **Porte canari** : jugement par la politique de l'image publiée (N), pas
+  par celle des postes (N-1) ; voir le piège ci-dessus. Le jugement par N-1
+  (second tirage) est reporté après le 3 novembre 2026 (#27109), comme la
+  publication d'un candidat avant sa promotion en `:latest`.
+- **Sonde de signature de l'installateur** (`install/bfos_provision.py`,
+  `sonder_signature_image`) : elle passe par `skopeo copy`, qui enveloppe
+  toute erreur de la politique dans « Source image rejected », panne de
+  lecture des signatures comprise. Un registre lent au moment de la sonde
+  affiche donc « l'image n'est pas encore signée » à tort. Ce n'est qu'un
+  avertissement : le verdict qui compte reste celui du téléchargement par
+  Anaconda.
+- **Verdict inconnu sans motif passager** (proxy muet, client qui plante) :
+  la porte remet l'index précédent après trois jugements. Asymétrie assumée :
+  une semaine de retard vaut mieux qu'un parc gelé ; le cas se lit dans
+  `dernier.json` (`porte_cause=inconnu`).
 
 ### Machine de build hors Fedora
 

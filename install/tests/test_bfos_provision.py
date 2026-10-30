@@ -21,6 +21,10 @@ PLAN_VIERGE = {"mode": "disque_entier", "disque": "/dev/sda"}
 # Le prealable ci-dessous remplace bp.plan_par_defaut. Les tests qui veulent
 # eprouver la VRAIE fonction passent par cette reference, prise a l'import.
 PLAN_PAR_DEFAUT_REEL = bp.plan_par_defaut
+# Idem pour le chemin du fichier inclus, que _image_hors_etc redirige.
+IMAGE_INCLUDE_REEL = bp.IMAGE_INCLUDE
+# La sonde de signature, que _image_hors_etc remplace.
+SONDER_SIGNATURE_IMAGE_REEL = bp.sonder_signature_image
 
 
 @pytest.fixture(autouse=True)
@@ -31,6 +35,24 @@ def _disque_vierge(monkeypatch):
     tests d'escrow rouges pour une raison qui n'a rien a voir avec l'escrow.
     Un test qui a besoin d'un autre plan le passe explicitement."""
     monkeypatch.setattr(bp, "plan_par_defaut", lambda *a, **k: dict(PLAN_VIERGE))
+
+
+@pytest.fixture(autouse=True)
+def _image_hors_etc(tmp_path, monkeypatch):
+    """main() arme la verification de l'image des que BFOS_IMAGE_REF est la
+    (#27109) : aucun test ne doit ecrire dans /etc/containers de la machine
+    qui l'execute, ni dependre d'une variable laissee dans son environnement."""
+    monkeypatch.delenv("BFOS_IMAGE_REF", raising=False)
+    racine = tmp_path / "_image"
+    monkeypatch.setattr(bp, "IMAGE_INCLUDE", str(racine / "bfos-image.ks"))
+    monkeypatch.setattr(bp, "POLICY_CONTAINERS", str(racine / "policy.json"))
+    monkeypatch.setattr(bp, "CLE_POSEE", str(racine / "bfos-cosign.pub"))
+    monkeypatch.setattr(bp, "CLE_SECOURS_POSEE", str(racine / "bfos-cosign-secours.pub"))
+    # La sonde de signature (M1) lancerait le VRAI skopeo de la machine.
+    monkeypatch.setattr(bp, "sonder_signature_image", lambda url: ("signee", ""))
+    monkeypatch.setattr(bp, "CLE_ISO", str(racine / "absente.pub"))
+    monkeypatch.setattr(bp, "REGISTRIES_D", str(racine / "registries.d"))
+    racine.mkdir()
 
 
 def _http_error(code, body):
@@ -1509,7 +1531,8 @@ class TestPolitiqueConteneurs:
         pol = json.loads(bp.render_containers_policy(IMG, "/etc/pki/k.pub"))
         regle = pol["transports"]["docker"]["ghcr.io/bluefoxconsultant"][0]
         assert regle["type"] == "sigstoreSigned"
-        assert regle["keyPath"] == "/etc/pki/k.pub"
+        assert regle["keyPaths"] == ["/etc/pki/k.pub", bp.CLE_SECOURS_POSEE]
+        assert "keyPath" not in regle
 
     def test_le_reste_du_registre_est_refuse(self):
         pol = json.loads(bp.render_containers_policy(IMG, "/etc/pki/k.pub"))
@@ -1526,6 +1549,34 @@ class TestPolitiqueConteneurs:
     def test_reference_inattendue_leve(self):
         with pytest.raises(bp.ProvisionError):
             bp.render_containers_policy("pasunereference", "/k")
+
+    def test_l_identite_est_le_depot_pas_le_tag(self):
+        """⚠️ #27109. La signature cosign porte `docker-reference` =
+        ghcr.io/bluefoxconsultant/blue-fox-os-<slug>, SANS tag, et on tire
+        `:latest`. matchRepoDigestOrExact refusait l'image signee (mesure au
+        skopeo le 2026-10-28 : « Signature for identity ... is not accepted »)."""
+        pol = json.loads(bp.render_containers_policy(IMG, "/k"))
+        regle = pol["transports"]["docker"]["ghcr.io/bluefoxconsultant"][0]
+        assert regle["signedIdentity"] == {"type": "matchRepository"}
+
+
+class TestRegistriesD:
+    def test_les_pieces_jointes_sigstore_sont_demandees_pour_l_espace_de_noms(self):
+        """Sans `use-sigstore-attachments: true`, containers-image ne va pas
+        chercher la signature sous sha256-<digest>.sig : « A signature was
+        required, but no signature exists », image signee ou non."""
+        rendu = bp.render_registries_d(IMG)
+        assert rendu == ("docker:\n"
+                         "  ghcr.io/bluefoxconsultant:\n"
+                         "    use-sigstore-attachments: true\n")
+
+    def test_la_portee_suit_la_politique(self):
+        """Meme portee que la politique : un autre locataire, un autre
+        espace de noms."""
+        rendu = bp.render_registries_d("ghcr.io/acme/blue-fox-os-acme:latest")
+        assert "  ghcr.io/acme:\n" in rendu
+        pol = json.loads(bp.render_containers_policy("ghcr.io/acme/blue-fox-os-acme:latest", "/k"))
+        assert "ghcr.io/acme" in pol["transports"]["docker"]
 
 
 class TestLigneImage:
@@ -1566,7 +1617,10 @@ class TestArmerVerification:
     def _chemins(self, tmp_path):
         return {"policy_path": str(tmp_path / "policy.json"),
                 "cle_path": str(tmp_path / "k.pub"),
-                "include_path": str(tmp_path / "image.ks")}
+                "include_path": str(tmp_path / "image.ks"),
+                "cle_secours_path": str(tmp_path / "secours.pub"),
+                # Absent expres : l'installateur n'a pas forcement le dossier.
+                "registries_d": str(tmp_path / "containers" / "registries.d")}
 
     def test_cas_nominal(self, tmp_path):
         c = self._chemins(tmp_path)
@@ -1579,6 +1633,35 @@ class TestArmerVerification:
         assert json.loads(open(c["policy_path"]).read())["default"][0]["type"] == "reject"
         assert oct(os.stat(c["policy_path"]).st_mode & 0o777) == "0o644"
         assert any("cle iso" in m for m in dit)
+        # registries.d cree s'il manque (os.makedirs), fichier lisible.
+        fichier = os.path.join(c["registries_d"], bp.REGISTRIES_FICHIER)
+        assert open(fichier).read() == bp.render_registries_d(IMG)
+        assert oct(os.stat(fichier).st_mode & 0o777) == "0o644"
+
+    def test_registries_d_impossible_aucune_politique_posee(self, tmp_path):
+        """registries.d AVANT la politique : une politique qui exige une
+        signature sans savoir ou la trouver refuserait l'image signee. Si le
+        dossier ne peut pas etre ecrit, on retombe sur la ligne d'avant, et la
+        politique de l'installateur n'est pas touchee."""
+        c = self._chemins(tmp_path)
+        (tmp_path / "containers").write_text("un fichier, pas un dossier")
+        dit = []
+        assert bp.armer_verification_image(
+            IMG, chemin_iso=str(tmp_path / "absent"), out=dit.append, **c) is False
+        assert not os.path.exists(c["policy_path"])
+        assert "--no-signature-verification" in open(c["include_path"]).read()
+
+    def test_une_portee_deja_declaree_n_est_pas_doublee(self, tmp_path):
+        """Deux fichiers qui declarent la meme portee font refuser TOUT le
+        dossier par containers-image : on n'ajoute pas la notre."""
+        c = self._chemins(tmp_path)
+        os.makedirs(c["registries_d"])
+        autre = os.path.join(c["registries_d"], "bluefoxconsultant.yaml")
+        with open(autre, "w") as fh:
+            fh.write("docker:\n  ghcr.io/bluefoxconsultant:\n    use-sigstore-attachments: true\n")
+        assert bp.armer_verification_image(
+            IMG, chemin_iso=str(tmp_path / "absent"), **c) is True
+        assert os.listdir(c["registries_d"]) == ["bluefoxconsultant.yaml"]
 
     def test_reference_en_dur_echoue_OUVERT_en_le_disant(self, tmp_path):
         """Reference en dur : ne pas casser une installation qui marchait.
@@ -1970,3 +2053,230 @@ def test_une_reponse_http_de_la_politique_ne_se_rejoue_pas():
     with pytest.raises(bp.ProvisionError, match="HTTP 403"):
         bp.fetch_policy("https://p/me", "TOK", get=get, sleep=lambda s: None)
     assert len(essais) == 1
+
+
+# ===========================================================================
+# Ligne d'image : filet du %pre, puis forme verifiee par main() (#27109)
+# ===========================================================================
+FILET_IMAGE = re.compile(
+    r"cat > /tmp/bfos-image\.ks <<'BFOSIMAGEEOF'\n(?P<ligne>.*?)\nBFOSIMAGEEOF", re.S)
+
+
+def _pre_du_gabarit():
+    g = _template_text()
+    debut = g.index("%pre --interpreter=/bin/bash")
+    return g[debut:g.index("\n%end", debut)]
+
+
+class TestLigneImageDuGabarit:
+    def test_la_ligne_d_image_vient_du_fichier_du_pre(self):
+        g = _template_text()
+        assert re.search(r"^%include /tmp/bfos-image\.ks$", g, re.M)
+        assert IMAGE_INCLUDE_REEL == "/tmp/bfos-image.ks"
+        # Plus aucune ligne d'image en dur hors du %pre : elle court-circuiterait
+        # la forme verifiee.
+        hors_pre = g.replace(_pre_du_gabarit(), "")
+        assert not re.search(r"^ostreecontainer\s", hors_pre, re.M)
+
+    def test_le_filet_est_ecrit_avant_le_python(self):
+        """Si bfos_provision.py meurt avant d'armer la verification, Anaconda
+        doit quand meme trouver une ligne d'image : celle d'avant."""
+        pre = _pre_du_gabarit()
+        filet = FILET_IMAGE.search(pre)
+        assert filet, "filet de la ligne d'image absent du %pre"
+        assert filet.start() < pre.index("python3 /tmp/bfos_provision.py")
+        assert pre.index('export BFOS_IMAGE_REF="{{OCI_IMAGE_REF}}"') < pre.index(
+            "python3 /tmp/bfos_provision.py")
+        assert filet.group("ligne") == (
+            "ostreecontainer --url={{OCI_IMAGE_REF}} --transport=registry "
+            "--no-signature-verification")
+
+    def test_le_filet_est_ce_que_rend_la_forme_non_verifiee(self):
+        ligne = FILET_IMAGE.search(_pre_du_gabarit()).group("ligne")
+        assert ligne + "\n" == bp.render_image_line("{{OCI_IMAGE_REF}}", False)
+
+
+class TestMainArmeLaVerification:
+    def _main(self, tmp_path, monkeypatch, image_ref=None):
+        monkeypatch.setattr(bp, "STAGED_JSON", str(tmp_path / "p.json"))
+        monkeypatch.setattr(bp, "AUTOPART_INCLUDE", str(tmp_path / "autopart.ks"))
+        dit = []
+        monkeypatch.setattr(bp, "_console_writer", lambda: dit.append)
+        for var in ("BFOS_OIDC_DEVICE_URL", "BFOS_OIDC_TOKEN_URL",
+                    "BFOS_OIDC_CLIENT_ID", "BFOS_POLICY_URL"):
+            monkeypatch.delenv(var, raising=False)
+        if image_ref:
+            monkeypatch.setenv("BFOS_IMAGE_REF", image_ref)
+        with open(bp.IMAGE_INCLUDE, "w") as fh:     # le filet du %pre
+            fh.write(bp.render_image_line(image_ref or IMG, False))
+        assert bp.main([]) == 0
+        return dit
+
+    def test_avec_la_reference_la_ligne_devient_verifiee(self, tmp_path, monkeypatch):
+        """Meme quand le flux d'appareil echoue (repli) : la verification ne
+        depend pas de l'organisation, seulement de la reference servie."""
+        dit = self._main(tmp_path, monkeypatch, image_ref=IMG)
+        ligne = open(bp.IMAGE_INCLUDE).read()
+        assert ligne == bp.render_image_line(IMG, True)
+        pol = json.loads(open(bp.POLICY_CONTAINERS).read())
+        assert pol["transports"]["docker"]["ghcr.io/bluefoxconsultant"][0][
+            "signedIdentity"] == {"type": "matchRepository"}
+        assert os.path.exists(os.path.join(bp.REGISTRIES_D, bp.REGISTRIES_FICHIER))
+        assert any("verifiee a la poussee" in m for m in dit)
+
+    def test_l_armement_precede_le_flux_d_appareil(self, tmp_path, monkeypatch):
+        """En tete de main() : le flux d'appareil peut durer dix minutes et
+        mourir ; la ligne d'image ne doit pas en dependre."""
+        ordre = []
+        monkeypatch.setattr(bp, "armer_verification_image",
+                            lambda *a, **k: ordre.append("armer"))
+        def run(**k):
+            ordre.append("run")
+            raise bp.ProvisionError("x")
+        monkeypatch.setattr(bp, "run", run)
+        self._main(tmp_path, monkeypatch, image_ref=IMG)
+        assert ordre == ["armer", "run"]
+
+    def test_exiger_reste_faux(self, tmp_path, monkeypatch):
+        """Reference servie en HTTPS par l'organisation, pas tapee : une cle
+        absente de l'ISO ne doit pas bloquer l'installation (exiger=True est
+        reporte a la cle gravee dans l'ISO)."""
+        vus = []
+        monkeypatch.setattr(bp, "armer_verification_image",
+                            lambda url, **k: vus.append((url, k.get("exiger"))))
+        self._main(tmp_path, monkeypatch, image_ref=IMG)
+        assert vus == [(IMG, False)]
+
+    def test_sans_reference_le_filet_reste(self, tmp_path, monkeypatch):
+        dit = self._main(tmp_path, monkeypatch)
+        assert open(bp.IMAGE_INCLUDE).read() == bp.render_image_line(IMG, False)
+        assert not os.path.exists(bp.POLICY_CONTAINERS)
+        assert any("BFOS_IMAGE_REF absent" in m for m in dit)
+
+    def test_une_armure_qui_leve_n_arrete_pas_l_installation(self, tmp_path, monkeypatch):
+        def explose(*a, **k):
+            raise RuntimeError("boum")
+        monkeypatch.setattr(bp, "armer_verification_image", explose)
+        dit = self._main(tmp_path, monkeypatch, image_ref=IMG)
+        assert open(bp.IMAGE_INCLUDE).read() == bp.render_image_line(IMG, False)
+        assert os.path.exists(tmp_path / "p.json")      # la suite a tourne
+        assert any("non armee" in m for m in dit)
+
+
+# ===========================================================================
+# Relecture adverse 1 de #27109 : cle de secours, refus MFA, sonde de signature
+# ===========================================================================
+
+class TestCleDeSecours:
+    """Decision d'Olivier (2026-10-29) : la politique de l'installateur
+    accepte la cle de publication OU la cle de secours (keyPaths), comme
+    celle des postes (files/scripts/politique-conteneurs.sh)."""
+
+    def test_constante_identique_a_la_cle_de_l_image(self):
+        import hashlib
+        import pathlib
+        racine = pathlib.Path(__file__).resolve().parents[2]
+        fichier = racine / "files/usr/share/bluefox/keys/cosign-images-secours.pub"
+        attendu = "448dc741d3979d96cc62e468c8d8a2b473f5f1302f8272f8fb9d7bed52b21709"
+        assert hashlib.sha256(bp.CLE_SECOURS_EMBARQUEE.encode()).hexdigest() == attendu
+        if fichier.exists():
+            assert fichier.read_text() == bp.CLE_SECOURS_EMBARQUEE
+        assert bp.CLE_SECOURS_EMBARQUEE != bp.CLE_EMBARQUEE
+        assert "PRIVATE" not in bp.CLE_SECOURS_EMBARQUEE
+
+    def _armer(self, tmp_path, iso=None):
+        c = {"policy_path": str(tmp_path / "policy.json"),
+             "cle_path": str(tmp_path / "k.pub"),
+             "cle_secours_path": str(tmp_path / "secours.pub"),
+             "include_path": str(tmp_path / "image.ks"),
+             "registries_d": str(tmp_path / "registries.d")}
+        chemin_iso = tmp_path / "iso.pub"
+        if iso:
+            chemin_iso.write_text(iso)
+        assert bp.armer_verification_image(IMG, chemin_iso=str(chemin_iso), **c) is True
+        regle = json.loads(open(c["policy_path"]).read())[
+            "transports"]["docker"]["ghcr.io/bluefoxconsultant"][0]
+        return regle, c
+
+    def test_deux_cles_posees_et_dans_keypaths(self, tmp_path):
+        regle, c = self._armer(tmp_path)
+        assert regle["keyPaths"] == [c["cle_path"], c["cle_secours_path"]]
+        assert open(c["cle_path"]).read() == bp.CLE_EMBARQUEE
+        assert open(c["cle_secours_path"]).read() == bp.CLE_SECOURS_EMBARQUEE
+        assert oct(os.stat(c["cle_secours_path"]).st_mode & 0o777) == "0o644"
+
+    def test_la_cle_d_iso_ne_remplace_que_la_publication(self, tmp_path):
+        regle, c = self._armer(
+            tmp_path, iso="-----BEGIN PUBLIC KEY-----\nISO\n-----END PUBLIC KEY-----")
+        assert "ISO" in open(c["cle_path"]).read()
+        assert open(c["cle_secours_path"]).read() == bp.CLE_SECOURS_EMBARQUEE
+        assert len(regle["keyPaths"]) == 2
+
+
+class TestRefusMfaEnClair:
+    def test_second_facteur_dit_en_clair_et_repli_garde(self):
+        def get(url, token):
+            raise _http_error(403, '{"error": "second factor required"}')
+        dit = []
+        with pytest.raises(bp.ProvisionError, match="second factor required"):
+            bp.fetch_policy(POLICY_URL, "TOK", get=get, out=dit.append)
+        assert any("Double authentification requise : activez-la dans Authentik puis"
+                   in m for m in dit)
+
+    def test_autres_403_inchanges(self):
+        for corps in ('{"error": "not authorized"}', "pas du json"):
+            def get(url, token, corps=corps):
+                raise _http_error(403, corps)
+            dit = []
+            with pytest.raises(bp.ProvisionError, match=r"^policy fetch HTTP 403$"):
+                bp.fetch_policy(POLICY_URL, "TOK", get=get, out=dit.append)
+            assert dit == []
+
+
+class _Res:
+    def __init__(self, rc, stderr=""):
+        self.returncode, self.stderr, self.stdout = rc, stderr, ""
+
+
+class TestSondeSignature:
+    """M1 : avertissement seulement, au meme juge que le telechargement."""
+
+    def _sonde(self, res):
+        vus = []
+        def run(cmd, delai):
+            vus.append(cmd)
+            return res
+        etat = SONDER_SIGNATURE_IMAGE_REEL(IMG, run=run, which=lambda n: "/usr/bin/skopeo",
+                                              policy_path="/p.json", registries_d="/r.d")
+        return etat[0], vus
+
+    def test_verdicts(self):
+        assert self._sonde(_Res(1, 'msg="Source image rejected: A signature was '
+                                   'required, but no signature exists"'))[0] == "refusee"
+        etat, vus = self._sonde(_Res(1, 'msg="trying to reuse blob at destination: '
+                                        'pinging container registry 127.0.0.1:1"'))
+        assert etat == "signee"
+        assert vus[0][:5] == ["/usr/bin/skopeo", "--policy", "/p.json", "--registries.d", "/r.d"]
+        assert vus[0][-1] == bp.SONDE_DESTINATION == \
+            "docker://127.0.0.1:1/bfos-verification-prealable:essai"
+        assert self._sonde(_Res(2, "manifest unknown"))[0] == "inconnue"
+        assert SONDER_SIGNATURE_IMAGE_REEL(IMG, which=lambda n: None)[0] == "inconnue"
+
+    def test_main_refusee_garde_la_ligne_verifiee(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(bp, "sonder_signature_image",
+                            lambda url: ("refusee", "no signature exists"))
+        pauses = []
+        monkeypatch.setattr(bp.time, "sleep", pauses.append)
+        monkeypatch.setattr(bp, "STAGED_JSON", str(tmp_path / "p.json"))
+        monkeypatch.setattr(bp, "AUTOPART_INCLUDE", str(tmp_path / "autopart.ks"))
+        dit = []
+        monkeypatch.setattr(bp, "_console_writer", lambda: dit.append)
+        for var in ("BFOS_OIDC_DEVICE_URL", "BFOS_OIDC_TOKEN_URL",
+                    "BFOS_OIDC_CLIENT_ID", "BFOS_POLICY_URL"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("BFOS_IMAGE_REF", IMG)
+        assert bp.main([]) == 0
+        assert open(bp.IMAGE_INCLUDE).read() == bp.render_image_line(IMG, True)
+        texte = "".join(dit)
+        assert texte.count("pas encore signee") == 2       # annonce + rappel
+        assert pauses == [bp.PAUSE_IMAGE_NON_SIGNEE]

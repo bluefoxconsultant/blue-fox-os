@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from urllib.parse import urlsplit
 
 LOG = logging.getLogger("bluefox-welcome.provisioning")
 PROVISIONING_FILE = Path("/var/lib/bluefox-welcome/provisioning.json")
@@ -106,12 +107,80 @@ def browser_extensions(prov: dict) -> list:
     return ((prov.get("browser", {}) or {}).get("extensions", []) or [])
 
 
-def merge_branding(tenant: dict, prov: dict) -> dict:
-    """Overlay the policy session branding onto a copy of the tenant dict.
+# Services dont la politique peut donner l'adresse (#27109, phase 1). Liste
+# blanche : une cle inconnue du bloc `services` n'entre pas dans le tenant.
+SERVICES_DE_POLITIQUE = ("nextcloud", "vaultwarden", "authentik", "odoo")
 
+
+def _url_https(valeur) -> str:
+    """L'url si elle est https, avec un hote, sans blanc ni caractere de
+    controle ; `/` final retire. Sinon "" (garder celle de l'image)."""
+    if not isinstance(valeur, str) or not valeur:
+        return ""
+    if any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7F for c in valeur):
+        return ""
+    try:
+        parts = urlsplit(valeur)
+        parts.port  # noqa: B018 — leve ValueError sur un port invalide
+    except ValueError:
+        return ""
+    if parts.scheme.lower() != "https" or not parts.hostname:
+        return ""
+    return valeur.rstrip("/")
+
+
+def _services_de_politique(prov: dict) -> dict:
+    """{service: url} des services que la politique designe, filtres.
+
+    ⚠️ POURQUOI (#27109) : une autre organisation sur l'image bf recevait sa
+    politique, mais l'agent montait le Nextcloud ecrit dans l'image — celui de
+    Blue Fox — et y aurait envoye le mot de passe d'application frappe pour
+    SON Nextcloud. Une politique ancienne n'a que services.nextcloud ; une
+    valeur vide, absente ou invalide laisse l'adresse de l'image en place.
+    """
+    services = (prov or {}).get("services")
+    if not isinstance(services, dict):
+        return {}
+    retenus = {}
+    for nom in SERVICES_DE_POLITIQUE:
+        entree = services.get(nom)
+        url = _url_https(entree.get("url")) if isinstance(entree, dict) else ""
+        if url:
+            retenus[nom] = url
+        elif isinstance(entree, dict) and entree.get("url"):
+            LOG.warning("services.%s.url ignoree (https avec un hote attendu) : "
+                        "l'adresse de l'image reste en place", nom)
+    return retenus
+
+
+def _superposer_services(tenant: dict, prov: dict) -> dict:
+    """Copie du tenant ou les services de la politique remplacent les url de
+    l'image. Rend le tenant lui-meme s'il n'y a rien a superposer."""
+    services = _services_de_politique(prov)
+    if not services:
+        return tenant
+    merged = dict(tenant)
+    tous = merged.get("services")
+    tous = dict(tous) if isinstance(tous, dict) else {}
+    for nom, url in services.items():
+        entree = tous.get(nom)
+        entree = dict(entree) if isinstance(entree, dict) else {}
+        entree["url"] = url
+        tous[nom] = entree
+    merged["services"] = tous
+    return merged
+
+
+def merge_branding(tenant: dict, prov: dict) -> dict:
+    """Overlay the policy onto a copy of the tenant dict.
+
+    services.<nextcloud|vaultwarden|authentik|odoo>.url -> services.<...>.url ;
     accent_color -> branding.palette.accent ; wallpaper_url -> branding.wallpaper_url.
+    Les services passent AVANT la sortie sans bloc session : une politique
+    sans session designe quand meme son Nextcloud.
     The input tenant is left unchanged ; a new dict is returned.
     """
+    tenant = _superposer_services(tenant, prov)
     sess = session(prov)
     if not sess:
         return tenant

@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+"""bluefox-origine-signee — passe l'origine d'un poste deja installe en
+`ostree-image-signed:` des que sa politique de conteneurs sait verifier son
+image (#27109).
+
+POURQUOI
+Les postes installes avant #27109 suivent leur image par
+`ostree-unverified-registry:` (installation zero-touch) ou
+`ostree-unverified-image:` (premier rebase). La politique de l'image
+(/etc/containers/policy.json, ecrite par files/scripts/politique-conteneurs.sh)
+juge deja chaque tirage, meme sous ces transports : c'est le proxy skopeo qui
+l'applique. `ostree-image-signed:` ajoute un seul refus, celui d'une politique
+dont le `default` accepterait tout. Cette unite rend donc l'origine conforme a
+ce que le poste verifie vraiment, et fige ce refus.
+
+CE QU'ELLE NE FAIT JAMAIS
+  - redemarrer : le rebase est mis en attente, il prend au prochain demarrage
+    comme n'importe quelle mise a jour ;
+  - changer d'image : meme depot, meme tag, seul le transport change ;
+  - defaire un choix en attente : si le deploiement du PROCHAIN demarrage
+    suit une autre image que le deploiement demarre (rebase manuel bf ->
+    bf-surface, version epinglee par digest), on n'y touche pas ; la bascule
+    reprend une fois ce deploiement demarre, sur SA reference ;
+  - insister : politique sans entree, registre injoignable, transaction
+    rpm-ostree en cours, commande qui depasse son delai, tout cela se retente
+    le lendemain. Seul l'echec du rebase lui-meme rend un code non nul
+    (visible dans `systemctl --failed`), et rien ne depend de cette unite ;
+  - toucher une origine epinglee par digest (`...@sha256:`) : choix de
+    l'administrateur, et `rpm-ostree upgrade --check` y echoue chaque jour.
+    On le note, code 0 (relecture adverse 2, m8).
+
+DELAIS
+Chaque commande rpm-ostree a son delai (DELAIS) ; leur somme reste sous
+TimeoutStartSec de l'unite (2 h) : un delai depasse est passager, alors qu'un
+arret par systemd laisserait l'unite en echec.
+
+MARQUEUR
+/var/lib/bluefox/origine-signee, ecrit une fois le poste DEMARRE sur l'origine
+signee (pas au rebase : un deploiement en attente peut encore etre ecarte).
+L'unite se garde dessus (ConditionPathExists=!).
+
+USAGE
+  bluefox-origine-signee                      la bascule (unite systemd)
+  bluefox-origine-signee --politique-couvre REF
+      code 0 si ostree-image-signed:docker://REF passerait la politique (une
+      exigence de signature pour REF et un `default` qui n'accepte pas tout),
+      1 sinon. Sert a bluefox-rebase pour choisir son transport.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+
+POLICY = "/etc/containers/policy.json"
+MARQUEUR = "/var/lib/bluefox/origine-signee"
+SIGNE = "ostree-image-signed:docker://"
+EXIGENCES_SIGNEES = ("sigstoreSigned", "signedBy")
+# rpm-ostree refuse une seconde transaction pendant qu'une autre tourne
+# (« Transaction in progress: ... ») : la mise a jour automatique de
+# rpm-ostreed-automatic, un rebase lance a la main. Passager, pas un echec.
+TRANSACTION_EN_COURS = re.compile(r"transaction in progress", re.I)
+
+
+def log(msg):
+    print(f"[bluefox-origine-signee] {msg}", flush=True)
+
+
+def reference_nue(ref):
+    """`ostree-unverified-registry:ghcr.io/x/y:latest` -> `ghcr.io/x/y:latest`.
+    Tout prefixe de transport ostree, avec ou sans docker:// (cf. bluefox-rebase)."""
+    return re.sub(r"^ostree-[a-z-]+:(docker://)?", "", ref or "")
+
+
+def portees(ref):
+    """Les portees de la politique, de la plus precise a la plus large, dans
+    l'ordre de containers-image (docker/policyconfiguration) : depot:tag ou
+    depot@digest, depot, puis chaque espace de noms jusqu'a l'hote."""
+    nu = reference_nue(ref)
+    if "@" in nu:
+        depot = nu.split("@", 1)[0]
+    else:
+        dernier = nu.rsplit("/", 1)[-1]
+        depot = nu.rsplit(":", 1)[0] if ":" in dernier else nu
+    rang = [nu] if nu != depot else []
+    morceaux = depot.split("/")
+    rang += ["/".join(morceaux[:i]) for i in range(len(morceaux), 0, -1)]
+    return rang
+
+
+def politique_couvre(ref, policy_path=None):
+    """Vrai si la portee qui DECIDE pour `ref` exige une signature.
+
+    C'est la portee la plus precise presente qui s'applique, pas la premiere
+    venue : une entree `ghcr.io/bluefoxconsultant` en sigstoreSigned ne couvre
+    rien si `ghcr.io/bluefoxconsultant/blue-fox-os-bf` est en
+    insecureAcceptAnything. La portee "" (tout le reste) ne compte jamais.
+    """
+    policy_path = policy_path or POLICY
+    try:
+        with open(policy_path, encoding="utf-8") as fh:
+            pol = json.load(fh)
+        docker = pol["transports"]["docker"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    if not isinstance(docker, dict):
+        return False
+    for portee in portees(ref):
+        if portee in docker:
+            exigences = docker[portee]
+            return (isinstance(exigences, list) and bool(exigences)
+                    and all(isinstance(e, dict) and e.get("type") in EXIGENCES_SIGNEES
+                            for e in exigences))
+    return False
+
+
+def defaut_insecure(policy_path=None):
+    """Ce que regarde ostree-ext avant d'accepter ostree-image-signed : le
+    PREMIER element de `default`."""
+    policy_path = policy_path or POLICY
+    try:
+        with open(policy_path, encoding="utf-8") as fh:
+            defaut = json.load(fh).get("default") or []
+        return bool(defaut) and defaut[0].get("type") == "insecureAcceptAnything"
+    except (OSError, ValueError, AttributeError):
+        return True
+
+
+# Secondes par sous-commande. Somme (3600) sous TimeoutStartSec=2h de
+# bluefox-origine-signee.service : trois commandes a 3600 s chacune pouvaient
+# la depasser, et systemd tuait alors l'unite (relecture adverse 2, m8).
+DELAIS = {"status": 600, "upgrade": 1500, "rebase": 1500}
+
+
+def _run(cmd):
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=DELAIS[cmd[1]])
+
+
+def epinglee(ref):
+    """Vrai pour une origine epinglee par digest (`depot@sha256:...`)."""
+    return "@" in reference_nue(ref)
+
+
+def origines(run=_run):
+    """(origine du deploiement DEMARRE, origine du deploiement du PROCHAIN
+    demarrage). La seconde differe de la premiere quand un rebase ou une mise a
+    jour attend un redemarrage. None pour ce qui ne se lit pas."""
+    r = run(["rpm-ostree", "status", "--json"])
+    if r.returncode != 0:
+        return None, None
+    try:
+        deploiements = json.loads(r.stdout).get("deployments") or []
+    except ValueError:
+        return None, None
+    demarre = next((d for d in deploiements if d.get("booted")), None)
+    prochain = deploiements[0] if deploiements else None
+    lire = lambda d: (d or {}).get("container-image-reference") or None  # noqa: E731
+    return lire(demarre), lire(prochain)
+
+
+def est_signee(origine):
+    return bool(origine) and origine.startswith("ostree-image-signed:")
+
+
+def ecrire_marqueur(chemin):
+    os.makedirs(os.path.dirname(chemin), exist_ok=True)
+    with open(chemin, "w", encoding="utf-8") as fh:
+        fh.write("origine signee constatee\n")
+
+
+def basculer(run=_run, policy_path=None, marqueur=None):
+    """Rend le code de sortie de l'unite."""
+    try:
+        return _basculer(run, policy_path or POLICY, marqueur or MARQUEUR)
+    except subprocess.TimeoutExpired as exc:
+        # Registre lent, daemon occupe : rien n'a change cote poste (une
+        # transaction lancee continue dans rpm-ostreed et se verra au passage
+        # suivant). Pas de trace, pas d'echec.
+        log(f"{' '.join(exc.cmd)} a depasse {exc.timeout:.0f} s ; on reessaie au prochain passage")
+        return 0
+
+
+def _basculer(run, policy_path, marqueur):
+    if os.path.exists(marqueur):
+        log("marqueur present ; rien a faire")
+        return 0
+    origine, prochaine = origines(run)
+    if not origine:
+        log("deploiement demarre sans origine conteneur lisible ; rien a faire")
+        return 0
+    if est_signee(origine):
+        log(f"origine deja signee ({origine})")
+        ecrire_marqueur(marqueur)
+        return 0
+    if reference_nue(prochaine) != reference_nue(origine):
+        # Le prochain demarrage suit une AUTRE image (rebase manuel vers un
+        # autre depot, version epinglee par digest, deploiement non conteneur) :
+        # rebaser depuis l'origine demarree ecraserait ce choix. On attend
+        # qu'il soit demarre ; la bascule reprendra alors sur sa reference.
+        log(f"le prochain demarrage suit une autre image ({prochaine}) que le "
+            f"deploiement demarre ({origine}) ; on n'y touche pas")
+        return 0
+    if est_signee(prochaine):
+        # Le marqueur n'est ecrit qu'une fois DEMARRE sur l'origine signee : un
+        # deploiement en attente peut encore etre ecarte (rpm-ostree cleanup).
+        log(f"origine signee en attente du prochain demarrage ({prochaine})")
+        return 0
+    if origine.startswith("ostree-remote-"):
+        # Verification par une remote ostree : autre mecanisme, on n'y touche pas.
+        log(f"origine verifiee par remote ostree ({origine}) ; on n'y touche pas")
+        return 0
+    ref = reference_nue(origine)
+    if epinglee(origine):
+        # Epinglee par digest : aucune mise a jour a suivre, `upgrade --check`
+        # y echoue chaque jour, et ce choix appartient a l'administrateur. La
+        # politique juge deja chaque tirage ; rien a basculer.
+        log(f"origine epinglee par digest ({origine}) ; on n'y touche pas "
+            "(le marqueur n'est pas pose : la bascule reprendra si l'epingle est levee)")
+        return 0
+    if not politique_couvre(ref, policy_path):
+        log(f"la politique n'exige pas encore de signature pour {ref} ; "
+            "on reessaie au prochain passage (image pas encore a jour ?)")
+        return 0
+    if defaut_insecure(policy_path):
+        log("default de la politique en insecureAcceptAnything : ostree-image-signed "
+            "refuserait toute mise a jour ; on ne bascule pas")
+        return 0
+    # Sonde : le registre repond et la politique accepte l'image actuelle.
+    # 77 = aucune mise a jour disponible, ce qui est un succes ici.
+    sonde = run(["rpm-ostree", "upgrade", "--check"])
+    if sonde.returncode not in (0, 77):
+        log(f"upgrade --check en echec (code {sonde.returncode}) ; on reessaie plus tard : "
+            f"{(sonde.stderr or sonde.stdout).strip()[-400:]}")
+        return 0
+    cible = SIGNE + ref
+    log(f"rebase {origine} -> {cible} (sans redemarrage)")
+    r = run(["rpm-ostree", "rebase", cible])
+    if r.returncode != 0 and TRANSACTION_EN_COURS.search(f"{r.stderr}\n{r.stdout}"):
+        log("une transaction rpm-ostree est deja en cours ; on reessaie au prochain passage")
+        return 0
+    if r.returncode != 0:
+        log(f"ECHEC du rebase (code {r.returncode}) ; origine inchangee : "
+            f"{(r.stderr or r.stdout).strip()[-400:]}")
+        return 1
+    log("rebase mis en attente ; il prendra au prochain demarrage")
+    return 0
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["--politique-couvre"]:
+        if len(argv) != 2:
+            print("usage : bluefox-origine-signee --politique-couvre REF", file=sys.stderr)
+            return 2
+        # Les deux conditions d'ostree-image-signed : une exigence de signature
+        # pour REF, et un `default` qui n'accepte pas tout.
+        return 0 if politique_couvre(argv[1]) and not defaut_insecure() else 1
+    if argv:
+        print(__doc__, file=sys.stderr)
+        return 2
+    return basculer()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

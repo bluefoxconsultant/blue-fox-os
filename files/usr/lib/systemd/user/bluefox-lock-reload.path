@@ -1,0 +1,20 @@
+[Unit]
+Description=Blue Fox OS - surveillance du verrouillage d'ecran impose par la politique
+Documentation=https://github.com/bluefoxconsultant/blue-fox-os
+# bluefox-policy-sync (root) reecrit /etc/xdg/kscreenlockerrc quand la
+# politique change le delai de verrouillage (#27109). L'ecran de verrouillage
+# ne relit sa configuration qu'au demarrage de la session ou sur demande
+# D-Bus, et le service root ne peut pas joindre le bus de la session
+# (ProtectHome=yes, pas de bus usager). C'est donc la session qui surveille.
+
+[Path]
+# PathChanged suffit pour une ecriture atomique (fichier temporaire puis
+# os.replace) : systemd surveille le fichier ET ses repertoires parents, et le
+# remplacement par renommage declenche l'unite (mesure le 2026-10-28 sur
+# systemd 259 : remplacement, suppression, creation par renommage, un
+# declenchement chacun).
+PathChanged=/etc/xdg/kscreenlockerrc
+Unit=bluefox-lock-reload.service
+
+[Install]
+WantedBy=paths.target
