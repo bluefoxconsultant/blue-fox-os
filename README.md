@@ -22,11 +22,18 @@ fusion, comme sur chaque PR.
 
 À savoir avant de conclure quoi que ce soit :
 
-- **Les images publiées sur GHCR sont celles de la 1.0.0.** Les trois
-  `:latest` (`bf`, `bf-surface`, `factice`) ont été bâties depuis `ec8f407`, le
-  commit tagué `v1.0.0`, et sont signées et attestées. Ce qui a été fusionné
-  sur `main` depuis (#41, #42) n'y est pas et n'atteindra les machines qu'au
-  prochain `make publish`.
+- **Les images `:latest` suivent `main`.** Les trois images (`bf`,
+  `bf-surface`, `factice`) sont rebâties depuis `main` et republiées chaque
+  semaine, signées et attestées, une fois passée la porte canari (voir
+  « Provenance et signatures »). Ce qui est fusionné sur `main` atteint les
+  postes à la publication suivante ; les ISO restent celles de la 1.0.0
+  jusqu'à la prochaine version.
+- **Les postes vérifient la signature depuis la publication du 2026-11-01.**
+  Avant, la politique de conteneurs de l'image ne couvrait pas `ghcr.io` et
+  rien n'était vérifié. Un poste déjà installé passe en `ostree-image-signed`
+  une fois à jour (`bluefox-origine-signee`), sans redémarrage. La même
+  publication apporte le verrouillage d'écran piloté par la politique et les
+  adresses des services lues dans la politique (CHANGELOG, `[Unreleased]`).
 - **La politique ne s'applique que sur le chemin zero-touch.** Le kickstart
   autonome `install/bf-os.ks` n'appelle ni `bfos_provision.py` ni
   `bfos_apply.py` : une install par ce chemin donne une machine brandée mais
