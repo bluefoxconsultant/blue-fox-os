@@ -21,6 +21,20 @@ CE QU'IL APPLIQUE, ET CE QU'IL LAISSE TRANQUILLE
      jour, et un changement fait dans Odoo (PWA, extensions du navigateur)
      n'atteignait jamais le profil de la personne. Elle est rendue par la meme
      fonction qu'a l'installation (`render_public_policy`), secrets retires.
+  4. Le verrouillage d'ecran (#27109), /etc/xdg/kscreenlockerrc, d'apres
+     policies.auto_lock_minutes : n de 1 a 1440 impose le verrouillage apres n
+     minutes d'inactivite, groupe [Daemon][$i] (immuable, grise dans les
+     Parametres) ; 0 rend la main a la personne ; cle absente ou invalide, le
+     fichier reste tel quel. Le fichier est regenere depuis la base de l'image
+     (/usr/etc/xdg/kscreenlockerrc, qui porte le fond de l'ecran) : une
+     alteration locale est defaite au passage suivant et notee « reglage local
+     retabli » dans policy-sync.json. A CHAUD : l'unite usager
+     bluefox-lock-reload.path voit le fichier changer et demande a l'ecran de
+     verrouillage de relire sa configuration ; ce service-ci ne peut pas le
+     faire lui-meme (root, ProtectHome=yes, hors de la session).
+     Impose et retabli, pas inviolable : un sudoer reecrit le fichier jusqu'au
+     passage suivant, et une application peut inhiber le verrouillage
+     (lecture video, presentation, applet Energie).
 
 Le reste du bloc « install » — nom d'hote, locale, disposition clavier, mode de
 connexion — n'est DELIBEREMENT pas reapplique. Ces reglages se posent sur un
@@ -55,6 +69,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -70,6 +85,10 @@ FLATPAK_DIR = "/etc/bluebuild/default-flatpaks/system"
 # Une seule source pour le format des listes : le fichier ecrit a l'installation
 # et celui ecrit par la synchronisation ne peuvent pas diverger.
 APPLY_MODULE = "/usr/lib/bluefox/bfos_apply.py"
+# Le fichier que lit l'ecran de verrouillage, et sa base intacte dans l'image
+# (ostree range le /etc de l'image sous /usr/etc). Voir apply_screen_lock.
+LOCK_PATH = "/etc/xdg/kscreenlockerrc"
+LOCK_BASE = "/usr/etc/xdg/kscreenlockerrc"
 AUTH_PREFIX = "bfos-machine "
 TIMEOUT = 30
 
@@ -284,6 +303,186 @@ def trigger_flatpak_setup(run=subprocess.run) -> bool:
         return False
 
 
+# ------------------------------------------------------ verrouillage d'ecran
+# Bornes de policies.auto_lock_minutes : 0 = non impose (la personne regle son
+# poste elle-meme), 1 a 1440 = verrouillage impose apres n minutes. La meme
+# borne est posee cote Odoo ; elle est reverifiee ici parce qu'une valeur
+# aberrante ne doit jamais devenir un reglage du poste.
+LOCK_MAX_MINUTES = 1440
+LOCK_BEGIN = ("# >>> bluefox-policy-sync : verrouillage impose par la politique "
+              "(policies.auto_lock_minutes), ne pas modifier")
+LOCK_END = "# <<< bluefox-policy-sync"
+
+
+def _lock_minutes(policy):
+    """Retourne ``(minutes, note)``. `minutes` est None quand la politique ne
+    dit rien d'exploitable : le fichier est alors laisse tel quel.
+
+    ⚠️ Une cle ABSENTE n'est pas un 0. Absente, c'est un serveur anterieur ou
+    une politique incomplete : on garde le dernier reglage connu. 0, c'est une
+    decision de l'organisation : ne plus rien imposer."""
+    pol = policy.get("policies")
+    if not isinstance(pol, dict) or "auto_lock_minutes" not in pol:
+        return None, "politique sans auto_lock_minutes, verrouillage laisse intact"
+    value = pol["auto_lock_minutes"]
+    # bool est un int en Python : sans ce test, `true` deviendrait 1 minute.
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None, (f"auto_lock_minutes non entier ({value!r}), "
+                      "verrouillage laisse intact")
+    if not 0 <= value <= LOCK_MAX_MINUTES:
+        return None, (f"auto_lock_minutes hors bornes ({value}, attendu 0 a "
+                      f"{LOCK_MAX_MINUTES}), verrouillage laisse intact")
+    return value, ""
+
+
+def _lock_block(minutes) -> str:
+    """Le bloc impose, groupe [Daemon] de kscreenlockerrc (Plasma 6).
+
+    Cles et unites relues dans kscreenlocker (settings/kscreenlockersettings.kcfg
+    et ksldapp.cpp, v6.7.5) : Timeout est en MINUTES (Double), LockGrace en
+    SECONDES. `[$i]` rend le groupe immuable : KConfig ignore alors le groupe
+    [Daemon] du ~/.config/kscreenlockerrc de la personne, et le module des
+    Parametres grise les reglages.
+
+    Lock et RequirePassword sont imposes aussi : chacun, a faux, fait demarrer
+    l'ecran de verrouillage en `--nolock` (un economiseur que le premier
+    mouvement de souris leve). LockGrace aussi : c'est le delai pendant lequel
+    un mouvement deverrouille sans mot de passe ; laisse libre, une grande
+    valeur vaudrait de ne jamais verrouiller."""
+    return (f"{LOCK_BEGIN}\n"
+            "[Daemon][$i]\n"
+            "Autolock=true\n"
+            f"Timeout={minutes}\n"
+            "Lock=true\n"
+            "LockGrace=5\n"
+            "LockOnResume=true\n"
+            "RequirePassword=true\n"
+            f"{LOCK_END}\n")
+
+
+def _strip_lock(text, all_daemon) -> str:
+    """Retire de `text` le bloc balise de ce service et, si `all_daemon`, tout
+    groupe [Daemon] (y compris ses sous-groupes et sa forme [Daemon][$i])."""
+    out = []
+    # Commentaires et lignes vides lus dans un groupe retire : ils precedent
+    # souvent le groupe SUIVANT (l'en-tete du fond, par exemple). On les garde
+    # en attente et on ne les rend que si ce groupe suivant est conserve.
+    pending = []
+    in_ours = in_daemon = False
+    for line in text.splitlines(keepends=True):
+        s = line.strip()
+        if s == LOCK_BEGIN:
+            in_ours = True
+            continue
+        is_header = s.startswith("[")
+        first = s[1:].split("]", 1)[0] if is_header else None
+        if in_ours:
+            if s == LOCK_END:
+                in_ours = False
+                continue
+            # Bloc tronque (fin de balise perdue) : il s'arrete au premier
+            # groupe qui n'est plus le sien, pour ne pas avaler la suite.
+            if not (is_header and first != "Daemon"):
+                continue
+            in_ours = False
+        if s == LOCK_END:
+            continue
+        if is_header:
+            in_daemon = all_daemon and first == "Daemon"
+            if not in_daemon:
+                out.extend(pending)
+            pending = []
+        if in_daemon:
+            if not s or s.startswith(("#", ";")):
+                pending.append(line)
+            continue
+        out.append(line)
+    return "".join(out)
+
+
+def render_screen_lock(source, minutes) -> str:
+    """`source` sans aucun [Daemon], puis le bloc impose. Le fond de l'ecran de
+    verrouillage ([Greeter], ecrit par generate_kde_theme.py) est conserve."""
+    body = _strip_lock(source, all_daemon=True).rstrip("\n")
+    return (body + "\n\n" if body else "") + _lock_block(minutes)
+
+
+def _rendered_by_us(text) -> bool:
+    """Vrai si `text` est exactement ce que ce service ecrit : un contenu sans
+    [Daemon] suivi de son bloc, pour une duree valide. Le fond peut avoir
+    change (mise a jour de l'image) sans que ce soit une alteration locale."""
+    import re
+
+    m = re.search(r"^Timeout=(\d+)$", text, re.M)
+    if not m or not 1 <= int(m.group(1)) <= LOCK_MAX_MINUTES:
+        return False
+    return text == render_screen_lock(text, int(m.group(1)))
+
+
+def _pristine(current, base_text) -> bool:
+    """Vrai si le fichier en place n'a jamais recu de reglage de verrouillage :
+    c'est la base de l'image, ou (sans base) un fichier sans aucun [Daemon]."""
+    if base_text is not None:
+        return current == base_text
+    return _strip_lock(current, all_daemon=True) == current
+
+
+def _read_text(path):
+    try:
+        with open(path) as fh:
+            return fh.read()
+    except FileNotFoundError:
+        return None
+
+
+def apply_screen_lock(policy, path=None, base=None) -> tuple:
+    """Impose le verrouillage d'ecran. Retourne ``(changed, detail, restored)``.
+
+    🔴 PIEGE OSTREE : l'image livre deja /etc/xdg/kscreenlockerrc (le fond de
+    l'ecran de verrouillage). Un fichier de /etc modifie localement n'est plus
+    mis a jour par l'image : ostree garde la version locale. On regenere donc
+    TOUJOURS depuis la base intacte de l'image (/usr/etc/xdg/kscreenlockerrc) :
+    le fond d'une nouvelle image revient au passage suivant, et une alteration
+    locale du fichier est defaite. Sans base (image qui n'en livre pas), on
+    repart du fichier en place et on n'y remplace que son propre bloc.
+
+    0 = non impose : le fichier redevient la base de l'image (ou perd son
+    bloc), la personne retrouve ses propres reglages.
+
+    `restored` dit qu'un reglage local a ete ecrase : le fichier en place
+    n'etait ni la base ni un rendu de ce service."""
+    path = path or LOCK_PATH
+    base = base or LOCK_BASE
+    minutes, note = _lock_minutes(policy)
+    if minutes is None:
+        return False, note, False
+
+    base_text = _read_text(base)
+    current = _read_text(path)
+    if minutes == 0:
+        if base_text is not None:
+            content = base_text
+        elif current is None:
+            return False, "verrouillage non impose (aucun fichier)", False
+        else:
+            body = _strip_lock(current, all_daemon=False).rstrip("\n")
+            content = body + "\n" if body else ""
+        what = "verrouillage non impose (reglage de la personne)"
+    else:
+        source = base_text if base_text is not None else (current or "")
+        content = render_screen_lock(source, minutes)
+        what = f"verrouillage impose apres {minutes} min"
+
+    restored = (current is not None and current != content
+                and not _rendered_by_us(current)
+                and not _pristine(current, base_text))
+    if not write_if_changed(path, content, 0o644):
+        return False, what + ", inchange", False
+    if restored:
+        what += ", reglage local retabli"
+    return True, what, restored
+
+
 def write_state(path, **fields):
     """Trace de la derniere synchronisation, pour le diagnostic a froid."""
     try:
@@ -296,7 +495,8 @@ def write_state(path, **fields):
 def sync(machine_path=MACHINE_JSON, provisioning_path=PROVISIONING_JSON,
          flatpak_dir=FLATPAK_DIR, state_path=STATE_JSON,
          apply_module=APPLY_MODULE, opener=None, run=subprocess.run,
-         trigger=True, public_path=None) -> int:
+         trigger=True, public_path=None, lock_path=LOCK_PATH,
+         lock_base=LOCK_BASE) -> int:
     machine = read_machine(machine_path)
     if machine is None:
         log("machine non enrolee — rien a synchroniser")
@@ -345,12 +545,25 @@ def sync(machine_path=MACHINE_JSON, provisioning_path=PROVISIONING_JSON,
             log(f"ecriture de la copie de session impossible ({exc})")
             rc = 1
 
+    # Independant de bfos_apply.py : le verrouillage s'applique meme si le
+    # module manque a l'image.
+    try:
+        lock_changed, detail_lock, restored = apply_screen_lock(
+            policy, lock_path, lock_base)
+    except OSError as exc:
+        log(f"ecriture de {lock_path} impossible ({exc})")
+        lock_changed, detail_lock, restored, rc = False, str(exc), False, 1
+    log(detail_lock)
+    if lock_changed:
+        changes.append("verrouillage (reglage local retabli)" if restored
+                       else "verrouillage")
+
     log("aucun changement" if not changes
         else "applique : " + ", ".join(changes))
     write_state(state_path, last_attempt=stamp, last_success=stamp,
                 status="ok" if rc == 0 else "partial",
                 changes=changes, machine_uuid=machine.get("machine_uuid", ""),
-                hostname=machine.get("hostname", ""))
+                hostname=machine.get("hostname", ""), screen_lock=detail_lock)
     return rc
 
 

@@ -340,7 +340,7 @@ def _run_provisioned_flow(tenant: dict, prov: dict) -> int:
     Donc : si l'installation a depose des identifiants, il n'y a plus AUCUNE
     interaction — on applique et on sort. Sinon on garde le parcours SSO par
     navigateur, inchange, comme repli."""
-    creds = seat_credentials.lire()
+    creds = seat_credentials.lire(attendu=get_service_url(tenant, "nextcloud"))
     if creds:
         LOG.info("identifiants Nextcloud deposes par l'installation : "
                  "aucune connexion a redemander")

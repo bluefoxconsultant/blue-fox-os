@@ -4,6 +4,34 @@ Format : [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning Ca
 
 ## [Unreleased]
 
+### Security
+
+**Signature vérifiée des images, à l'installation et aux mises à jour** (#27109) :
+- La politique de conteneurs publiée visait `localhost/blue-fox-os-<slug>` (le build se fait avec `IMAGE_REGISTRY=localhost`) : `ghcr.io/bluefoxconsultant/...` tombait sous `"": insecureAcceptAnything` et aucune mise à jour n'était vérifiée. `files/scripts/politique-conteneurs.sh`, lancé après le module `signing`, écrit une entrée `sigstoreSigned` + `matchRepository` par dépôt (bf, bf-surface, factice) avec deux clés (`keyPaths`) : `/usr/share/bluefox/keys/cosign-images.pub` (publication) et `cosign-images-secours.pub` (secours, clé privée hors ligne). Le build échoue si `default` n'est pas `reject`, si une des deux clés manque ou si elles sont identiques, si la politique relue sur le disque n'est pas celle attendue, si une portée `registries.d` est déclarée deux fois, ou si la portée qui décide ne demande pas les pièces jointes sigstore.
+- `bluefox-rebase` passe en `ostree-image-signed:` quand la politique couvre l'image ; `bluefox-origine-signee.timer` bascule ensuite les postes existants (sans redémarrage, marqueur une fois démarré sur l'origine signée). Un déploiement en attente qui suit une autre image (rebase manuel, version épinglée) n'est jamais écrasé ; délai dépassé et transaction déjà en cours sont passagers.
+- Kickstart zero-touch : la ligne `ostreecontainer` vient de `/tmp/bfos-image.ks` (filet non vérifié écrit par le `%pre`, remplacé par la forme vérifiée) ; la politique de l'installateur passe en `matchRepository` et reçoit son `registries.d`.
+- `publish-image.sh`, étape 4b (juste après la poussée, avant SBOM et attestation) : porte canari. Dans l'image publiée, son propre skopeo juge par le proxy (`scripts/proxy-openimage.py`, OpenImage, le chemin de rpm-ostree) l'image elle-même, `factice:canari-signe` (doit passer) et `factice:canari-non-signe` (doit être refusé). Un refus de la politique remet l'index précédent sous le tag, relu au registre ; tout échec de la porte sort en code 3, qui arrête la republication des autres locataires (`ops/bfos/maj-images.sh`). Un verdict inconnu (registre lent, signature illisible) n'est jamais pris pour un refus.
+- Relecture adverse 2 : chaque clé est **décodée** au build (base64 strict, clé ECDSA P-256, point sur la courbe, puis `openssl pkey -pubin` quand openssl est là) : un corps PEM abîmé passait le contrôle d'en-tête et aurait gelé le parc. Une clé illisible (« parsing public key », « PEM decoding failed », clé absente) est un refus de la porte ; un verdict se rejuge (refus confirmé une fois, inconnu rejoué deux fois, 60 s d'intervalle) et un inconnu **sans motif passager** remet aussi l'index précédent (un retard plutôt qu'un gel). Seule une ligne « : REFUSE : » vaut refus (un plantage du juge n'en est pas un). Le retour arrière précède tout message (disque plein) et distingue « remis », « copie faite mais NON CONFIRMÉ » et « IMPOSSIBLE ». L'index précédent illisible pour une autre raison que « manifest unknown » arrête avant le build. `set -E` : le trap ERR tient aussi dans les fonctions. La porte se résume en une ligne `PORTE_CANARI cause=… retour=…`, reprise par `maj-images.sh` dans `dernier.json`.
+- `bluefox-origine-signee` : délais par commande (600 + 1500 + 1500 s) sous le `TimeoutStartSec=2h` de l'unité ; une origine épinglée par digest n'est plus sondée (son `upgrade --check` échouait chaque jour), seulement notée.
+- Clé de vérification de l'étape 7 et de `verify-image.sh` configurable (`COSIGN_PUB`, `cosign.pub` par défaut) ; procédure de la clé de secours dans le README.
+
+### Limites connues
+
+- La porte canari juge l'image N avec la politique de N, pas avec celle des postes (N-1) : une image signée par une clé que N-1 ignore la passe, et le parc la refuse (pas de gel, mais plus aucune mise à jour). À vérifier à la main lors d'un changement de clé (README, « Clé de secours cosign », étape 6) ; jugement par N-1 reporté après le 3 novembre.
+- La sonde de signature de l'installateur prend une panne de lecture des signatures pour une image non signée (avertissement seulement ; le téléchargement juge).
+
+### Changed
+
+**Verrouillage d'écran piloté par la politique** (#27109, lot 3) :
+- `bluefox-policy-sync` applique `policies.auto_lock_minutes` (1 à 1440, défaut Odoo 15) : groupe `[Daemon][$i]` de `/etc/xdg/kscreenlockerrc` (`Autolock`, `Timeout`, `Lock`, `LockGrace=5`, `LockOnResume`, `RequirePassword`), immuable et grisé dans les Paramètres. 0 rend la main à la personne ; clé absente ou invalide, rien ne change.
+- Le fichier est régénéré depuis `/usr/etc/xdg/kscreenlockerrc` (l'image y livre le fond) : une altération locale est défaite et notée « réglage local rétabli » dans `policy-sync.json`.
+- À chaud : unité usager `bluefox-lock-reload.path` (`busctl`, Fedora 43 ne livre pas `qdbus6`), activée dans bf, bf-surface et factice. ⚠️ Effet flotte : 15 minutes imposées à tous les postes enrôlés dès l'image à jour. Imposé, pas inviolable (sudoer, inhibition par une application).
+
+**Adresses des services lues dans la politique, phase 1** (#27109, lot 4 ; `bluefox-welcome` 0.3.0) :
+- `merge_branding` superpose `services.{nextcloud,vaultwarden,authentik,odoo}.url` de la politique sur `tenant.json` (liste blanche, https avec un hôte ; vide ou invalide = l'adresse de l'image reste ; jamais `slug` ni `image_ref`). rclone, Bitwarden et Brave lisent le tenant fusionné.
+- Les identifiants Nextcloud déposés par l'installation ne servent que si l'agent monte le Nextcloud pour lequel ils ont été frappés ; sinon le dépôt est effacé et le SSO prend le relais. Corrige le cas d'une autre organisation installée depuis l'image bf, dont le mot de passe d'application serait parti vers le Nextcloud de Blue Fox.
+- Reste pour la phase 2 : replis en dur de l'agent, `%post` des services, libellés.
+
 ### Added
 
 **Re-synchronisation de la politique sur les machines déjà installées** (#23909) :

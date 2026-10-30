@@ -1,0 +1,14 @@
+# Pieces jointes sigstore pour les images Blue Fox OS (#27109).
+#
+# cosign range la signature d'une image a cote d'elle, sous le tag
+# sha256-<digest>.sig. Sans cette ligne, containers-image ne va pas l'y
+# chercher : la politique (sigstoreSigned) repond alors « a signature was
+# required, but no signature exists » et refuse TOUTE mise a jour. Portee
+# d'espace de noms : elle dit seulement OU chercher, c'est la politique
+# (/etc/containers/policy.json, depot par depot) qui decide quoi exiger.
+#
+# ⚠️ Une portee ne doit figurer que dans UN fichier de ce dossier : en double,
+# containers-image refuse de lire le dossier entier.
+docker:
+  ghcr.io/bluefoxconsultant:
+    use-sigstore-attachments: true

@@ -2,6 +2,8 @@
 import json
 import logging
 
+import pytest
+
 from bluefox_welcome import seat_credentials as sc
 
 
@@ -48,6 +50,91 @@ class TestLire:
         with caplog.at_level(logging.ERROR):
             assert sc.lire(p) is None
         assert "NE SERONT PAS utilises" in caplog.text
+
+
+
+class TestServeurAttendu:
+    """#27109 : le mot de passe d'application est frappe pour le Nextcloud de
+    la POLITIQUE. L'agent ne le rend que si c'est bien ce serveur-la qu'il va
+    monter ; sinon il l'enverrait a un autre (celui de l'image)."""
+
+    MDP = "A1OK" * 18
+
+    def _depot(self, tmp_path, url="https://cloud.autre.org"):
+        contenu = {"login": "Ana", "app_password": self.MDP}
+        if url is not None:
+            contenu["url"] = url
+        return _ecrire(tmp_path, contenu)
+
+    def test_meme_serveur_rend_le_couple(self, tmp_path):
+        p = self._depot(tmp_path)
+        assert sc.lire(p, attendu="https://cloud.autre.org") == ("Ana", self.MDP)
+
+    @pytest.mark.parametrize("attendu", [
+        "https://cloud.autre.org/",
+        "https://Cloud.Autre.ORG",
+        "HTTPS://cloud.autre.org",
+        "https://cloud.autre.org:443",
+        "https://cloud.autre.org//",
+    ])
+    def test_ecarts_de_forme_seulement(self, tmp_path, attendu):
+        assert sc.lire(self._depot(tmp_path), attendu=attendu) == ("Ana", self.MDP)
+
+    def test_depot_avec_barre_finale(self, tmp_path):
+        p = self._depot(tmp_path, url="https://cloud.autre.org/")
+        assert sc.lire(p, attendu="https://cloud.autre.org") == ("Ana", self.MDP)
+
+    @pytest.mark.parametrize("attendu", [
+        "https://nextcloud.bluefoxconsultant.com",   # l'image, pas la politique
+        "https://cloud.autre.org.piege.net",
+        "http://cloud.autre.org",
+        "https://cloud.autre.org:8443",
+        "https://cloud.autre.org/nextcloud",
+        "",
+        "pas une url",
+    ])
+    def test_autre_serveur_rend_none(self, tmp_path, attendu):
+        assert sc.lire(self._depot(tmp_path), attendu=attendu) is None
+
+    def test_le_refus_se_journalise_sans_le_mot_de_passe(self, tmp_path, caplog):
+        p = self._depot(tmp_path)
+        with caplog.at_level(logging.ERROR):
+            assert sc.lire(p, attendu="https://nextcloud.bluefoxconsultant.com") is None
+        assert "https://cloud.autre.org" in caplog.text
+        assert "nextcloud.bluefoxconsultant.com" in caplog.text
+        assert self.MDP not in caplog.text
+
+    @pytest.mark.parametrize("url", [None, "", 42, ["https://cloud.autre.org"]])
+    def test_depot_sans_url_utilisable_rend_none(self, tmp_path, url):
+        p = _ecrire(tmp_path, {"login": "Ana", "app_password": self.MDP, "url": url})
+        assert sc.lire(p, attendu="https://cloud.autre.org") is None
+        assert sc.lire(self._depot(tmp_path, url=None),
+                       attendu="https://cloud.autre.org") is None
+
+    def test_le_depot_refuse_est_efface(self, tmp_path):
+        """Decision du 2026-10-29 : un depot frappe pour un autre serveur ne
+        servira jamais ; le laisser, c'est laisser dormir un mot de passe
+        d'application valide chez l'usager."""
+        p = self._depot(tmp_path)
+        assert sc.lire(p, attendu="https://nextcloud.bluefoxconsultant.com") is None
+        assert not p.exists()
+
+    def test_le_depot_accepte_n_est_pas_efface_par_la_lecture(self, tmp_path):
+        """L'effacement apres emploi reste a l'appelant (main), une fois le
+        montage applique."""
+        p = self._depot(tmp_path)
+        assert sc.lire(p, attendu="https://cloud.autre.org") == ("Ana", self.MDP)
+        assert p.exists()
+
+    @pytest.mark.parametrize("contenu", [{"login": "Ana"}, {"app_password": "x"}])
+    def test_un_depot_incomplet_n_est_pas_efface(self, tmp_path, contenu):
+        """Seul le refus de serveur efface : un depot incomplet se diagnostique."""
+        p = _ecrire(tmp_path, {**contenu, "url": "https://cloud.autre.org"})
+        assert sc.lire(p, attendu="https://autre.example") is None
+        assert p.exists()
+
+    def test_sans_attendu_le_contrat_d_avant_reste(self, tmp_path):
+        assert sc.lire(self._depot(tmp_path, url=None)) == ("Ana", self.MDP)
 
 
 class TestEffacer:

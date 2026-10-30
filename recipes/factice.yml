@@ -169,6 +169,7 @@ modules:
         - rpm-ostreed-automatic.timer
         - bluefox-flatpaks-verify.timer  # reprise horaire des Flatpak manquants (#25854)
         - bluefox-refresh-md.timer       # liste des paquets disponibles, chaque jour
+        - bluefox-origine-signee.timer   # origine des postes existants vers ostree-image-signed (#27109)
         # ⚠️ firstboot.service RETIRE le 2026-09-14. Il lancait l'agent d'accueil
         # EN TANT QUE ROOT, au demarrage, avant toute session : l'agent trouvait
         # les identifiants Nextcloud, appliquait theme, fond d'ecran, montages et
@@ -177,5 +178,21 @@ modules:
         # l'unite le documentait elle-meme sans en tirer la consequence.
       masked:
         - tailscaled.service
+    # Rechargement a chaud du verrouillage d'ecran impose par la politique
+    # (#27109) : bluefox-policy-sync reecrit /etc/xdg/kscreenlockerrc en root,
+    # la session le voit changer et demande a l'ecran de verrouillage de le
+    # relire. `systemctl --global enable` : actif pour toute session.
+    user:
+      enabled:
+        - bluefox-lock-reload.path
 
   - type: signing
+
+  # Politique de verification des mises a jour (#27109). APRES `signing`, dont
+  # elle remplace l'entree : le build se fait avec IMAGE_REGISTRY=localhost, et
+  # l'entree `localhost/...` laissait ghcr.io sous insecureAcceptAnything, donc
+  # aucune mise a jour verifiee. Le script echoue le build si la politique
+  # rendue ne verifie pas nos trois depots. Detail dans son entete.
+  - type: script
+    snippets:
+      - for D in "${CONFIG_DIRECTORY}/scripts" "${CONFIG_DIRECTORY}/files/scripts"; do [ -f "$D/politique-conteneurs.sh" ] && exec bash "$D/politique-conteneurs.sh"; done; echo "ERREUR - politique-conteneurs.sh introuvable sous ${CONFIG_DIRECTORY}" >&2; exit 1

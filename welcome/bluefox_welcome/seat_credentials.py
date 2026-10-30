@@ -17,14 +17,45 @@ en moins, jamais une etape dont tout depend.
 import json
 import logging
 from pathlib import Path
+from urllib.parse import urlsplit
 
 LOG = logging.getLogger("bluefox-welcome.seat_credentials")
 
 FICHIER = Path("/var/lib/bluefox-welcome/nc-credentials.json")
 
 
-def lire(path: Path | None = None):
-    """Retourne (login, mot_de_passe) ou None."""
+def _meme_nextcloud(a: str, b: str) -> bool:
+    """Meme serveur : schema et hote sans egard a la casse, port par defaut
+    implicite, `/` final ignore. Une url vide ne correspond a rien."""
+    def cle(url):
+        if not isinstance(url, str):
+            return None
+        try:
+            p = urlsplit(url.strip())
+            port = p.port
+        except ValueError:
+            return None
+        if not p.scheme or not p.hostname:
+            return None
+        defaut = {"https": 443, "http": 80}.get(p.scheme.lower())
+        return (p.scheme.lower(), p.hostname.lower(),
+                None if port == defaut else port, p.path.rstrip("/"))
+    ka, kb = cle(a), cle(b)
+    return ka is not None and ka == kb
+
+
+def lire(path: Path | None = None, attendu: str | None = None):
+    """Retourne (login, mot_de_passe) ou None.
+
+    `attendu` : l'URL Nextcloud que l'agent va effectivement monter (celle de
+    merge_branding). ⚠️ #27109 : le %pre frappe le mot de passe d'application
+    sur le Nextcloud de la POLITIQUE et l'inscrit dans `url`. Si l'agent monte
+    un autre serveur (celui de l'image), il y enverrait ce mot de passe : on
+    rend None et le parcours SSO prend le relais, vers le serveur monte.
+    Le depot refuse est EFFACE (decision du 2026-10-29) : il ne servira
+    jamais, et un mot de passe d'application valide n'a pas a dormir chez
+    l'usager.
+    """
     path = path or FICHIER
     if not path.exists():
         return None
@@ -48,6 +79,12 @@ def lire(path: Path | None = None):
     if not login or not mot_de_passe:
         LOG.warning("%s incomplet : login=%r, mot de passe %s",
                     path, login, "present" if mot_de_passe else "absent")
+        return None
+    if attendu is not None and not _meme_nextcloud(data.get("url"), attendu):
+        LOG.error("%s a ete prepare pour %r, l'agent monte %r : les identifiants "
+                  "ne seront PAS envoyes a un autre serveur ; depot efface, repli "
+                  "sur le SSO", path, data.get("url"), attendu)
+        effacer(path)
         return None
     return login, mot_de_passe
 

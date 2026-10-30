@@ -236,7 +236,12 @@ def test_both_digests_come_from_a_single_registry_read():
     """Relire le registre deux fois ouvre une fenetre pendant laquelle le tag
     peut bouger : on attesterait alors un index que le SBOM ne decrit pas."""
     body = _publish()
-    block = body.split("resolution des digests publies")[1].split("--- 6.")[0]
+    # Depuis #27109 la lecture precede la porte canari (4b), qui s'en sert
+    # aussi ; la seule autre lecture du tag est celle du retour arriere.
+    block = body.split("resolution des digests publies")[1].split("# --- 4b.")[0]
+    assert "IMAGE_INDEX_DIGEST=" not in body.split("# --- 4b.")[1], (
+        "ni la porte ni le SBOM ne doivent relire le digest de l'index"
+    )
     assert block.count("skopeo inspect") == 1, (
         "une seule lecture du registre doit servir les deux digests"
     )

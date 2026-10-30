@@ -48,12 +48,27 @@
 #   2. stage du RPM       <- files/usr/share/bluefox/rpm-staging/
 #   3. branding + KDE     <- scripts/build_branded_iso.sh (BUILD=0)
 #   4. build + push + sig <- bluebuild
+#  4b. porte canari       <- la politique de l'image PUBLIEE, avec son propre
+#                            skopeo, juge l'image elle-meme et deux canaris
+#                            (#27109) ; refus, ou verdict inconnu sans motif
+#                            passager = tag precedent remis, code 3
 #   5. SBOM SPDX          <- scripts/generate-sbom.sh (skopeo + syft, sous
 #                            podman unshare : scan du rootfs monte)
 #   6. attestation        <- cosign attest
 #   7. verification       <- cosign verify + verify-attestation + provenance
+#                            (cle : COSIGN_PUB, cosign.pub par defaut ; voir la
+#                            procedure de la cle de secours, README)
+#
+# Codes de sortie : 0 publie ; 3 porte canari en echec (ops/bfos/maj-images.sh
+# n'enchaine alors AUCUN autre locataire) ; tout autre code non nul : echec.
 
-set -euo pipefail
+# -E : le trap ERR s'execute aussi DANS les fonctions (relecture adverse 2,
+# m1). Sans lui, une commande qui rend 3 dans une fonction sortait en 3 par
+# `set -e`, sans passer par le trap : maj-images.sh l'aurait prise pour la porte.
+set -Eeuo pipefail
+# Le code 3 est reserve a la porte canari (etape 4b) : une commande qui
+# rendrait 3 d'elle-meme ne doit pas arreter la boucle de maj-images.sh.
+trap 'rc=$?; [ "$rc" = 3 ] && rc=1; exit $rc' ERR
 
 SLUG="${1:-${SLUG:-bf}}"
 TAG="${TAG:-latest}"
@@ -70,6 +85,8 @@ log() { echo "[publish] $*"; }
 # PUSHED passe a 1 des que l'image est en ligne : au-dela, tout echec laisse un
 # artefact publie et incomplet, et doit le dire. Voir post_push_notice().
 PUSHED=0
+# Etat de la porte canari (etape 4b), dit par post_push_notice.
+PORTE_ETAT="pas encore jouee"
 die() {
     echo "[publish] ERREUR: $*" >&2
     [ "$PUSHED" = "1" ] && post_push_notice
@@ -89,6 +106,7 @@ post_push_notice() {
     echo "[publish] ⚠️  ${IMAGE} est EN LIGNE et signee, mais la chaine n'est" >&2
     echo "[publish]     pas allee au bout : SBOM, attestation ou provenance" >&2
     echo "[publish]     manquants. L'image publiee n'est PAS complete." >&2
+    echo "[publish]     Porte canari (politique de l'image) : ${PORTE_ETAT}." >&2
     echo "[publish]     Remediation : relancer ce script, ou retirer le tag du" >&2
     echo "[publish]     registre. Ne pas laisser cet etat en place — c'est" >&2
     echo "[publish]     precisement le blocage B1 de l'audit P5.2." >&2
@@ -288,6 +306,32 @@ if [ "$DRY_RUN" = "1" ]; then
     exit 0
 fi
 
+# Digest de l'index publie AVANT cette poussee : c'est le retour arriere que
+# la porte canari (4b) remet sous le tag si la politique de la nouvelle image
+# est fausse.
+# Vide a la toute premiere publication d'un locataire, et SEULEMENT la : le
+# registre doit le dire (« manifest unknown »). Toute autre erreur (reseau,
+# jeton, 5xx) arrete AVANT le build (relecture adverse 2, m3) : la lire comme
+# une premiere publication publierait sans aucun retour arriere possible.
+PRECEDENT_DIGEST=""
+RAW_PRECEDENT="$(mktemp "${TMPDIR:-/tmp}/.bf-precedent.XXXXXX")"
+ERR_PRECEDENT="$(mktemp "${TMPDIR:-/tmp}/.bf-precedent-err.XXXXXX")"
+if skopeo inspect --raw --retry-times 3 "docker://${IMAGE}" > "$RAW_PRECEDENT" 2> "$ERR_PRECEDENT" \
+        && [ -s "$RAW_PRECEDENT" ]; then
+    PRECEDENT_DIGEST="sha256:$(sha256sum "$RAW_PRECEDENT" | cut -d' ' -f1)"
+    log "    index publie avant la poussee : ${PRECEDENT_DIGEST}"
+elif grep -qi "manifest unknown" "$ERR_PRECEDENT"; then
+    log "    aucun index sous ${IMAGE} (manifest unknown) : premiere publication, aucun retour arriere possible"
+else
+    MOTIF_PRECEDENT="$(tail -n 2 "$ERR_PRECEDENT")"
+    rm -f "$RAW_PRECEDENT" "$ERR_PRECEDENT"
+    die "index publie de ${IMAGE} illisible AVANT la poussee :
+${MOTIF_PRECEDENT:-(sortie vide)}
+Sans lui, la porte canari ne pourrait pas remettre l'image precedente si la
+nouvelle politique etait fausse. Rien n'a ete construit ni pousse : rejouer."
+fi
+rm -f "$RAW_PRECEDENT" "$ERR_PRECEDENT"
+
 log "4/7 build + push + signature cosign"
 bluebuild build --push "recipes/${SLUG}.yml"
 
@@ -295,7 +339,315 @@ bluebuild build --push "recipes/${SLUG}.yml"
 # l'avertissement d'artefact incomplet. Le trap couvre les commandes qui meurent
 # seules (syft, cosign), `die` couvre les controles explicites.
 PUSHED=1
-trap 'rc=$?; post_push_notice; exit $rc' ERR
+trap 'rc=$?; [ "$rc" = 3 ] && rc=1; post_push_notice; exit $rc' ERR
+
+# --- 4a. digests publies (une seule lecture) ----------------------------
+# ⚠️ DEUX digests, et les confondre casse la chaine dans un sens ou dans l'autre.
+#
+#   INDEX  (ce que `:latest` resout)  <- sujet de l'attestation, et ce que
+#                                        l'etape 7 et verify-image.sh verifient
+#   ENFANT linux/amd64                <- ou vit le rootfs, donc ce que le SBOM
+#                                        doit scanner
+#
+# Mesure sur bf le 2026-08-08 : index dd79faa9..., enfant amd64 5ece13b1... Ce
+# sont deux objets distincts. Attester l'enfant rendrait l'attestation
+# introuvable pour `cosign verify-attestation <tag>` ; scanner l'index ne donne
+# aucun rootfs.
+#
+# UNE SEULE lecture du registre sert les deux (et la porte canari, 4b) : la
+# relire deux fois ouvrirait
+# une fenetre pendant laquelle le tag peut bouger — bluebuild reecrit :latest a
+# chaque push — et on attesterait alors un index que le SBOM ne decrit pas.
+#
+# Le digest d'un manifeste EST le sha256 de ses octets canoniques : on le calcule
+# donc localement sur la reponse brute, plutot que de refaire un appel.
+log "    resolution des digests publies (une seule lecture)"
+RAW_MANIFEST="$(mktemp "${TMPDIR:-/tmp}/.bf-manifest.XXXXXX")"
+skopeo inspect --raw "docker://${IMAGE}" > "$RAW_MANIFEST" \
+    || die "manifeste de ${IMAGE} illisible sur le registre."
+
+IMAGE_INDEX_DIGEST="sha256:$(sha256sum "$RAW_MANIFEST" | cut -d' ' -f1)"
+SBOM_MANIFEST_DIGEST="$(python3 -c '
+import json, sys
+doc = json.load(open(sys.argv[1]))
+# Index OCI (ce que bluebuild pousse) : descendre a linux/amd64, la seule
+# variante que nous construisons et la seule qui tourne sur les postes.
+for m in doc.get("manifests", []):
+    p = m.get("platform", {})
+    if p.get("architecture") == "amd64" and p.get("os") == "linux":
+        print(m["digest"])
+        break
+' "$RAW_MANIFEST")"
+rm -f "$RAW_MANIFEST"
+
+# Manifeste simple (pas un index) : les deux digests se confondent alors, et
+# c'est le seul cas ou ils ont le droit de le faire.
+[ -n "$SBOM_MANIFEST_DIGEST" ] || SBOM_MANIFEST_DIGEST="$IMAGE_INDEX_DIGEST"
+
+[ -n "$IMAGE_INDEX_DIGEST" ] && [ -n "$SBOM_MANIFEST_DIGEST" ] \
+    || die "digest publie de ${IMAGE} illisible : impossible de garantir que le SBOM decrit l'image attestee."
+log "    index   ${IMAGE_INDEX_DIGEST}"
+log "    amd64   ${SBOM_MANIFEST_DIGEST}"
+
+# --- 4b. porte canari : la politique PUBLIEE juge-t-elle juste ? (#27109) --
+# 🔴 Un poste qui demarre cette image juge ses mises a jour suivantes avec SA
+# politique (/etc/containers/policy.json, ecrite par
+# files/scripts/politique-conteneurs.sh). Une cle fausse, un registries.d
+# absent, une identite en matchRepoDigestOrExact, et plus aucune mise a jour ne
+# passe sur le parc, correctif compris. Le garde du build verifie la FORME ;
+# cette porte verifie le VERDICT, juste apres la poussee (avant SBOM et
+# attestation : une image refusee n'a pas a etre attestee).
+#
+# Le juge est l'image publiee elle-meme, tiree par digest : son skopeo, sa
+# politique, son registries.d, ses cles. Il passe par le proxy skopeo
+# (scripts/proxy-openimage.py, OpenImage), le chemin exact de rpm-ostree, qui
+# juge le manifeste et les signatures sans tirer une couche :
+#   ${IMAGE_REPO}@${IMAGE_INDEX_DIGEST}  l'image publiee     -> doit PASSER
+#   :canari-signe      signee par notre cle                -> doit PASSER
+#   :canari-non-signe  autre digest, non signe             -> doit etre REFUSEE
+# Les deux tags canari vivent dans le depot factice (geste decrit dans la note
+# #27109) ; un tag absent fait echouer la porte, il ne la saute pas.
+#
+# Seul un VERDICT compte comme refus : une ligne « : REFUSE : » du juge
+# (proxy-openimage.py, code 1). Un code 1 sans cette ligne (plantage de
+# python3) est un verdict INCONNU (relecture adverse 2, m2). Une cle de la
+# politique illisible (« parsing public key », « PEM decoding failed », cle
+# absente) est un REFUS : deterministe, il gelerait le parc (M1).
+#
+# Chaque reference est jugee jusqu'a TROIS fois, a CANARI_DELAI secondes
+# d'intervalle (60 par defaut) : le verdict attendu se prend au premier
+# jugement ; le verdict contraire se confirme une fois ; un verdict inconnu se
+# rejoue deux fois (juger_ferme).
+#
+# Issue en echec : code 3 (maj-images.sh arrete sa boucle). Pour l'image
+# publiee et le canari signe, l'index precedent est remis sous le tag et relu
+# au registre quand la politique REFUSE, ou quand le verdict reste INCONNU
+# SANS motif passager reconnu (« INCONNU (passager) » : delai, dial tcp, 5xx).
+# Asymetrie assumee : une semaine de retard sur les postes vaut mieux qu'un
+# parc gele apres redemarrage. Un verdict inconnu PASSAGER arrete sans retour
+# arriere : l'image reste en ligne, la porte se rejoue.
+#
+# La sortie de la porte se resume en une ligne stable, relue par
+# ops/bfos/maj-images.sh pour dernier.json (controle du matin) :
+#   [publish] PORTE_CANARI cause=<...> retour=<fait|non-confirme|impossible|
+#             premiere-publication|non-tente|sans-objet>
+#
+# Pourquoi tirer l'image entiere plutot que la politique seule : le
+# /etc/containers final est la fusion de TOUTES les couches (registries.d,
+# blancs de suppression compris) ; le lire sans tout tirer demanderait de
+# derouler chaque couche. Un seul tirage, retire avant l'etape 5 : le pic de
+# disque reste celui d'avant (une copie a la fois).
+#
+# ⚠️ Limite connue : la porte juge l'image N avec la politique de N, pas avec
+# celle des postes (N-1). Une image signee par une cle que N connait mais que
+# N-1 ignore passe la porte et serait refusee par le parc (mise a jour en
+# echec, pas de gel : les postes gardent N-1). Voir README, cle de secours.
+CANARI_DEPOT="${CANARI_DEPOT:-${REGISTRY}/blue-fox-os-factice}"
+CANARI_RC=3
+CANARI_IMAGE="${IMAGE_REPO}@${IMAGE_INDEX_DIGEST}"
+CANARI_DELAI="${CANARI_DELAI:-60}"
+CANARI_DELAI_RELECTURE="${CANARI_DELAI_RELECTURE:-10}"
+PORTE_CAUSE=""
+PORTE_RETOUR=""
+retour_arriere() {
+    if [ -n "$PRECEDENT_DIGEST" ]; then
+        echo "Retour arriere (remet l'index precedent, deja signe, sous le tag) :
+    skopeo copy --all --preserve-digests docker://${IMAGE_REPO}@${PRECEDENT_DIGEST} docker://${IMAGE}"
+    else
+        echo "Aucun index precedent connu (premiere publication) : retirer le tag a la main."
+    fi
+}
+remettre_precedent() {
+    # 0 : le registre sert de nouveau PRECEDENT_DIGEST sous le tag, relu.
+    # 1 : rien n'a ete remis (aucun index precedent, ou copie en echec) : le
+    #     tag designe TOUJOURS l'image refusee.
+    # 2 : la copie a reussi, mais la relecture echoue ou diverge (trois
+    #     lectures) : etat du tag NON CONFIRME (relecture adverse 2, m5).
+    # Aucun fichier temporaire : le digest se calcule sur le flux (disque plein).
+    RELU_DIGEST=""
+    [ -n "$PRECEDENT_DIGEST" ] || return 1
+    skopeo copy --all --preserve-digests --retry-times 3 \
+        "docker://${IMAGE_REPO}@${PRECEDENT_DIGEST}" "docker://${IMAGE}" >&2 || return 1
+    local essai brut
+    for essai in 1 2 3; do
+        if brut="$(skopeo inspect --raw "docker://${IMAGE}" | sha256sum)"; then
+            RELU_DIGEST="sha256:${brut%% *}"
+            [ "$RELU_DIGEST" = "$PRECEDENT_DIGEST" ] && return 0
+        else
+            RELU_DIGEST=""
+        fi
+        [ "$essai" = 3 ] || sleep "$CANARI_DELAI_RELECTURE"
+    done
+    return 2
+}
+dire() { printf '%s\n' "$*" >&2 || true; }
+die_canari() {  # cause message [1 = remettre l'index precedent]
+    # m1 : le retour arriere passe AVANT toute ecriture de journal (stderr va
+    # dans un fichier : un disque plein ferait echouer un echo, donc le script
+    # sous `set -e`, avant d'avoir remis l'index). Toute ecriture est tolerante.
+    local remettre="${3:-0}" rc_retour=0
+    PORTE_CAUSE="$1"
+    if [ "$remettre" = "1" ]; then
+        if remettre_precedent; then rc_retour=0; else rc_retour=$?; fi
+        if [ "$rc_retour" = 0 ]; then
+            PORTE_RETOUR="fait"
+        elif [ "$rc_retour" = 2 ]; then
+            PORTE_RETOUR="non-confirme"
+        elif [ -z "$PRECEDENT_DIGEST" ]; then
+            PORTE_RETOUR="premiere-publication"
+        else
+            PORTE_RETOUR="impossible"
+        fi
+    else
+        PORTE_RETOUR="non-tente"
+    fi
+    dire "[publish] ERREUR: porte canari : $2"
+    dire "[publish] ---"
+    case "$PORTE_RETOUR" in
+        fait)
+            PORTE_ETAT="EN ECHEC (${PORTE_CAUSE}), tag remis sur l'index precedent"
+            dire "[publish] 🔁 ${IMAGE} est REMIS sur l'index precedent ${PRECEDENT_DIGEST}"
+            dire "[publish]    (relu au registre). L'image ecartee reste joignable par son"
+            dire "[publish]    digest ${IMAGE_INDEX_DIGEST} et par les tags calendaires que"
+            dire "[publish]    bluebuild a pousses ; les postes suivent ${IMAGE##*:}." ;;
+        non-confirme)
+            PORTE_ETAT="EN ECHEC (${PORTE_CAUSE}), retour arriere copie mais NON CONFIRME"
+            dire "[publish] ⚠️  retour arriere NON CONFIRME : la copie de l'index precedent"
+            dire "[publish]    ${PRECEDENT_DIGEST} sous ${IMAGE} a reussi, mais la relecture du"
+            dire "[publish]    tag ${RELU_DIGEST:+rend ${RELU_DIGEST}}${RELU_DIGEST:-a echoue} (trois lectures). A verifier tout de suite :"
+            dire "[publish]    skopeo inspect --raw docker://${IMAGE} | sha256sum   (attendu ${PRECEDENT_DIGEST#sha256:})"
+            dire "[publish]    $(retour_arriere)" ;;
+        impossible|premiere-publication)
+            PORTE_ETAT="EN ECHEC (${PORTE_CAUSE}), retour arriere automatique IMPOSSIBLE"
+            dire "[publish] 🔴 retour arriere automatique IMPOSSIBLE : rien n'a ete remis,"
+            dire "[publish]    ${IMAGE} designe TOUJOURS l'image ecartee. A faire tout de suite :"
+            dire "[publish]    $(retour_arriere)" ;;
+        *)
+            PORTE_ETAT="en echec (${PORTE_CAUSE}), image laissee en ligne"
+            dire "[publish] ⚠️  ${IMAGE} reste EN LIGNE, signee, sans SBOM ni attestation."
+            dire "[publish]    $(retour_arriere)" ;;
+    esac
+    dire "[publish] SBOM et attestation NON produits : la porte precede l'etape 5."
+    dire "[publish] Code ${CANARI_RC} : ops/bfos/maj-images.sh n'enchaine aucun autre locataire."
+    dire "[publish] PORTE_CANARI cause=${PORTE_CAUSE} retour=${PORTE_RETOUR}"
+    exit "$CANARI_RC"
+}
+if [ "${PUBLISH_SKIP_CANARI:-0}" = "1" ]; then
+    PORTE_ETAT="SAUTEE (PUBLISH_SKIP_CANARI=1)"
+    log "⚠️  PUBLISH_SKIP_CANARI=1 — porte canari SAUTEE : la politique de ${IMAGE} n'est pas eprouvee."
+else
+    log "4b/7 porte canari : ${CANARI_IMAGE} jugee par sa propre politique (proxy skopeo)"
+    if ! SORTIE_PULL="$(podman pull -q "$CANARI_IMAGE" 2>&1)"; then
+        die_canari juge "tirage de ${CANARI_IMAGE} impossible, verdict inconnu :
+$(tail -n 3 <<<"$SORTIE_PULL")"
+    fi
+    juger() {  # REF -> RC_JUGE, SORTIE_JUGE (un jugement)
+        # Le client passe par l'entree standard : rien du depot n'est monte.
+        if SORTIE_JUGE="$(podman run -i --rm --pull=never --entrypoint /usr/bin/python3 \
+                "$CANARI_IMAGE" - "docker://$1" \
+                < "${WORKDIR}/scripts/proxy-openimage.py" 2>&1)"; then
+            RC_JUGE=0
+        else
+            RC_JUGE=$?
+        fi
+        # m2 : seul ce que le juge DIT compte. Un plantage de python3 rend 1
+        # comme un refus : sans sa ligne de verdict, c'est un verdict inconnu.
+        case "$RC_JUGE" in
+            0) grep -q "^OpenImage .* : ACCEPTE" <<<"$SORTIE_JUGE" || RC_JUGE=2 ;;
+            1) grep -q "^OpenImage .* : REFUSE : " <<<"$SORTIE_JUGE" || RC_JUGE=2 ;;
+        esac
+    }
+    juger_ferme() {  # REF ATTENDU(0|1) -> RC_JUGE, SORTIE_JUGE, JUGEMENTS
+        # Le verdict attendu se prend au premier jugement ; le contraire se
+        # confirme une fois apres CANARI_DELAI (m2) ; un inconnu se rejoue deux
+        # fois (M1). Un juge qui n'a pas tourne (podman, python3) s'arrete la.
+        local ref="$1" attendu="$2" contraires=0 n=0
+        JUGEMENTS=""
+        while :; do
+            juger "$ref"
+            n=$((n + 1))
+            JUGEMENTS="${JUGEMENTS}${JUGEMENTS:+ }${RC_JUGE}"
+            case "$RC_JUGE" in
+                "$attendu") return 0 ;;
+                0|1) contraires=$((contraires + 1))
+                     [ "$contraires" -lt 2 ] || return 0 ;;
+                2) ;;
+                *) return 0 ;;
+            esac
+            [ "$n" -lt 3 ] || return 0
+            log "    ${ref} : verdict ${RC_JUGE}, nouveau jugement dans ${CANARI_DELAI} s"
+            sleep "$CANARI_DELAI"
+        done
+    }
+    juger_ferme "$CANARI_IMAGE" 0
+    RC_IMAGE=$RC_JUGE; SORTIE_IMAGE="$SORTIE_JUGE"; JUGES_IMAGE="$JUGEMENTS"
+    juger_ferme "${CANARI_DEPOT}:canari-signe" 0
+    RC_SIGNE=$RC_JUGE; SORTIE_SIGNE="$SORTIE_JUGE"; JUGES_SIGNE="$JUGEMENTS"
+    juger_ferme "${CANARI_DEPOT}:canari-non-signe" 1
+    RC_NON_SIGNE=$RC_JUGE; SORTIE_NON_SIGNE="$SORTIE_JUGE"
+    podman rmi "$CANARI_IMAGE" >/dev/null 2>&1 || true
+    for J in "${RC_IMAGE}:IMAGE" "${RC_SIGNE}:SIGNE" "${RC_NON_SIGNE}:NON_SIGNE"; do
+        case "${J%%:*}" in 0|1|2) ;; *)
+            SORTIE_VAR="SORTIE_${J#*:}"
+            die_canari juge "le juge n'a pas tourne dans ${IMAGE} (podman ou python3, code ${J%%:*}) :
+$(tail -n 2 <<<"${!SORTIE_VAR}")
+Verdict inconnu : rejouer l'etape, ou assumer avec PUBLISH_SKIP_CANARI=1." ;;
+        esac
+    done
+    GEL="🔴 Les postes qui demarreraient cette image ne pourraient plus se mettre a jour."
+    # 1. Ce qui gelerait le parc : retour arriere automatique.
+    if grep -q "INCONNU : skopeo introuvable" <<<"$SORTIE_IMAGE"; then
+        die_canari refus "skopeo introuvable dans ${IMAGE} : rpm-ostree ne pourrait plus rien tirer." 1
+    fi
+    if [ "$RC_IMAGE" = "1" ]; then
+        die_canari refus "la politique de ${IMAGE} REFUSE l'image publiee elle-meme (jugements ${JUGES_IMAGE}) :
+$(tail -n 2 <<<"$SORTIE_IMAGE")
+${GEL}" 1
+    fi
+    if [ "$RC_SIGNE" = "1" ]; then
+        die_canari refus "la politique de ${IMAGE} REFUSE l'image signee ${CANARI_DEPOT}:canari-signe (jugements ${JUGES_SIGNE}) :
+$(tail -n 2 <<<"$SORTIE_SIGNE")
+${GEL}" 1
+    fi
+    # 2. Ce qui ne dit rien de la politique : arret, image laissee en ligne.
+    for S in "$SORTIE_SIGNE" "$SORTIE_NON_SIGNE"; do
+        if grep -qi "manifest unknown" <<<"$S"; then
+            die_canari canari-absent "tag canari absent de ${CANARI_DEPOT} :
+$(tail -n 2 <<<"$S")
+Creer :canari-signe et :canari-non-signe (note #27109), ou assumer avec
+PUBLISH_SKIP_CANARI=1."
+        fi
+    done
+    # 3. Verdict toujours inconnu apres trois jugements, pour l'image ou le
+    # canari signe. Passager reconnu, et aucun refus parmi les jugements :
+    # arret, image en ligne. Sinon : retour arriere (asymetrie, M1).
+    for J in "IMAGE:${RC_IMAGE}:${JUGES_IMAGE}" "SIGNE:${RC_SIGNE}:${JUGES_SIGNE}"; do
+        NOM="${J%%:*}"; RESTE="${J#*:}"; RC_J="${RESTE%%:*}"; JUGES_J="${RESTE#*:}"
+        [ "$RC_J" = "2" ] || continue
+        SORTIE_VAR="SORTIE_${NOM}"
+        REF_J="$CANARI_IMAGE"; [ "$NOM" = SIGNE ] && REF_J="${CANARI_DEPOT}:canari-signe"
+        if grep -q ": INCONNU (passager) :" <<<"${!SORTIE_VAR}" && [[ " ${JUGES_J} " != *" 1 "* ]]; then
+            die_canari passager "verdict INCONNU (panne passagere) pour ${REF_J} apres trois jugements (${JUGES_J}) :
+$(tail -n 1 <<<"${!SORTIE_VAR}")
+Rejouer l'etape, ou assumer avec PUBLISH_SKIP_CANARI=1."
+        fi
+        die_canari inconnu "verdict INCONNU sans motif passager reconnu pour ${REF_J} apres trois jugements (${JUGES_J}) :
+$(tail -n 2 <<<"${!SORTIE_VAR}")
+Dans le doute, l'index precedent est remis : une semaine de retard vaut mieux qu'un parc gele." 1
+    done
+    if [ "$RC_NON_SIGNE" = "0" ]; then
+        die_canari non-signe-accepte "la politique de ${IMAGE} ACCEPTE l'image NON signee ${CANARI_DEPOT}:canari-non-signe : aucune verification reelle."
+    fi
+    if [ "$RC_NON_SIGNE" != "1" ]; then
+        die_canari non-signe-inconnu ":canari-non-signe a echoue, mais pas sur la politique (reseau ?) :
+$(tail -n 2 <<<"$SORTIE_NON_SIGNE")
+Verdict inconnu : rejouer l'etape, ou assumer avec PUBLISH_SKIP_CANARI=1."
+    fi
+    PORTE_ETAT="passee"
+    log "    image publiee et canari-signe acceptes ; canari-non-signe refuse : $(sed -n 's/.*REFUSE : //p' <<<"$SORTIE_NON_SIGNE" | head -n 1)"
+    log "PORTE_CANARI cause=aucune retour=sans-objet"
+fi
+
 
 # --- 5. SBOM ---------------------------------------------------------------
 # ⚠️ Ce commentaire a decrit `--scope squashed` jusqu'au 2026-08-08, alors que
@@ -341,51 +693,8 @@ log "5/7 generation du SBOM SPDX -> $(basename "$SBOM")"
 # jamais l'artefact local, dont le digest differe — et etiquette le document
 # SPDX avec la reference publiee, pour qu'un SBOM atteste ne s'identifie pas
 # par le chemin overlay de son point de montage.
-# ⚠️ DEUX digests, et les confondre casse la chaine dans un sens ou dans l'autre.
 #
-#   INDEX  (ce que `:latest` resout)  <- sujet de l'attestation, et ce que
-#                                        l'etape 7 et verify-image.sh verifient
-#   ENFANT linux/amd64                <- ou vit le rootfs, donc ce que le SBOM
-#                                        doit scanner
-#
-# Mesure sur bf le 2026-08-08 : index dd79faa9..., enfant amd64 5ece13b1... Ce
-# sont deux objets distincts. Attester l'enfant rendrait l'attestation
-# introuvable pour `cosign verify-attestation <tag>` ; scanner l'index ne donne
-# aucun rootfs.
-#
-# UNE SEULE lecture du registre sert les deux : la relire deux fois ouvrirait
-# une fenetre pendant laquelle le tag peut bouger — bluebuild reecrit :latest a
-# chaque push — et on attesterait alors un index que le SBOM ne decrit pas.
-#
-# Le digest d'un manifeste EST le sha256 de ses octets canoniques : on le calcule
-# donc localement sur la reponse brute, plutot que de refaire un appel.
-log "    resolution des digests publies (une seule lecture)"
-RAW_MANIFEST="$(mktemp "${TMPDIR:-/tmp}/.bf-manifest.XXXXXX")"
-skopeo inspect --raw "docker://${IMAGE}" > "$RAW_MANIFEST" \
-    || die "manifeste de ${IMAGE} illisible sur le registre."
-
-IMAGE_INDEX_DIGEST="sha256:$(sha256sum "$RAW_MANIFEST" | cut -d' ' -f1)"
-SBOM_MANIFEST_DIGEST="$(python3 -c '
-import json, sys
-doc = json.load(open(sys.argv[1]))
-# Index OCI (ce que bluebuild pousse) : descendre a linux/amd64, la seule
-# variante que nous construisons et la seule qui tourne sur les postes.
-for m in doc.get("manifests", []):
-    p = m.get("platform", {})
-    if p.get("architecture") == "amd64" and p.get("os") == "linux":
-        print(m["digest"])
-        break
-' "$RAW_MANIFEST")"
-rm -f "$RAW_MANIFEST"
-
-# Manifeste simple (pas un index) : les deux digests se confondent alors, et
-# c'est le seul cas ou ils ont le droit de le faire.
-[ -n "$SBOM_MANIFEST_DIGEST" ] || SBOM_MANIFEST_DIGEST="$IMAGE_INDEX_DIGEST"
-
-[ -n "$IMAGE_INDEX_DIGEST" ] && [ -n "$SBOM_MANIFEST_DIGEST" ] \
-    || die "digest publie de ${IMAGE} illisible : impossible de garantir que le SBOM decrit l'image attestee."
-log "    index   ${IMAGE_INDEX_DIGEST}"
-log "    amd64   ${SBOM_MANIFEST_DIGEST}"
+# Les deux digests viennent de l'etape 4a (une seule lecture du registre).
 
 # Le tirage, le montage, le scan et leur menage vivent dans generate-sbom.sh :
 # il doit s'executer sous `podman unshare`, ce que le reste de ce script n'a pas
@@ -440,8 +749,13 @@ cosign attest --yes \
 
 # --- 7. verification -------------------------------------------------------
 log "7/7 verification signature + attestation + provenance"
-cosign verify --key cosign.pub "$IMAGE" > /dev/null
-cosign verify-attestation --key cosign.pub --type spdxjson "$IMAGE" > /dev/null
+# COSIGN_PUB : la cle publique qui verifie (cosign.pub par defaut). Une image
+# de transition signee par la cle de secours se verifie avec
+# COSIGN_PUB=files/usr/share/bluefox/keys/cosign-images-secours.pub (README).
+COSIGN_PUB="${COSIGN_PUB:-cosign.pub}"
+[ -s "$COSIGN_PUB" ] || die "cle publique de verification introuvable : ${COSIGN_PUB} (COSIGN_PUB)."
+cosign verify --key "$COSIGN_PUB" "$IMAGE" > /dev/null
+cosign verify-attestation --key "$COSIGN_PUB" --type spdxjson "$IMAGE" > /dev/null
 
 # Provenance : relire l'etiquette telle que PUBLIEE, pas telle qu'on croit
 # l'avoir passee. Une variable non exportee, une recipe ou le bloc `labels:`

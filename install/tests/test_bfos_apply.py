@@ -382,6 +382,21 @@ def test_render_public_policy_garde_ce_dont_l_agent_a_besoin():
     assert "session" in public
 
 
+
+def test_render_public_policy_garde_les_services():
+    """#27109 : l'agent de session lit les adresses des services dans la copie
+    expurgee. Les retirer renverrait le poste aux adresses de l'image."""
+    services = {
+        "nextcloud": {"url": "https://cloud.autre.org", "oidc_client_id": "nc"},
+        "vaultwarden": {"url": "https://coffre.autre.org"},
+        "authentik": {"url": "https://sso.autre.org"},
+        "odoo": {"url": "https://erp.autre.org"},
+    }
+    public = json.loads(ba.render_public_policy({**POLICY, "services": services}))
+    assert public["services"] == services
+    assert "bind_password" not in public["install"]["login"]
+
+
 def test_render_public_policy_ne_touche_pas_l_original():
     """deepcopy, pas une vue : la politique servie au %post reste entiere."""
     ba.render_public_policy(POLICY)
