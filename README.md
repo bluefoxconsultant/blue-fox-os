@@ -25,7 +25,7 @@ fusion, comme sur chaque PR.
 - **Les images `:latest` suivent `main`.** Les trois images (`bf`,
   `bf-surface`, `factice`) sont rebâties depuis `main` et republiées chaque
   semaine, signées et attestées, une fois passée la porte canari (voir
-  « Provenance et signatures »). Ce qui est fusionné sur `main` atteint les
+  « Chaîne de build »). Ce qui est fusionné sur `main` atteint les
   postes à la publication suivante ; les ISO restent celles de la 1.0.0
   jusqu'à la prochaine version.
 - **Les postes vérifient la signature depuis la publication du 2026-11-01.**
