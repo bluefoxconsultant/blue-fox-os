@@ -215,7 +215,7 @@ de `/etc/containers/policy.json`, écrite par `files/scripts/politique-conteneur
 | Clé | Publique | Privée |
 |---|---|---|
 | publication | `cosign.pub` = `files/usr/share/bluefox/keys/cosign-images.pub` | machine de build, `~/.config/bluefox/keys/cosign.key` (sans phrase) |
-| secours | `files/usr/share/bluefox/keys/cosign-images-secours.pub` (sha256 `448dc741d397…`) | coffre Vaultwarden d'Olivier : `cosign-secours.key` et sa phrase de passe, jamais sur la machine de build |
+| secours | `files/usr/share/bluefox/keys/cosign-images-secours.pub` (sha256 `448dc741d397…`) | coffre de Blue Fox (hors ligne) : `cosign-secours.key` et sa phrase de passe, jamais sur la machine de build |
 
 **Quand s'en servir** : uniquement si la clé privée de publication **fuit**
 (copiée hors de la machine de build, machine compromise, clé vue dans un
