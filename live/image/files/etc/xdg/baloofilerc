@@ -1,0 +1,6 @@
+# Cle live (#26870) : pas d'indexation de fichiers. En mode « garder sur la
+# cle », Baloo indexait tout le dossier personnel (profils de Brave et des
+# Flatpak compris) et ecrivait son index sur la cle USB : session tres lente
+# (essai du 2026-10-26). En ephemere, il remplissait la memoire vive pour rien.
+[Basic Settings]
+Indexing-Enabled=false

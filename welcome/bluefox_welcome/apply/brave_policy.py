@@ -15,8 +15,9 @@ V1 policy ships:
   to be hardcoded here ; bookmarks now live in Odoo (bf_bookmarks).
 - `3rdparty` managed storage for extensions that take the instance address
   (Symbifox Signets), so they come pre-configured.
-- WebAppInstallForceList for any bf-policy/v2 session PWAs (BFOSI10) — each
-  force-installed as a standalone window; pinned ones also opened at startup.
+- WebAppInstallForceList for the bf-policy/v2 session PWAs that are NOT
+  pinned (BFOSI10). Pinned ones get a taskbar launcher instead
+  (apply/pwa_lanceurs.py, #26870).
 
 Brave Sync is not used (BFOSP4 superseded 2026-10-02) : bookmarks and
 extensions follow the person through the Symbifox extensions above (#25966).
@@ -32,8 +33,6 @@ LOG = logging.getLogger("bluefox-welcome.apply.brave_policy")
 
 # Forme d'un identifiant Chromium : 32 lettres de a a p.
 _EXT_ID_RE = re.compile(r"^[a-p]{32}$")
-# Chromium "RestoreOnStartup": 4 = open a fixed list of URLs.
-_RESTORE_OPEN_URLS = 4
 
 
 def _policy_path(home: Path) -> Path:
@@ -67,6 +66,9 @@ def _build_policy(nextcloud_url: str, pwas: list[dict] | None = None,
         "HomepageIsNewTabPage": False,
         "DefaultBrowserSettingEnabled": False,
         "PasswordManagerEnabled": False,
+        # Statistiques anonymes de Brave (P3A) coupees : sinon chaque fenetre
+        # de PWA ouvre sur un bandeau « Got it / Disable » (vu en VM, 2026-10-24).
+        "BraveP3AEnabled": False,
     }
     extensions = _valid_extensions(extensions)
     if extensions:
@@ -77,16 +79,16 @@ def _build_policy(nextcloud_url: str, pwas: list[dict] | None = None,
         if managed:
             policy["3rdparty"] = {"extensions": managed}
     pwas = pwas or []
+    # Les PWA épinglées ont leur lanceur dans la barre des tâches
+    # (apply/pwa_lanceurs.py, #26870) : les installer aussi par Brave en
+    # ferait deux entrées de menu, et les rouvrir à chaque démarrage de Brave
+    # (RestoreOnStartup, avant le 2026-10-24) ouvrait des onglets non voulus.
     force_list = [
         {"url": p["url"], "default_launch_container": "window"}
-        for p in pwas if p.get("url")
+        for p in pwas if isinstance(p, dict) and p.get("url") and not p.get("pinned")
     ]
     if force_list:
         policy["WebAppInstallForceList"] = force_list
-    pinned = [p["url"] for p in pwas if p.get("url") and p.get("pinned")]
-    if pinned:
-        policy["RestoreOnStartup"] = _RESTORE_OPEN_URLS
-        policy["RestoreOnStartupURLs"] = pinned
     return policy
 
 

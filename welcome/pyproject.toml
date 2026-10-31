@@ -32,3 +32,7 @@ bluefox-welcome = "bluefox_welcome.main:cli"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["bluefox_welcome*"]
+
+# Traductions de l'assistant (#26870) : lues telles quelles à l'exécution (langue.py), sans .mo.
+[tool.setuptools.package-data]
+bluefox_welcome = ["po/*.po", "po/*.pot"]

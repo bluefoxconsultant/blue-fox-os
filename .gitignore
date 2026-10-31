@@ -97,3 +97,6 @@ files/usr/lib/bluefox/
 *.swp
 *.swo
 .DS_Store
+
+# Banc de tournage #26870 : adresses du banc (nom tailnet), jamais au depot.
+live/tournage/*.json

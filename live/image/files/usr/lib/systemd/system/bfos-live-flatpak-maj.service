@@ -1,0 +1,16 @@
+# Cle USB live Blue Fox OS (#26870, 2026-10-27) : mises a jour Flatpak dans la
+# zone de la cle, en arriere-plan et a basse priorite ; sans zone, une bulle quand
+# les applis de l'ISO ont plus de 60 jours (bfos_live/zone_flatpak.py).
+[Unit]
+Description=Blue Fox OS (cle live) : mise a jour des applis de la cle
+Wants=network-online.target
+After=network-online.target bfos-live-flatpak.service
+ConditionPathExists=/etc/bfos-live/live.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/bfos-live/session maj-flatpak
+Nice=19
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+TimeoutStartSec=2h

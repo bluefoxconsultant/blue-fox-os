@@ -1,0 +1,14 @@
+{
+  "require_mfa": true,
+  "placeholder_user": "bfos-connexion",
+  "uid_min": 10000,
+  "uid_max": 59999,
+  "local_groups": [
+    "bfos-live"
+  ],
+  "persistence": true,
+  "profile_size_mb": 8192,
+  "profile_reserve_mb": 8192,
+  "profile_max_mb": 0,
+  "home_base": "/var/home"
+}

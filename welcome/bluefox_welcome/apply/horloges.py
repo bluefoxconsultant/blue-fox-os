@@ -25,6 +25,7 @@ casse, ce qui est bien pire qu'une heure au mauvais format.
 from __future__ import annotations
 
 import configparser
+import filecmp
 import logging
 import os
 import subprocess
@@ -35,6 +36,34 @@ LOG = logging.getLogger(__name__)
 APPLETSRC = Path.home() / ".config/plasma-org.kde.plasma.desktop-appletsrc"
 HORLOGE = "org.kde.plasma.digitalclock"
 FORMAT_DEFAUT = "24h"
+ZONEINFO = Path("/usr/share/zoneinfo")
+LOCALTIME = Path("/etc/localtime")
+
+
+def fuseau_local() -> str | None:
+    """Le fuseau du poste (lien /etc/localtime), ou None."""
+    try:
+        cible = os.path.realpath(LOCALTIME)
+    except OSError:
+        return None
+    _avant, sep, nom = cible.partition("/zoneinfo/")
+    return (nom or None) if sep else None
+
+
+def meme_fuseau(a: str | None, b: str | None, zoneinfo: Path = ZONEINFO) -> bool:
+    """Deux noms pour la meme regle d'heure : America/Montreal est un alias
+    d'America/Toronto (tzdata), et /etc/localtime resout l'alias."""
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    try:
+        fa, fb = zoneinfo / a, zoneinfo / b
+        return (fa.resolve().is_relative_to(zoneinfo.resolve())
+                and fb.resolve().is_relative_to(zoneinfo.resolve())
+                and filecmp.cmp(fa, fb, shallow=False))
+    except (OSError, ValueError):
+        return False
 
 
 def horloges_de_la_politique(prov: dict | None) -> dict:
@@ -87,8 +116,12 @@ def _prochain_identifiant(conf: configparser.ConfigParser) -> int:
 
 
 def appliquer_horloges(prov: dict | None, appletsrc: Path | None = None,
-                       relancer=None) -> tuple[bool, str]:
-    """Regle le format de l'heure, et ajoute la seconde horloge s'il le faut."""
+                       relancer=None, local=None) -> tuple[bool, str]:
+    """Regle le format de l'heure, et ajoute la seconde horloge s'il le faut :
+    seulement si son fuseau n'est PAS celui du poste. Sur la cle live, la session
+    prend le fuseau de la politique : la seconde horloge donnait deux fois la
+    meme heure (vu en VM le 2026-10-27, #26870). Une seconde horloge posee ainsi
+    en double par une version d'avant est retiree."""
     reglage = horloges_de_la_politique(prov)
     chemin = appletsrc or APPLETSRC
     if not chemin.is_file():
@@ -111,7 +144,11 @@ def appliquer_horloges(prov: dict | None, appletsrc: Path | None = None,
         notes.append(f"{_identifiant(section)}:{reglage['format']}")
 
     seconde = reglage["second_timezone"]
-    if seconde:
+    if seconde and meme_fuseau(seconde, (local or fuseau_local)()):
+        retirees = _retirer_secondes(conf, horloges, seconde)
+        notes.append(f"seconde({seconde}):fuseau du poste, rien a ajouter"
+                     + (f", {retirees} retiree(s)" if retirees else ""))
+    elif seconde:
         deja = [s for s in horloges
                 if seconde in conf.get(f"{s}][Configuration][Appearance",
                                        "selectedTimeZones", fallback="")]
@@ -128,6 +165,27 @@ def appliquer_horloges(prov: dict | None, appletsrc: Path | None = None,
         relancer = _relancer_plasmashell
     notes.append(f"plasmashell:{'relance' if relancer() else 'non relance'}")
     return True, "; ".join(notes)
+
+
+def _retirer_secondes(conf: configparser.ConfigParser, horloges: list[str],
+                      fuseau: str) -> int:
+    """Retire les secondes horloges que NOUS avons posees sur `fuseau` (reconnues
+    a leur reglage : ce fuseau seul, son code affiche), jamais la premiere ni une
+    horloge que la personne a reglee elle-meme. Rend le nombre retire."""
+    retirees = 0
+    for section in horloges[1:]:
+        app = f"{section}][Configuration][Appearance"
+        if (conf.get(app, "selectedTimeZones", fallback="") != fuseau
+                or conf.get(app, "displayTimezoneFormat", fallback="") != "Code"):
+            continue
+        general = f"{_contenant(section)}][General"
+        ordre = conf.get(general, "AppletOrder", fallback="").split(";")
+        ident = str(_identifiant(section))
+        conf.set(general, "AppletOrder", ";".join(i for i in ordre if i != ident))
+        for s in [s for s in conf.sections() if s == section or s.startswith(section + "][")]:
+            conf.remove_section(s)
+        retirees += 1
+    return retirees
 
 
 def _ajouter_seconde_horloge(conf: configparser.ConfigParser, modele: str,

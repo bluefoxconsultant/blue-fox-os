@@ -1,3 +1,4 @@
+import pytest
 import json
 import os
 import subprocess
@@ -487,3 +488,19 @@ class TestRetraitDuCompteDeSecours:
         dels = _userdels(_avec_secours(False, "local"), tmp_path)
         assert dels == []
         assert "Compte conserve" in capsys.readouterr().out
+
+
+
+def test_vconsole_keymap_filtre():
+    """Relecture adverse du 2026-10-26 : un saut de ligne ajoutait des lignes."""
+    import bfos_apply
+    out = bfos_apply.render_vconsole_conf({"install": {"keymap": "us\nFONT=piege"}})
+    assert "FONT" not in out and out.startswith("KEYMAP=ca\n")
+    assert bfos_apply.render_vconsole_conf({"install": {"keymap": "fr"}}).startswith("KEYMAP=fr\n")
+
+
+
+@pytest.mark.parametrize("install", [{}, {"keymap": None}, {"keymap": "  "}, {"x_layout": "ca", "x_variant": "multix"}])
+def test_vconsole_sans_keymap_retombe_sur_ca(install):
+    import bfos_apply
+    assert bfos_apply.render_vconsole_conf({"install": install}).startswith("KEYMAP=ca\n")

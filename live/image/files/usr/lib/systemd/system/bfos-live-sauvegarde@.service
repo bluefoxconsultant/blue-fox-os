@@ -1,0 +1,13 @@
+# Cle USB live Blue Fox OS (#26870, 2026-10-24) : une sauvegarde du bureau
+# itinerant de %i (voir bfos-live-sauvegarde@.timer).
+[Unit]
+Description=Blue Fox OS (cle live) : sauvegarde du bureau de %i dans Nextcloud
+After=bfos-live-session@%i.service
+Requisite=bfos-live-session@%i.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/bfos-live/session sauvegarder %i
+TimeoutStartSec=20min
+Nice=10
+IOSchedulingClass=idle

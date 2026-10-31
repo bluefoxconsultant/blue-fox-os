@@ -32,3 +32,19 @@ make welcome-rpm   # depuis la racine du repo
   Aucun appel réseau ici.
 - `apply/` : modules d'application des configs (KAccounts, Thunderbird, NC Talk, CalDAV, CardDAV, imprimante) (à créer)
 - `firstboot.service` : unité systemd qui déclenche le wizard
+
+## Langues (#26870)
+
+L'assistant suit la langue de la session Plasma (`LANGUAGE`, puis `LC_ALL`, puis `LANG`), qui vient
+de la politique de l'organisation. Les textes sont écrits en français dans le code, marqués `_("…")`,
+et traduits par des fichiers PO standard dans `bluefox_welcome/po/`, lus tels quels à l'exécution
+(`bluefox_welcome/langue.py`, même mécanisme que la clé live). Un texte non traduit reste en français.
+
+- **Ajouter une langue** : copier `po/bluefox-welcome.pot` en `po/<code>.po` (ex. `es.po`) et remplir
+  les `msgstr`. Rien d'autre à faire : le fichier part avec le paquet (`pyproject.toml`).
+- **Après un changement de texte** : `python3 outils/extraire_po.py` régénère le gabarit et ajoute les
+  nouveaux textes, vides, à chaque langue. Les textes disparus restent en commentaire `#~`.
+- **Garde-fous** (`tests/test_langue.py`) : chaque texte a sa traduction anglaise, le gabarit est à
+  jour, et chaque traduction garde les mêmes `{champs}`.
+- Restent en français, volontairement : les messages de journal et ceux de `firstboot.log`
+  (diagnostic technique), les options de la ligne de commande.

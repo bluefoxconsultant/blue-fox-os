@@ -24,9 +24,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import seat_credentials
+from . import langue, seat_credentials
 from .apply import (
+    ajouter_emplacements,
     appliquer_horloges,
+    appliquer_pwa_epinglees,
     appliquer_photo,
     apply_bitwarden_prefs,
     apply_brave_policy,
@@ -44,6 +46,7 @@ from .provisioning import (
     session_pwas,
     user_login,
 )
+from .langue import _
 from .secure_file import write_private
 from .tenant import get_service_url, get_slug, load_tenant
 
@@ -175,36 +178,37 @@ def _wire_nc_login_poll(page, btn, status, nc_url, on_success):
         except Exception as exc:  # noqa: BLE001 — surface to the user, never crash Qt
             timer.stop()
             btn.setEnabled(True)
-            status.setText(f"<span style='color:#c0392b'>Échec : {exc}</span>")
+            status.setText("<span style='color:#c0392b'>{}</span>".format(
+                _("Échec : {erreur}").format(erreur=exc)))
             LOG.warning("nc login poll failed: %s", exc)
             return
         if res is not None:
             timer.stop()
             on_success(res[0], res[1])
-            status.setText(f"<span style='color:#27ab63'>Connecté en tant que "
-                           f"<b>{res[0]}</b> ✓</span>")
-            btn.setText("Reconnecter")
+            status.setText("<span style='color:#27ab63'>{}</span>".format(
+                _("Connecté en tant que <b>{nom}</b> ✓").format(nom=res[0])))
+            btn.setText(_("Reconnecter"))
             btn.setEnabled(True)
             return
         if QDateTime.currentSecsSinceEpoch() > state["deadline"]:
             timer.stop()
             btn.setEnabled(True)
-            status.setText("<span style='color:#c0392b'>Délai dépassé — "
-                           "réessayez.</span>")
+            status.setText("<span style='color:#c0392b'>{}</span>".format(
+                _("Délai dépassé — réessayez.")))
 
     def on_click():
         try:
             login_url, endpoint, token = nc_login_initiate(nc_url)
         except Exception as exc:  # noqa: BLE001
-            status.setText(f"<span style='color:#c0392b'>Impossible de démarrer "
-                           f"la connexion : {exc}</span>")
+            status.setText("<span style='color:#c0392b'>{}</span>".format(
+                _("Impossible de démarrer la connexion : {erreur}").format(erreur=exc)))
             LOG.warning("nc login initiate failed: %s", exc)
             return
         state.update(poll_endpoint=endpoint, poll_token=token,
                      deadline=QDateTime.currentSecsSinceEpoch() + 300)
         _open_url_logged(login_url)
         btn.setEnabled(False)
-        status.setText("Connectez-vous dans le navigateur…")
+        status.setText(_("Connectez-vous dans le navigateur…"))
         timer.start()
 
     btn.clicked.connect(on_click)
@@ -227,6 +231,8 @@ def cli() -> int:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
+    # La langue de la session Plasma (celle de la politique, par plasma-localerc).
+    LOG.info("langue de l'assistant : %s", langue.choisir_depuis_env())
 
     # ⚠️ JAMAIS EN ROOT (mesure en VM le 2026-09-14).
     # firstboot.service lancait cet agent en root, au demarrage, avant toute
@@ -326,6 +332,20 @@ def _apply_from_policy(tenant: dict, prov: dict, nc_creds) -> None:
     )
 
 
+def traduire_boutons(wizard, QWizard) -> None:
+    """Les boutons de QWizard viennent des traductions de Qt, que l'agent ne charge pas :
+    « Finish » et « Cancel » au milieu d'un assistant en francais (#26870, 2026-10-27).
+    Ils suivent la langue de l'assistant, comme le reste."""
+    B = QWizard.WizardButton
+    for bouton, texte in ((B.FinishButton, _("Terminer")), (B.CancelButton, _("Annuler")),
+                          (B.NextButton, _("Suivant")), (B.BackButton, _("Précédent"))):
+        wizard.setButtonText(bouton, texte)
+
+
+# Nom d'origine, garde pour les appelants et essais existants.
+franciser_boutons = traduire_boutons
+
+
 def _run_provisioned_flow(tenant: dict, prov: dict) -> int:
     """Premier demarrage d'une install par flux d'appareil.
 
@@ -366,8 +386,9 @@ def _run_provisioned_flow_sso(tenant: dict, prov: dict) -> int:
 
     app = QApplication(sys.argv)  # noqa: F841 — kept alive for Qt
     wizard = QWizard()
-    wizard.setWindowTitle("Blue Fox OS — Premier démarrage")
+    wizard.setWindowTitle(_("Blue Fox OS — Premier démarrage"))
     wizard.setOption(QWizard.WizardOption.NoBackButtonOnStartPage, True)
+    traduire_boutons(wizard, QWizard)
 
     login = user_login(prov)
     nc_url = get_service_url(tenant, "nextcloud",
@@ -375,17 +396,17 @@ def _run_provisioned_flow_sso(tenant: dict, prov: dict) -> int:
     creds = {"value": None}
 
     page = QWizardPage()
-    page.setTitle("Bienvenue sur Blue Fox OS")
+    page.setTitle(_("Bienvenue sur Blue Fox OS"))
     layout = QVBoxLayout()
     layout.addWidget(QLabel(
-        f"Configuration automatique de votre poste pour <b>{login}</b>."))
+        _("Configuration automatique de votre poste pour <b>{login}</b>.").format(login=login)))
     layout.addWidget(QLabel(
-        "Connectez-vous une fois à Nextcloud (SSO) pour activer vos fichiers. "
-        "Le thème, le navigateur, le vault et les comptes mail sont configurés "
-        "automatiquement à la fin."))
-    btn = QPushButton("Se connecter à Nextcloud (SSO)")
+        _("Connectez-vous une fois à Nextcloud (SSO) pour activer vos fichiers. "
+          "Le thème, le navigateur, le vault et les comptes mail sont configurés "
+          "automatiquement à la fin.")))
+    btn = QPushButton(_("Se connecter à Nextcloud (SSO)"))
     layout.addWidget(btn)
-    status = QLabel("Non connecté — vous pouvez ignorer et le faire plus tard.")
+    status = QLabel(_("Non connecté — vous pouvez ignorer et le faire plus tard."))
     layout.addWidget(status)
     page.setLayout(layout)
     wizard.addPage(page)
@@ -422,8 +443,9 @@ def build_manual_wizard(tenant: dict, prefill_email: str = "",
 
     app = QApplication.instance() or QApplication(sys.argv)
     wizard = QWizard()
-    wizard.setWindowTitle("Blue Fox OS — Premier démarrage")
+    wizard.setWindowTitle(_("Blue Fox OS — Premier démarrage"))
     wizard.setOption(QWizard.WizardOption.NoBackButtonOnStartPage, True)
+    traduire_boutons(wizard, QWizard)
 
     wizard.addPage(_welcome_page(tenant, QWizardPage, QVBoxLayout, QLabel))
     wizard.addPage(_authentik_page(tenant, QWizardPage, QVBoxLayout, QLabel,
@@ -472,15 +494,16 @@ def _run_manual_wizard(tenant: dict, prefill_email: str = "",
 
 def _welcome_page(tenant, QWizardPage, QVBoxLayout, QLabel):
     page = QWizardPage()
-    page.setTitle("Bienvenue sur Blue Fox OS")
+    page.setTitle(_("Bienvenue sur Blue Fox OS"))
     slug = get_slug(tenant)
     layout = QVBoxLayout()
     layout.addWidget(QLabel(
-        f"Cet assistant configure votre poste pour le tenant <b>{slug}</b>."))
+        _("Cet assistant configure votre poste pour le tenant <b>{slug}</b>.").format(slug=slug)))
     layout.addWidget(QLabel(
-        "Étapes : compte Authentik, fichiers Nextcloud, vault Bitwarden, sync Brave."))
+        _("Étapes : compte Authentik, fichiers Nextcloud, vault Bitwarden, sync Brave.")))
     layout.addWidget(QLabel(
-        "Vous pouvez ignorer une étape avec Suivant et la reprendre plus tard."))
+        _("Vous pouvez ignorer une étape avec {suivant} et la reprendre plus tard.")
+        .format(suivant=_("Suivant"))))
     page.setLayout(layout)
     return page
 
@@ -488,22 +511,22 @@ def _welcome_page(tenant, QWizardPage, QVBoxLayout, QLabel):
 def _authentik_page(tenant, QWizardPage, QVBoxLayout, QLabel, QLineEdit,
                     QPushButton, prefill_email=""):
     page = QWizardPage()
-    page.setTitle("Identité — Authentik")
+    page.setTitle(_("Identité — Authentik"))
     auth_url = get_service_url(tenant, "authentik",
                                "https://auth.bluefoxconsultant.com")
     layout = QVBoxLayout()
     layout.addWidget(QLabel(
-        "Votre compte unique Blue Fox donne accès à Nextcloud + Odoo + Vaultwarden "
-        "via le même mot de passe (BFOSI2)."))
+        _("Votre compte unique Blue Fox donne accès à Nextcloud + Odoo + Vaultwarden "
+          "via le même mot de passe (BFOSI2).")))
     layout.addWidget(QLabel(
-        "Connectez-vous à Authentik dans le navigateur pour configurer le MFA TOTP "
-        "la première fois."))
-    btn = QPushButton(f"Ouvrir {auth_url}")
+        _("Connectez-vous à Authentik dans le navigateur pour configurer le MFA TOTP "
+          "la première fois.")))
+    btn = QPushButton(_("Ouvrir {adresse}").format(adresse=auth_url))
     btn.clicked.connect(lambda: _open_url_logged(auth_url))
     layout.addWidget(btn)
-    layout.addWidget(QLabel("Votre courriel Blue Fox :"))
+    layout.addWidget(QLabel(_("Votre courriel Blue Fox :")))
     email = QLineEdit()
-    email.setPlaceholderText("prenom@bluefoxconsultant.com")
+    email.setPlaceholderText(_("prenom@bluefoxconsultant.com"))
     if prefill_email:
         email.setText(prefill_email)  # known from the install device-flow
     layout.addWidget(email)
@@ -515,27 +538,27 @@ def _authentik_page(tenant, QWizardPage, QVBoxLayout, QLabel, QLineEdit,
 def _files_page(tenant, QWizardPage, QVBoxLayout, QLabel, QCheckBox, QLineEdit,
                 QPushButton):
     page = QWizardPage()
-    page.setTitle("Fichiers Nextcloud")
+    page.setTitle(_("Fichiers Nextcloud"))
     nc_url = get_service_url(tenant, "nextcloud",
                              "https://nextcloud.bluefoxconsultant.com")
     layout = QVBoxLayout()
-    layout.addWidget(QLabel("Configuration du dossier Nextcloud (BFOSP3)."))
-    layout.addWidget(QLabel(f"Serveur : <code>{nc_url}</code>"))
-    layout.addWidget(QLabel("Cible : <code>~/Nextcloud/</code> — visible "
-                            "dans Dolphin et toutes les apps."))
+    layout.addWidget(QLabel(_("Configuration du dossier Nextcloud (BFOSP3).")))
+    layout.addWidget(QLabel(_("Serveur : <code>{adresse}</code>").format(adresse=nc_url)))
+    layout.addWidget(QLabel(_("Cible : <code>~/Nextcloud/</code> — visible "
+                              "dans Dolphin et toutes les apps.")))
 
-    do_mount = QCheckBox("Monter Nextcloud dans ~/Nextcloud après la connexion")
+    do_mount = QCheckBox(_("Monter Nextcloud dans ~/Nextcloud après la connexion"))
     do_mount.setChecked(True)
     layout.addWidget(do_mount)
     page.registerField("do_mount", do_mount)
 
     layout.addWidget(QLabel(
-        "Connectez-vous une seule fois : l'authentification se fait dans le "
-        "navigateur avec votre compte Blue Fox (SSO Authentik). Aucun mot de "
-        "passe à saisir ici."))
-    btn = QPushButton("Se connecter à Nextcloud (SSO)")
+        _("Connectez-vous une seule fois : l'authentification se fait dans le "
+          "navigateur avec votre compte Blue Fox (SSO Authentik). Aucun mot de "
+          "passe à saisir ici.")))
+    btn = QPushButton(_("Se connecter à Nextcloud (SSO)"))
     layout.addWidget(btn)
-    status = QLabel("Non connecté.")
+    status = QLabel(_("Non connecté."))
     layout.addWidget(status)
 
     # Hidden fields carry the credentials acquired via Login Flow v2 to _finalize.
@@ -548,8 +571,8 @@ def _files_page(tenant, QWizardPage, QVBoxLayout, QLabel, QCheckBox, QLineEdit,
     page.registerField("nc_login_name", nc_login_name)
     page.registerField("nc_app_password", nc_app_password)
 
-    layout.addWidget(QLabel("Mail / calendrier / contacts seront ajoutés "
-                            "à KAccounts (System Settings → Online Accounts)."))
+    layout.addWidget(QLabel(_("Mail / calendrier / contacts seront ajoutés "
+                              "à KAccounts (System Settings → Online Accounts).")))
 
     # NC Login Flow v2 on a QTimer — shared with the provisioned flow. The only
     # per-flow difference is the success sink: here the credential lands in the
@@ -566,16 +589,17 @@ def _files_page(tenant, QWizardPage, QVBoxLayout, QLabel, QCheckBox, QLineEdit,
 
 def _vault_page(tenant, QWizardPage, QVBoxLayout, QLabel, QPushButton):
     page = QWizardPage()
-    page.setTitle("Vault Bitwarden")
+    page.setTitle(_("Vault Bitwarden"))
     vault_url = get_service_url(tenant, "vaultwarden",
                                 "https://vault.bluefoxconsultant.com")
     layout = QVBoxLayout()
     layout.addWidget(QLabel(
-        f"Bitwarden Desktop sera pré-configuré pour : <code>{vault_url}</code>"))
+        _("Bitwarden Desktop sera pré-configuré pour : <code>{adresse}</code>")
+        .format(adresse=vault_url)))
     layout.addWidget(QLabel(
-        "Lance Bitwarden depuis le menu après l'assistant et connecte-toi "
-        "— l'URL self-hosted sera déjà remplie."))
-    btn_v = QPushButton(f"Ouvrir {vault_url}")
+        _("Lance Bitwarden depuis le menu après l'assistant et connecte-toi "
+          "— l'URL self-hosted sera déjà remplie.")))
+    btn_v = QPushButton(_("Ouvrir {adresse}").format(adresse=vault_url))
     btn_v.clicked.connect(lambda: _open_url_logged(vault_url))
     layout.addWidget(btn_v)
     page.setLayout(layout)
@@ -584,7 +608,7 @@ def _vault_page(tenant, QWizardPage, QVBoxLayout, QLabel, QPushButton):
 
 def _done_page(tenant, wizard, QWizardPage, QVBoxLayout, QTextEdit):
     page = QWizardPage()
-    page.setTitle("Récapitulatif")
+    page.setTitle(_("Récapitulatif"))
     layout = QVBoxLayout()
     summary = QTextEdit()
     summary.setReadOnly(True)
@@ -598,26 +622,44 @@ def _done_page(tenant, wizard, QWizardPage, QVBoxLayout, QTextEdit):
         nc_login = wizard.field("nc_login_name") or ""
         connected = bool(nc_login and wizard.field("nc_app_password"))
         if connected and do_mount:
-            nc_state = f"monté au clic suivant (connecté : {nc_login})"
+            nc_state = _("monté au clic suivant (connecté : {nom})").format(nom=nc_login)
         elif connected:
-            nc_state = f"connecté ({nc_login}) — mount décoché"
+            nc_state = _("connecté ({nom}) — mount décoché").format(nom=nc_login)
         else:
-            nc_state = "reporté (connexion SSO non complétée)"
+            nc_state = _("reporté (connexion SSO non complétée)")
+        lignes = [
+            _("Tenant : <b>{slug}</b>").format(slug=slug),
+            _("Compte BF : {courriel}").format(courriel=email),
+            _("NC Files (rclone mount, SSO) : {etat}").format(etat=nc_state),
+            _("Bitwarden Desktop : URL Vaultwarden injectée au clic suivant"),
+            _("Brave : policy + extensions de l'organisation poussées au clic suivant"),
+            _("Mail/Calendar/Contacts : System Settings ouvert au clic suivant"),
+        ]
         text = (
-            f"<h3>Configuration prête</h3>"
-            f"<ul>"
-            f"<li>Tenant : <b>{slug}</b></li>"
-            f"<li>Compte BF : {email}</li>"
-            f"<li>NC Files (rclone mount, SSO) : {nc_state}</li>"
-            f"<li>Bitwarden Desktop : URL Vaultwarden injectée au clic suivant</li>"
-            f"<li>Brave : policy + extensions de l'organisation poussées au clic suivant</li>"
-            f"<li>Mail/Calendar/Contacts : System Settings ouvert au clic suivant</li>"
-            f"</ul>"
-            f"<p>Cliquez <b>Terminer</b> pour exécuter les configurations.</p>")
+            "<h3>{}</h3><ul>{}</ul><p>{}</p>".format(
+                _("Configuration prête"),
+                "".join(f"<li>{ligne}</li>" for ligne in lignes),
+                _("Cliquez <b>{bouton}</b> pour exécuter les configurations.")
+                .format(bouton=_("Terminer"))))
         summary.setHtml(text)
 
     page.initializePage = init
     return page
+
+
+def points_de_montage(mounts: list[dict], home: Path | None = None) -> list[tuple[str, Path]]:
+    """(titre, chemin) de chaque montage, comme apply_session_mounts les résout ;
+    sans montage déclaré, le ~/Nextcloud par défaut."""
+    home = home or Path.home()
+    if not mounts:
+        return [("Nextcloud", home / "Nextcloud")]
+    points = []
+    for m in mounts:
+        mp = Path(m.get("mount_point") or (home / "Nextcloud")).expanduser()
+        if not mp.is_absolute():
+            mp = home / mp
+        points.append((m.get("name") or mp.name, mp))
+    return points
 
 
 def _finalize_and_apply(
@@ -655,6 +697,10 @@ def _finalize_and_apply(
             ok, msg = apply_rclone_mount(
                 tenant, user=nc_login_name, password=nc_app_password)
             results.append(("rclone_mount", ok, msg))
+        if ok:
+            # Chaque montage dans le panneau de gauche de Dolphin (#26870).
+            ok, msg = ajouter_emplacements(points_de_montage(mounts))
+            results.append(("emplacements", ok, msg))
     else:
         results.append(("rclone_mount", False,
                         "ignoré (connexion SSO non complétée ou mount décoché)"))
@@ -665,6 +711,10 @@ def _finalize_and_apply(
     ok, msg = apply_brave_policy(tenant, pwas=pwas,
                                  extensions=browser_extensions(prov))
     results.append(("brave_policy", ok, msg))
+
+    # Les PWA épinglées : un lanceur chacune dans la barre des tâches (#26870).
+    ok, msg = appliquer_pwa_epinglees(pwas)
+    results.append(("pwa_epinglees", ok, msg))
 
     # ⚠️ Plus de page « Comptes en ligne » de KDE ici (#25854). Elle s'ouvrait
     # par-dessus notre propre fenetre au premier demarrage, pour demander a la

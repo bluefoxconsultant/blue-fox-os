@@ -26,6 +26,7 @@ def test_apply_brave_policy_writes_json(tmp_home: Path, tenant_data: dict):
     payload = json.loads(_policy_path(tmp_home).read_text())
     assert payload["HomepageLocation"] == "https://nextcloud.bluefoxconsultant.com"
     assert payload["DefaultBrowserSettingEnabled"] is False
+    assert payload["BraveP3AEnabled"] is False
 
 
 def test_extensions_come_from_the_policy(tmp_home: Path, tenant_data: dict):
@@ -79,12 +80,12 @@ def test_apply_brave_policy_installs_pwas(tmp_home: Path, tenant_data: dict):
     assert ok, msg
     payload = json.loads(_policy_path(tmp_home).read_text())
     force = payload["WebAppInstallForceList"]
-    assert [e["url"] for e in force] == [
-        "https://nc.example/call", "https://erp.example"]
+    # L'épinglée a son lanceur dans la barre des tâches (pwa_lanceurs) : ni
+    # installée une 2e fois par Brave, ni rouverte à chaque démarrage (#26870).
+    assert [e["url"] for e in force] == ["https://erp.example"]
     assert all(e["default_launch_container"] == "window" for e in force)
-    # Only the pinned PWA is opened at startup.
-    assert payload["RestoreOnStartup"] == 4
-    assert payload["RestoreOnStartupURLs"] == ["https://nc.example/call"]
+    assert "RestoreOnStartup" not in payload
+    assert "RestoreOnStartupURLs" not in payload
     assert "2 PWA" in msg
 
 

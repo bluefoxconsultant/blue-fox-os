@@ -1,0 +1,10 @@
+# Cle USB live Blue Fox OS (#26870, 2026-10-24) : bureau itinerant de %i
+# envoye dans Nextcloud toutes les 15 minutes (et a la fermeture, par
+# bfos-live-session@%i). Demarree et arretee par la session elle-meme.
+[Unit]
+Description=Blue Fox OS (cle live) : sauvegarde du bureau de %i dans Nextcloud
+
+[Timer]
+OnActiveSec=15min
+OnUnitActiveSec=15min
+AccuracySec=1min

@@ -1,0 +1,6 @@
+# Cle live (#26870) : xdg-user-dirs est coupe (/etc/xdg/user-dirs.conf), et seuls le Bureau et
+# les Telechargements existent. DEUX cles seulement : GLib (donc les portails Flatpak de Brave,
+# Firefox, Thunderbird, Bitwarden) ne connait le dossier de telechargement que par ce fichier,
+# et une cle a "$HOME/" ferait ajouter par KIO un emplacement qui pointe sur la maison.
+XDG_DESKTOP_DIR="$HOME/Desktop"
+XDG_DOWNLOAD_DIR="$HOME/Downloads"

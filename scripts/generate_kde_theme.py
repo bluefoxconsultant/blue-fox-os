@@ -213,6 +213,13 @@ def emit_look_and_feel(b: dict, files_root: Path) -> Path:
         f"[kscreenlockerrc][Greeter][Wallpaper][org.kde.image][General]\n"
         f"Image=file://{wallpaper_path}\n"
         f"FillMode=2\n"
+        f"\n"
+        # Le fond d'un profil Plasma NEUF : c'est CETTE section (nom du paquet
+        # de /usr/share/wallpapers, comme le look-and-feel de Fedora) que
+        # Plasma 6 lit en creant le bureau, pas celle de l'appletsrc ci-dessus.
+        # Mesure en VM le 2026-10-25 (cle live, #26870).
+        f"[Wallpaper]\n"
+        f"Image={b['slug']}\n"
     )
     (contents / "defaults").write_text(defaults)
     LOG.info("emit look-and-feel %s", base)
@@ -314,29 +321,49 @@ def emit_plymouth_theme(b: dict, files_root: Path) -> Path:
         f"splash.raw = Image(\"splash.png\");\n"
         f"splash.ratio = {logo_height} / splash.raw.GetHeight();\n"
         f"splash.image = splash.raw.Scale(splash.raw.GetWidth() * splash.ratio, {logo_height});\n"
-        f"splash.y = Window.GetHeight() * {logo_top_ratio};\n"
         f"splash.sprite = Sprite(splash.image);\n"
-        f"splash.sprite.SetX(Window.GetWidth() / 2 - splash.image.GetWidth() / 2);\n"
-        f"splash.sprite.SetY(splash.y);\n"
         f"\n"
         f"# Loading bar — track + fill, {bar_width}x{bar_height} px, sous le logo.\n"
-        f"bar.x = Window.GetWidth() / 2 - {bar_width} / 2;\n"
-        f"bar.y = splash.y + {logo_height} + 28;\n"
-        f"\n"
         f"track.seed = Image(\"bar-track.png\");\n"
         f"track.image = track.seed.Scale({bar_width}, {bar_height});\n"
         f"track.sprite = Sprite(track.image);\n"
-        f"track.sprite.SetX(bar.x);\n"
-        f"track.sprite.SetY(bar.y);\n"
-        f"\n"
         f"fill.seed = Image(\"bar-fill.png\");\n"
         f"fill.sprite = Sprite();\n"
-        f"fill.sprite.SetX(bar.x);\n"
-        f"fill.sprite.SetY(bar.y);\n"
+        f"status_sprite = Sprite();\n"
+        f"prompt_sprite = Sprite();\n"
+        f"bullets_sprite = Sprite();\n"
+        f"\n"
+        f"# Mise en page selon la taille COURANTE de l'ecran, refaite quand elle change :\n"
+        f"# l'ecran peut s'ouvrir sur le tampon EFI (1280x800 en VM, parfois une autre\n"
+        f"# taille sur un portable) puis passer a la vraie definition quand le pilote\n"
+        f"# graphique prend la main. Calculee une seule fois, le logo restait dans le\n"
+        f"# coin gauche de l'ecran final (vu le 2026-10-27, 1920x1080).\n"
+        f"splash.y = 0;\n"
+        f"bar.x = 0;\n"
+        f"bar.y = 0;\n"
+        f"fun placer() {{\n"
+        f"    global.ecran_l = Window.GetWidth();\n"
+        f"    global.ecran_h = Window.GetHeight();\n"
+        f"    splash.y = ecran_h * {logo_top_ratio};\n"
+        f"    splash.sprite.SetX(ecran_l / 2 - splash.image.GetWidth() / 2);\n"
+        f"    splash.sprite.SetY(splash.y);\n"
+        f"    bar.x = ecran_l / 2 - {bar_width} / 2;\n"
+        f"    bar.y = splash.y + {logo_height} + 28;\n"
+        f"    track.sprite.SetX(bar.x);\n"
+        f"    track.sprite.SetY(bar.y);\n"
+        f"    fill.sprite.SetX(bar.x);\n"
+        f"    fill.sprite.SetY(bar.y);\n"
+        f"    # Zones de texte sous la barre (repositionnees a leur prochain affichage).\n"
+        f"    global.prompt_y = bar.y + 28;\n"
+        f"    global.bullets_y = prompt_y + 26;\n"
+        f"    global.status_y = bullets_y + 26;\n"
+        f"}}\n"
+        f"placer();\n"
         f"\n"
         f"progress = 0;\n"
         f"\n"
         f"fun refresh_callback() {{\n"
+        f"    if (Window.GetWidth() != ecran_l || Window.GetHeight() != ecran_h) placer();\n"
         f"    progress++;\n"
         f"    # Fill width grows 0 → {bar_width}. Loop after a short pause.\n"
         f"    width = progress * 4;\n"
@@ -348,14 +375,6 @@ def emit_plymouth_theme(b: dict, files_root: Path) -> Path:
         f"    fill.sprite.SetImage(fill.scaled);\n"
         f"}}\n"
         f"Plymouth.SetRefreshFunction(refresh_callback);\n"
-        f"\n"
-        f"# Zones de texte sous la barre.\n"
-        f"prompt_y = bar.y + 28;\n"
-        f"bullets_y = prompt_y + 26;\n"
-        f"status_y = bullets_y + 26;\n"
-        f"status_sprite = Sprite();\n"
-        f"prompt_sprite = Sprite();\n"
-        f"bullets_sprite = Sprite();\n"
         f"\n"
         f"fun update_status(msg) {{\n"
         f"    status_image = Image.Text(msg, "
@@ -490,7 +509,19 @@ def _kdeglobals_body(b: dict) -> str:
         f"\n"
         f"[WM]\n"
         f"activeFont={b['system_font']},10,-1,5,75,0,0,0,0,0\n"
+        f"\n"
+        f"{_groupes_de_couleurs(b)}"
     )
+
+
+def _groupes_de_couleurs(b: dict) -> str:
+    """Les couleurs elles-memes ([Colors:*], [ColorEffects:*]). `ColorScheme=`
+    ne fait que NOMMER le schema : sans ces groupes dans kdeglobals, un profil
+    neuf reste en Breeze clair jusqu'a ce que plasma-apply-colorscheme (l'agent
+    d'accueil) les y ecrive. Mesure en VM le 2026-10-25 (cle live, #26870)."""
+    sections = re.split(r"(?m)^(?=\[)", build_color_scheme_text(b))
+    return "\n".join(s.rstrip() + "\n" for s in sections
+                     if s.startswith(("[Colors:", "[ColorEffects:")))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -893,6 +924,11 @@ def emit_skel_plasma_appletsrc(b: dict, files_root: Path) -> Path:
 
     Plasma will augment Containment 1 with the standard panel + widgets at
     first startup ; only the Wallpaper section is pre-seeded here.
+
+    ⚠️ Insuffisant sous Plasma 6 (mesure en VM le 2026-10-25, #26870) : ce
+    conteneur sans `activityId` est ignore, Plasma en cree un autre avec le
+    fond par defaut. Le fond d'un profil neuf vient de `[Wallpaper] Image=` du
+    look-and-feel (emit_look_and_feel).
     """
     target = files_root / "etc/skel/.config/plasma-org.kde.plasma.desktop-appletsrc"
     target.parent.mkdir(parents=True, exist_ok=True)

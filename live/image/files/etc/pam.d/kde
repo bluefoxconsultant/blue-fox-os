@@ -1,0 +1,27 @@
+#%PAM-1.0
+# Cle USB live Blue Fox OS (#26870, 2026-10-24) : ecran de verrouillage de
+# Plasma. Repris du fichier de Fedora 44 (kscreenlocker), plus pam_bfos.so en
+# tete : les comptes de la cle n'ont pas de mot de passe (QR seulement, compte
+# verrouille « ! »), sans lui une session verrouillee ne se rouvre plus.
+# Mot de passe Authentik de la personne (2026-10-27), verifie par l'aide aupres de
+# l'Authentik de l'organisation, sans MFA. Entree au champ vide : l'aide affiche un
+# code d'appareil Authentik, approuve depuis le telephone par LA MEME personne
+# (meme `sub`), sinon refus.
+# Pas dans kde-fingerprint : cette pile part toute seule a chaque verrouillage
+# et demanderait un code a Authentik en boucle, ecran allume ou non.
+auth        sufficient    pam_bfos.so
+auth        substack      password-auth
+auth        include       postlogin
+
+account     required      pam_nologin.so
+account     include       password-auth
+
+password    include       password-auth
+
+session     required      pam_selinux.so close
+session     required      pam_loginuid.so
+session     required      pam_selinux.so open
+session     optional      pam_keyinit.so force revoke
+session     required      pam_namespace.so
+session     include       password-auth
+session     include       postlogin

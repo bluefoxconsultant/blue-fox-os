@@ -1,0 +1,11 @@
+# Quelques minutes apres le demarrage (la personne a ouvert sa session), puis
+# toutes les 6 heures tant que la cle tourne.
+[Unit]
+Description=Blue Fox OS (cle live) : mise a jour des applis de la cle
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=6h
+
+[Install]
+WantedBy=timers.target

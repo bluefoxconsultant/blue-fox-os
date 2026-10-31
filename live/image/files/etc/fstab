@@ -1,0 +1,12 @@
+# Cle live Blue Fox OS (#26870, 2026-10-25). /run porte TOUTE la racine en
+# ecriture (superposition dmsquash-live), maison comprise : a 20 % de la RAM
+# (defaut de systemd), les caches de Brave la remplissaient. Appliquee au
+# demarrage par systemd-remount-fs (systeme de fichiers d'API).
+tmpfs /run tmpfs mode=0755,nosuid,nodev,size=50%,nr_inodes=4m 0 0
+# Dolphin (#26870, 2026-10-27) : la racine live est une superposition, que Solid
+# liste comme un volume sans nom dans les emplacements (UDI /org/kde/fstab/overlay/).
+# x-gvfs-hide la marque « ignored » (StorageAccess.ignored, mesure avec Solid 6.31) ;
+# option d'espace usager, que le remontage par systemd-remount-fs ne passe pas au noyau.
+overlay / overlay defaults,x-gvfs-hide 0 0
+# Zone Flatpak de la cle (bfos-live-flatpak.service), montee par l'unite seule.
+bfos-flatpak /var/lib/flatpak overlay noauto,x-gvfs-hide 0 0

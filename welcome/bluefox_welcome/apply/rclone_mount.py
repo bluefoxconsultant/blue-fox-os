@@ -158,6 +158,30 @@ def _slugify(name: str) -> str:
     return s or "mount"
 
 
+_PREFIXES_DAV = ("remote.php/dav/files", "remote.php/webdav")
+
+
+def chemin_distant(remote_path: str, user: str) -> str:
+    """Chemin d'un montage, RELATIF a la racine WebDAV de la personne.
+
+    ⚠️ bf_policy (Odoo) decrit un montage par son chemin SERVEUR, et son
+    defaut est « /remote.php/dav/files/ ». Le remote bf-nc pointe deja sur
+    .../remote.php/dav/files/<user> : recopier ce chemin montait
+    .../files/<user>/remote.php/dav/files, un dossier qui n'existe pas
+    (#26870, 2026-10-24 : rien dans Dolphin). On retire donc le prefixe DAV,
+    puis le nom de la personne s'il suit."""
+    p = (remote_path or "").strip().strip("/")
+    for prefixe in _PREFIXES_DAV:
+        if p == prefixe or p.startswith(prefixe + "/"):
+            p = p[len(prefixe):].strip("/")
+            if prefixe.endswith("files"):
+                premier, _, reste = p.partition("/")
+                if premier and urllib.parse.unquote(premier) == user:
+                    p = reste
+            break
+    return p
+
+
 def _render_session_unit(remote_path: str, mount_point: str) -> str:
     """Render a per-mount systemd --user unit for a bf-nc:<remote_path> mount."""
     remote = "bf-nc:" + remote_path.strip("/")
@@ -232,7 +256,7 @@ def apply_session_mounts(
                 i += 1
             seen.add(slug)
 
-            remote_path = m.get("remote_path") or ""
+            remote_path = chemin_distant(m.get("remote_path") or "", user)
             mp = Path(m.get("mount_point") or (home / "Nextcloud" / slug)).expanduser()
             if not mp.is_absolute():
                 mp = home / mp

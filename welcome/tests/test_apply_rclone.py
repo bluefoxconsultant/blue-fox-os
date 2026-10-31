@@ -251,3 +251,35 @@ def test_sans_rclone_aucun_mot_de_passe_en_clair(tmp_home: Path, tenant_data: di
     for f in tmp_home.rglob("*"):
         if f.is_file():
             assert "hunter2" not in f.read_text(errors="ignore"), f"clair dans {f}"
+
+
+# --- chemin serveur de bf_policy (#26870) -----------------------------------
+import pytest  # noqa: E402
+
+from bluefox_welcome.apply.rclone_mount import chemin_distant  # noqa: E402
+
+
+@pytest.mark.parametrize("brut, attendu", [
+    ("/remote.php/dav/files/", ""),
+    ("/remote.php/dav/files", ""),
+    ("/remote.php/dav/files/olivier@bf.test/", ""),
+    ("/remote.php/dav/files/olivier%40bf.test/Projets", "Projets"),
+    ("/remote.php/dav/files/Projets/2024", "Projets/2024"),
+    ("/remote.php/webdav/Clients", "Clients"),
+    ("Projets", "Projets"),
+    ("/Arch/2024/", "Arch/2024"),
+    ("", ""),
+])
+def test_chemin_distant_relatif_a_la_racine(brut, attendu):
+    assert chemin_distant(brut, "olivier@bf.test") == attendu
+
+
+def test_montage_par_defaut_de_bf_policy_monte_la_racine(tmp_home: Path, tenant_data: dict):
+    mounts = [{"name": "Nextcloud", "remote_path": "/remote.php/dav/files/",
+               "mount_point": str(tmp_home / "Nextcloud")}]
+    ok, _ = apply_session_mounts(tenant_data, user="olivier", password="p",
+                                 mounts=mounts, home=tmp_home, run_systemctl=False)
+    assert ok
+    unite = (tmp_home / ".config/systemd/user/rclone-nc-nextcloud.service").read_text()
+    assert "rclone mount bf-nc: " in unite
+    assert "remote.php" not in unite

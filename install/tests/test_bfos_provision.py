@@ -790,7 +790,7 @@ def test_compte_verrouille_par_defaut(tmp_path):
     c = tmp_path / "compte.ks"
     bp.write_compte(path=str(c))
     ligne = c.read_text().strip()
-    assert ligne == "user --name=bfos-secours --groups=wheel --lock"
+    assert ligne == "user --name=bfos-secours --groups=wheel --uid=60999 --gid=60999 --lock"
     assert oct(c.stat().st_mode)[-3:] == "600"
 
 
@@ -1872,7 +1872,7 @@ class TestSecoursAuPre:
 
     def _compte(self, tmp_path, valeur):
         compte = tmp_path / "compte.ks"
-        compte.write_text("user --name=bfos-secours --groups=wheel --lock\n")
+        compte.write_text("user --name=bfos-secours --groups=wheel --uid=60999 --gid=60999 --lock\n")
         dit = []
         bp.stage_enrolment(
             "TOK", self._politique(valeur), env={"BFOS_ENROLL_URL": ENROLL_URL},
@@ -2280,3 +2280,109 @@ class TestSondeSignature:
         texte = "".join(dit)
         assert texte.count("pas encore signee") == 2       # annonce + rappel
         assert pauses == [bp.PAUSE_IMAGE_NON_SIGNEE]
+
+
+# ------------------- compte de secours hors de l'ecran de connexion (#26870)
+def test_compte_de_secours_hors_de_la_liste_de_l_ecran_de_connexion():
+    """plasma-login-manager (Fedora 44) liste les comptes de UID_MIN a UID_MAX
+    (1000-60000) et n'a pas de HideUsers : l'uid du compte de secours est fixe
+    au-dessus, dans la plage que systemd laisse libre, et le repli du gabarit
+    porte le meme."""
+    import re
+    assert 60706 <= bp.UID_SECOURS <= 61183
+    repli = re.search(r"'(user --name=bfos-secours [^']*)'", _template_text()).group(1)
+    assert f"--uid={bp.UID_SECOURS} --gid={bp.UID_SECOURS}" in repli
+
+
+# --------- secrets dans la seule racine du systeme installe (#26870, 2026-10-27)
+def _section_copie():
+    t = _template_text()
+    debut = "%post --nochroot --log=/tmp/bfos-provision-copy.log"
+    i = t.index(debut) + len(debut)
+    return t[i:t.index("\n%end", i)]
+
+
+def _jouer_copie(tmp_path, installee, lien=False, tpm=False):
+    import subprocess
+    mnt, stage = tmp_path / "mnt", tmp_path / "stage"
+    stage.mkdir()
+    for nom in ("sysroot", "sysimage"):
+        (mnt / nom / "boot" / "efi").mkdir(parents=True)
+        (mnt / nom / "boot" / "loader" / "entries").mkdir(parents=True)
+        (mnt / nom / "boot" / "loader" / "entries" / "a.conf").write_text(
+            "options rhgb vconsole.keymap= quiet\n")
+        if nom == installee:
+            (mnt / nom / "usr" / "lib").mkdir(parents=True)
+            osr = mnt / nom / "usr" / "lib" / "os-release"
+            if lien:
+                osr.symlink_to("/nulle-part/os-release")
+            else:
+                osr.write_text("")
+            if tpm:
+                (mnt / nom / "etc").mkdir(parents=True)
+                (mnt / nom / "etc" / "crypttab").write_text("luks-abc UUID=abc none discard\n")
+    for f in ("bfos-provision.json", "bfos-machine.json", "bfos-nc-credentials.json"):
+        (stage / f).write_text("{}")
+    env = dict(os.environ)
+    if tpm:
+        (stage / "bfos-tpm-enrol").write_text("")
+        (stage / "bfos-autopart.ks").write_text("autopart --type=btrfs --encrypted --passphrase=ABCD-EFGH\n")
+        (tmp_path / "uuid").mkdir()
+        (tmp_path / "uuid" / "abc").write_text("")
+        (tmp_path / "bin").mkdir()
+        faux = tmp_path / "bin" / "systemd-cryptenroll"
+        faux.write_text(f'#!/bin/sh\necho "$@" > {tmp_path}/enrole\n')
+        faux.chmod(0o755)
+        env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+    script = (_section_copie().replace("{{KEYBOARD_VC}}", "ca")
+              .replace("/tmp/bfos-", f"{stage}/bfos-")
+              .replace("/dev/disk/by-uuid/", f"{tmp_path / 'uuid'}/")
+              .replace("/mnt/", f"{mnt}/"))
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60, env=env)
+    assert r.returncode == 0, r.stderr
+    return mnt, r.stdout
+
+
+def _secrets(racine):
+    return [c for c in ("etc/bluefox/machine.json",
+                        "var/lib/bluefox-welcome/provisioning.json",
+                        "var/lib/bluefox-welcome/nc-credentials.json")
+            if (racine / c).exists()]
+
+
+@pytest.mark.parametrize("installee,physique", [("sysroot", "sysimage"), ("sysimage", "sysroot")])
+def test_secrets_dans_la_seule_racine_installee(tmp_path, installee, physique):
+    """Mesure au banc : /sysroot/etc/bluefox/machine.json restait sur la racine
+    physique d'ostree. La gravure BFL4 et l'EFI gardent les deux racines."""
+    mnt, sortie = _jouer_copie(tmp_path, installee)
+    assert f"racine du systeme installe : {mnt / installee}" in sortie
+    assert len(_secrets(mnt / installee)) == 3
+    assert _secrets(mnt / physique) == []
+    mj = mnt / installee / "etc/bluefox/machine.json"
+    assert oct(mj.stat().st_mode)[-3:] == "600"
+    assert oct(mj.parent.stat().st_mode)[-3:] == "700"
+    for nom in ("sysroot", "sysimage"):
+        assert (mnt / nom / "var/log/anaconda/bfosl4-installateur.log").exists()
+        assert (mnt / nom / "boot/efi/bfosl4-installateur.log").exists()
+        assert "vconsole.keymap= " not in (mnt / nom / "boot/loader/entries/a.conf").read_text()
+
+
+def test_os_release_en_lien_absolu(tmp_path):
+    mnt, _ = _jouer_copie(tmp_path, "sysimage", lien=True)
+    assert len(_secrets(mnt / "sysimage")) == 3
+    assert _secrets(mnt / "sysroot") == []
+
+
+def test_tpm_enrole_la_racine_installee(tmp_path):
+    """Racine installee en /mnt/sysimage : l'ancien ordre lisait le crypttab (absent)
+    de /mnt/sysroot et n'enrolait rien."""
+    mnt, _ = _jouer_copie(tmp_path, "sysimage", tpm=True)
+    assert (tmp_path / "enrole").exists()
+    assert "tpm2-device=auto" in (mnt / "sysimage" / "etc" / "crypttab").read_text()
+    assert (mnt / "sysimage" / "var/lib/bluefox-welcome/tpm-enrolled").exists()
+
+
+def test_disposition_inconnue_garde_les_deux_copies(tmp_path):
+    mnt, _ = _jouer_copie(tmp_path, None)
+    for nom in ("sysroot", "sysimage"):
+        assert len(_secrets(mnt / nom)) == 3

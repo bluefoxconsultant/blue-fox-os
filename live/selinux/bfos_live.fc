@@ -1,0 +1,4 @@
+/usr/libexec/bfos-live/pam-helper	--	gen_context(system_u:object_r:bfos_live_helper_exec_t,s0)
+# Langue choisie a l'ecran de connexion (#26870, 2026-10-27) : ecrite par l'ecran (xdm_t, qui
+# gere deja xdm_var_run_t), lue par l'aide (domaine non confine).
+/run/bfos-live-ecran(/.*)?	gen_context(system_u:object_r:xdm_var_run_t,s0)

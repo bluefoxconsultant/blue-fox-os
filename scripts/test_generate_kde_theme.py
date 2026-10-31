@@ -205,9 +205,25 @@ def test_plymouth_logo_is_scaled_down_and_low(tmp_path: Path):
     artifacts = gkt.emit_all({"slug": "bf", "branding": {}}, tmp_path)
     script = (artifacts["plymouth_theme"] / "bf.script").read_text()
     assert ".Scale(" in script.split("# Loading bar")[0], "logo non redimensionne"
-    assert "Window.GetHeight() * 0.58" in script, "logo non descendu"
+    assert "ecran_h * 0.58" in script, "logo non descendu"
     # L'ancienne mise en page centrait sur la moitie de l'ecran.
     assert "Window.GetHeight() / 2 - splash.image.GetHeight() / 2" not in script
+
+
+def test_plymouth_layout_follows_the_screen_size(tmp_path: Path):
+    """L'ecran peut s'ouvrir en 1280x800 (tampon EFI) puis passer en 1920x1080 :
+    la mise en page est refaite quand la taille change (logo decale, 2026-10-27)."""
+    artifacts = gkt.emit_all({"slug": "bf", "branding": {}}, tmp_path)
+    script = (artifacts["plymouth_theme"] / "bf.script").read_text()
+    placer = script.split("fun placer() {")[1].split("\n}\n")[0]
+    for ligne in ("splash.sprite.SetX(ecran_l / 2", "track.sprite.SetX(bar.x)", "fill.sprite.SetX(bar.x)",
+                  "global.prompt_y", "global.status_y"):
+        assert ligne in placer, ligne
+    rafraichir = script.split("fun refresh_callback() {")[1].split("\n}\n")[0]
+    assert "Window.GetWidth() != ecran_l" in rafraichir and "placer();" in rafraichir
+    # Toute pose de position hors de placer() relit la taille courante.
+    hors = script.replace(placer, "")
+    assert "SetX(bar.x)" not in hors and "splash.sprite.SetY" not in hors
 
 
 def test_plymouth_loading_bar_uses_accent(tmp_path: Path):
@@ -453,3 +469,23 @@ def test_aucun_artefact_genere_ne_salit_git_status(tmp_path: Path):
         "artefacts generes que .gitignore ne couvre pas — ils saliront "
         f"`git status` et feront refuser la publication : {nus}"
     )
+
+
+def test_profil_neuf_a_les_couleurs_sans_l_agent(tmp_path: Path):
+    # ColorScheme= ne fait que nommer le schema : les groupes eux-memes doivent
+    # etre dans kdeglobals (VM, 2026-10-25 : Breeze clair sans eux).
+    artifacts = gkt.emit_all({"slug": "bf"}, tmp_path)
+    for cle in ("xdg_kdeglobals", "skel_kdeglobals"):
+        text = artifacts[cle].read_text()
+        for groupe in ("[Colors:Window]", "[Colors:View]", "[Colors:Button]", "[ColorEffects:Disabled]"):
+            assert groupe in text, (cle, groupe)
+    schema = artifacts["color_scheme"].read_text()
+    fenetre = schema.split("[Colors:Window]")[1].split("\n[")[0]
+    assert fenetre.strip() in artifacts["xdg_kdeglobals"].read_text()
+
+
+def test_look_and_feel_donne_le_fond_d_un_profil_neuf(tmp_path: Path):
+    artifacts = gkt.emit_all({"slug": "bf"}, tmp_path)
+    body = (artifacts["look_and_feel"] / "contents/defaults").read_text()
+    assert "\n[Wallpaper]\nImage=bf\n" in body
+    assert (tmp_path / "usr/share/wallpapers/bf").is_dir()

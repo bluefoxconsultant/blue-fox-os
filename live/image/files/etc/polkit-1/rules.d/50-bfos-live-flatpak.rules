@@ -1,0 +1,33 @@
+// Cle live (#26870, 2026-10-23) : la personne connectee par QR installe et met
+// a jour des Flatpak sans mot de passe (elle n'en a pas), DEPUIS LES DEPOTS
+// DEJA CONFIGURES SEULEMENT.
+//
+// ⚠️ Liste fermee, jamais `org.freedesktop.Flatpak.*` : la cle est partagee.
+// Ajouter un depot ou une cle GPG (configure-remote), installer un paquet
+// local (install-bundle), desinstaller (app-uninstall) permettraient de
+// remplacer en SYSTEME un Bitwarden ou un client Nextcloud par une copie
+// piegee, que la personne suivante ouvrirait sans le savoir (relecture
+// adverse du 2026-10-23).
+var BFOS_FLATPAK_PERMIS = [
+    "org.freedesktop.Flatpak.app-install",
+    "org.freedesktop.Flatpak.runtime-install",
+    "org.freedesktop.Flatpak.app-update",
+    "org.freedesktop.Flatpak.runtime-update",
+    "org.freedesktop.Flatpak.appstream-update",
+    "org.freedesktop.Flatpak.metadata-update"
+];
+polkit.addRule(function(action, subject) {
+    if (!subject.isInGroup("bfos-live")) {
+        return polkit.Result.NOT_HANDLED;
+    }
+    // Aucun processus ne survit a la session (linger) : il lirait les
+    // fichiers de la personne suivante.
+    if (action.id == "org.freedesktop.login1.set-self-linger" ||
+        action.id == "org.freedesktop.login1.set-user-linger") {
+        return polkit.Result.NO;
+    }
+    if (BFOS_FLATPAK_PERMIS.indexOf(action.id) >= 0 && subject.local && subject.active) {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

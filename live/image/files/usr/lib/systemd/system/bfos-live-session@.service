@@ -1,0 +1,27 @@
+# Cle USB live Blue Fox OS (#26870) : la session de %i, preparee en root.
+#
+# Demarree par l'aide PAM apres le QR (systemctl restart), arretee a la
+# fermeture de session, et par systemd a l'extinction : le profil chiffre est
+# alors demonte proprement meme si personne ne s'est deconnecte.
+[Unit]
+Description=Blue Fox OS (cle live) : session de %i
+# Pas de Wants=network-online.target : sans Wi-Fi au demarrage, l'attente du
+# reseau est en echec, et chaque connexion la relancerait jusqu'a son delai.
+# Le reseau est la puisque le QR vient de passer.
+After=network.target NetworkManager.service local-fs.target
+DefaultDependencies=no
+Conflicts=shutdown.target umount.target
+# A l'extinction, s'arreter APRES les sessions (systemd-user-sessions
+# s'arrete apres elles) : le profil se demonte quand plus rien ne l'occupe.
+Before=systemd-user-sessions.service shutdown.target umount.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/bfos-live/session demarrer %i
+ExecStop=/usr/libexec/bfos-live/session arreter %i
+# La premiere ouverture d'un profil reserve et formate quelques Gio sur une
+# cle USB lente ; un changement d'uid rechange le proprietaire de tout le profil.
+TimeoutStartSec=15min
+# Bureau itinerant : la derniere sauvegarde part dans Nextcloud a la fermeture.
+TimeoutStopSec=10min

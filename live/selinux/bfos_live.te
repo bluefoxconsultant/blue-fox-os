@@ -1,0 +1,33 @@
+# Cle USB live Blue Fox OS (#26870) : domaine SELinux de l'aide PAM.
+#
+# Sans lui, l'aide tourne dans le domaine de greetd (xdm_t). xdm_t peut
+# executer useradd, mais sans transition vers useradd_t et sans droit
+# d'ecriture sur /etc/shadow et /etc/gshadow (shadow_t) : useradd echoue et
+# la personne voit « Impossible de creer ta session sur cette cle » apres un
+# QR pourtant approuve.
+#
+# L'aide est du code root qui cree des comptes, ecrit le registre et les
+# jetons, parle a Authentik et ferme les sessions : on lui donne un domaine
+# non confine, atteint SEULEMENT quand greetd l'execute.
+policy_module(bfos_live, 1.0.1)
+
+require {
+	type xdm_t;
+}
+
+type bfos_live_helper_t;
+type bfos_live_helper_exec_t;
+domain_type(bfos_live_helper_t)
+domain_entry_file(bfos_live_helper_t, bfos_live_helper_exec_t)
+role system_r types bfos_live_helper_t;
+unconfined_domain(bfos_live_helper_t)
+
+# greetd (xdm_t) -> aide : transition automatique a l'execution.
+domtrans_pattern(xdm_t, bfos_live_helper_exec_t, bfos_live_helper_t)
+
+# La cale pam_bfos.so parle a l'aide par des tubes herites de greetd.
+allow bfos_live_helper_t xdm_t:fd use;
+allow bfos_live_helper_t xdm_t:fifo_file rw_fifo_file_perms;
+allow bfos_live_helper_t xdm_t:process sigchld;
+# Meme environnement qu'avant la transition (pas de mode AT_SECURE).
+allow xdm_t bfos_live_helper_t:process { noatsecure siginh rlimitinh };

@@ -100,7 +100,10 @@ def render_vconsole_conf(policy) -> str:
     `localectl status` reports what we actually provisioned instead of showing
     the layout as unset.
     """
-    keymap = policy.get("install", {}).get("keymap", "ca")
+    # Filtre comme _xkb : une valeur avec saut de ligne ajoutait des lignes au
+    # fichier (relecture adverse du 2026-10-26).
+    keymap = str(policy.get("install", {}).get("keymap") or "").strip()
+    keymap = keymap if keymap and _XKB_RE.match(keymap) else "ca"
     layout, variant, options = _xkb(policy)
     out = f"KEYMAP={keymap}\nXKBLAYOUT={layout}\n"
     if variant:

@@ -1,0 +1,172 @@
+# Clé USB live Blue Fox OS (#26870, 2026-10-24) : connexion Authentik de Brave
+# après le QR, sans rien retaper.
+#
+# Après le QR, la session de la clé tient un jeton d'accès du client
+# `blue-fox-os-live`, émis par un flux d'appareil approuvé sur le téléphone
+# (2FA). Brave, lui, n'a aucun cookie Authentik. Ce flux en pose un :
+#
+#   1. Odoo consomme son lien unique (bf_policy_live), puis renvoie la fenêtre
+#      vers /if/flow/bfos-live-navigateur/?c=<code> ;
+#   2. la politique retrouve le jeton d'accès dont le code est l'empreinte
+#      (c = base64url(sha256("bfos-live-nav:" + jeton))), sans que le jeton
+#      lui-même passe jamais dans une adresse ;
+#   3. l'étape user_login ouvre la session Authentik de la personne ;
+#   4. le flux revient sur Odoo. La fenêtre reste celle d'Odoo (son icône).
+#
+# Refus (code inconnu, déjà servi, jeton trop vieux, sans 2FA, compte inactif,
+# navigateur DÉJÀ connecté) : l'étape saute, rien n'est ouvert,
+# et la fenêtre revient quand même sur Odoo.
+#
+# Relecture adverse du 2026-10-24 (corrigée) :
+#  - navigateur déjà connecté = refus : sinon un membre qui lance lui-même un
+#    flux d'appareil ferait basculer le navigateur d'un collègue sur SON compte ;
+#  - superusagers ADMIS (décision d'Olivier, 2026-10-24, au questionnaire) : la
+#    relecture conseillait de les refuser, le lien donnant alors une session
+#    d'administration d'Authentik dans le Brave de la clé (et un code d'appareil
+#    hameçonné, l'administration). Son compte est superusager ; refusés, il
+#    n'aurait jamais le SSO ;
+#  - code servi noté dans le cache (atomique), pas sur la fiche de la personne
+#    (événement « modifié » mal attribué, synchronisations sortantes) ;
+#  - la marque d'usage unique vit dans le cache d'Authentik (table Postgres en
+#    2026.8) : le vider à la main rend un code servi réutilisable jusqu'à
+#    15 min après son émission ;
+#  - assumé et documenté : la session de la personne tient son jeton de
+#    rafraîchissement (12 h), donc un processus qui tourne en son nom peut
+#    produire des codes pour SA session ; il tient déjà ses jetons.
+#
+# Politique RÉÉVALUÉE à chaque passage (re_evaluate_policies), jamais au plan :
+# Authentik garde en cache 5 min le plan d'un anonyme sans réévaluer les
+# politiques « evaluate_on_plan » (flows/planner.py, 2026.8.4).
+#
+# Poser : ak apply_blueprint <ce fichier> (conteneur server). Éprouvé d'abord
+# sur un Authentik 2026.8.4 jetable (voir la napkin #26870).
+version: 1
+metadata:
+  name: bfos-live-navigateur
+  labels:
+    blueprints.goauthentik.io/description: "Clé live BFOS : session Authentik dans Brave après le QR (#26870)"
+entries:
+  - model: authentik_policies_expression.expressionpolicy
+    id: politique
+    identifiers:
+      name: bfos-live-navigateur-jeton
+    attrs:
+      execution_logging: false
+      expression: |
+        # Clé live BFOS (#26870) : code à usage unique -> personne en attente.
+        import base64
+        import hashlib
+        import hmac
+        import json
+        from datetime import timedelta
+
+        from django.core.cache import cache
+        from django.utils.timezone import now
+
+        from authentik.providers.oauth2.models import AccessToken
+
+        CLIENT = "blue-fox-os-live"
+        RETOUR = "https://bluefoxconsultant.com/odoo"
+        # Le code sert juste après le QR ; la création d'un profil persistant
+        # et le démarrage de Plasma peuvent prendre plusieurs minutes.
+        AGE_MAX = timedelta(minutes=15)
+
+        plan = request.context.get("flow_plan")
+        if plan is None:
+            return False
+        # Réussite ou refus, la fenêtre revient sur Odoo (adresse fixe, jamais
+        # tirée de la requête : pas de redirection ouverte).
+        plan.context["redirect"] = RETOUR
+
+        # Jamais par-dessus une session déjà ouverte (connexion forcée).
+        if request.http_request.user.is_authenticated:
+            return False
+
+        session = getattr(request.http_request, "session", None) or {}
+        code = str((session.get("authentik/flows/get") or {}).get("c", ""))
+        if len(code) != 43:
+            return False
+
+        def empreinte(jeton):
+            brut = hashlib.sha256(("bfos-live-nav:" + jeton).encode()).digest()
+            return base64.urlsafe_b64encode(brut).rstrip(b"=").decode()
+
+        trouve = None
+        for t in AccessToken.objects.filter(provider__client_id=CLIENT, revoked=False,
+                                            actor__isnull=True,
+                                            expires__gt=now()).select_related("user"):
+            if hmac.compare_digest(empreinte(t.token), code):
+                trouve = t
+                break
+        if trouve is None:
+            ak_logger.info("bfos-live-navigateur: code inconnu")
+            return False
+        try:
+            jeton_id = json.loads(trouve._id_token or "{}")
+        except ValueError:
+            return False
+        emis = jeton_id.get("iat") or 0
+        if now().timestamp() - float(emis) > AGE_MAX.total_seconds():
+            ak_logger.info("bfos-live-navigateur: jeton trop vieux", user=trouve.user.username)
+            return False
+        if "mfa" not in (jeton_id.get("amr") or []):
+            ak_logger.info("bfos-live-navigateur: QR sans 2FA", user=trouve.user.username)
+            return False
+
+        personne = trouve.user
+        if not personne.is_active:
+            ak_logger.info("bfos-live-navigateur: compte refusé", user=personne.username)
+            return False
+        # Usage unique : ajout atomique dans le cache, au-delà de la vie du jeton.
+        if not cache.add("bfos-live-nav/" + code, 1, 3600):
+            ak_logger.warning("bfos-live-navigateur: code rejoué", user=personne.username)
+            return False
+
+        plan.context["pending_user"] = personne
+        plan.context["auth_method"] = "bfos_live"
+        plan.context["auth_method_args"] = {"bfos_live": True}
+        ak_logger.info("bfos-live-navigateur: session ouverte", user=personne.username)
+        return True
+
+  - model: authentik_stages_user_login.userloginstage
+    id: ouverture
+    identifiers:
+      name: bfos-live-navigateur-ouverture
+    attrs:
+      # Cookie de session persistant 12 h (comme le jeton de rafraîchissement
+      # du client blue-fox-os-live). En profil gardé, il vit dans le LUKS.
+      session_duration: hours=12
+      remember_me_offset: seconds=0
+
+  - model: authentik_flows.flow
+    id: flux
+    identifiers:
+      slug: bfos-live-navigateur
+    attrs:
+      name: Clé live Blue Fox OS, session du navigateur
+      title: Blue Fox OS
+      designation: authentication
+      authentication: none
+      denied_action: continue
+      policy_engine_mode: any
+
+  - model: authentik_flows.flowstagebinding
+    id: liaison
+    identifiers:
+      target: !KeyOf flux
+      stage: !KeyOf ouverture
+      order: 10
+    attrs:
+      evaluate_on_plan: false
+      re_evaluate_policies: true
+      invalid_response_action: retry
+
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf liaison
+      policy: !KeyOf politique
+      order: 0
+    attrs:
+      enabled: true
+      negate: false
+      timeout: 30

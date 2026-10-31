@@ -1,0 +1,22 @@
+# Cle USB live Blue Fox OS (#26870, 2026-10-27) : zone Flatpak de la cle. Avant
+# l'ecran de connexion, quand la cle a un espace des profils, /var/lib/flatpak
+# est servi par une superposition : applis de l'ISO en bas, mises a jour gardees
+# sur la cle en haut (bfos_live/zone_flatpak.py). Sans espace, ou au moindre
+# echec, rien ne change : les applis de l'ISO.
+[Unit]
+Description=Blue Fox OS (cle live) : zone Flatpak sur la cle
+DefaultDependencies=no
+After=local-fs.target systemd-tmpfiles-setup.service systemd-udevd.service bfos-live-organisation.service
+Before=greetd.service display-manager.service
+ConditionPathExists=/etc/bfos-live/live.json
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/bfos-live/session zone-flatpak
+# Creer la zone (6 Gio) et la formater prend quelques secondes ; une cle lente
+# ou abimee ne retient jamais l'ecran de connexion plus longtemps.
+TimeoutStartSec=90s
+
+[Install]
+WantedBy=greetd.service

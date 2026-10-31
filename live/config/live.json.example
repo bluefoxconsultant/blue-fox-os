@@ -1,0 +1,26 @@
+{
+  "issuer": "https://auth.exemple.test/application/o/blue-fox-os/",
+  "client_id": "blue-fox-os",
+  "device_url": "https://auth.exemple.test/application/o/device/",
+  "token_url": "https://auth.exemple.test/application/o/token/",
+  "revoke_url": "https://auth.exemple.test/application/o/revoke/",
+  "allowed_groups": [
+    "Blue Fox OS - cle live"
+  ],
+  "local_groups": [
+    "bfos-live"
+  ],
+  "uid_min": 10000,
+  "uid_max": 59999,
+  "require_mfa": true,
+  "placeholder_user": "bfos-connexion",
+  "policy_url": "https://exemple.test/api/v1/policy/me",
+  "profile_key_url": "https://exemple.test/api/v1/policy/live/profile-key",
+  "login_link_url": "https://exemple.test/api/v1/policy/live/login-link",
+  "persistence": true,
+  "profile_size_mb": 8192,
+  "profile_reserve_mb": 8192,
+  "profile_max_mb": 0,
+  "home_base": "/var/home",
+  "langue": "fr"
+}
