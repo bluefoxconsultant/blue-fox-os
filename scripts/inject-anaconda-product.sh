@@ -131,6 +131,16 @@ for src in "${PRESENT[@]}"; do
 done
 echo "[anaconda-overlay] applied ${APPLIED} overlay file(s)"
 
+# ⚠️ Langue de l'installateur (#27223, mesure du 2026-10-31) : Anaconda reste
+# en anglais parce que 90-osbuild.conf (bootc-image-builder) n'active pas le
+# module Localization ; initialize_locale() ignore alors inst.lang et le
+# `lang` du kickstart. Le stage2 a pourtant fr_CA (locale-archive, 888
+# locales) et anaconda.mo en francais. Activer le module (conf.d/95-…)
+# met bien l'installateur en francais, MAIS l'installation zero-touch s'arrete
+# alors au resume, l'element « Clavier » en erreur : NON retenu tant que ce
+# blocage n'est pas compris (piste : --switch=grp:alt_shift_toggle, non pris
+# en charge sous Wayland).
+
 # 5. mksquashfs back. Match Fedora's stage2 compression (xz, BCJ filter for
 # x86_64, 1M block size) to keep the ISO size identical-ish. -noappend
 # overwrites any leftover output.

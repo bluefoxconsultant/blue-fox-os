@@ -360,6 +360,15 @@ def _run_provisioned_flow(tenant: dict, prov: dict) -> int:
     Donc : si l'installation a depose des identifiants, il n'y a plus AUCUNE
     interaction — on applique et on sort. Sinon on garde le parcours SSO par
     navigateur, inchange, comme repli."""
+    if not get_service_url(tenant, "nextcloud"):
+        # Pas de Nextcloud pour cette organisation : rien a demander. On
+        # applique tout de suite (theme, Brave, PWA epinglees), sans fenetre,
+        # au lieu de proposer le Nextcloud par defaut — celui de Blue Fox —
+        # a une autre organisation (#27223).
+        LOG.info("aucun Nextcloud dans la politique : configuration appliquee "
+                 "sans connexion a demander")
+        _apply_from_policy(tenant, prov, None)
+        return 0
     creds = seat_credentials.lire(attendu=get_service_url(tenant, "nextcloud"))
     if creds:
         LOG.info("identifiants Nextcloud deposes par l'installation : "
@@ -391,8 +400,9 @@ def _run_provisioned_flow_sso(tenant: dict, prov: dict) -> int:
     traduire_boutons(wizard, QWizard)
 
     login = user_login(prov)
-    nc_url = get_service_url(tenant, "nextcloud",
-                             "https://nextcloud.bluefoxconsultant.com")
+    # Pas de repli sur le Nextcloud de Blue Fox : _run_provisioned_flow ne vient
+    # ici que si la politique en designe un (#27223).
+    nc_url = get_service_url(tenant, "nextcloud")
     creds = {"value": None}
 
     page = QWizardPage()
@@ -500,7 +510,7 @@ def _welcome_page(tenant, QWizardPage, QVBoxLayout, QLabel):
     layout.addWidget(QLabel(
         _("Cet assistant configure votre poste pour le tenant <b>{slug}</b>.").format(slug=slug)))
     layout.addWidget(QLabel(
-        _("Étapes : compte Authentik, fichiers Nextcloud, vault Bitwarden, sync Brave.")))
+        _("Étapes : compte Authentik, fichiers Nextcloud, vault Bitwarden.")))
     layout.addWidget(QLabel(
         _("Vous pouvez ignorer une étape avec {suivant} et la reprendre plus tard.")
         .format(suivant=_("Suivant"))))

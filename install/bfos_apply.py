@@ -42,6 +42,49 @@ _USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]*$")
 _XKB_RE = re.compile(r"^[A-Za-z0-9_,:+()-]*$")
 
 
+# Ports que la politique SELinux de Fedora range sous ldap_port_t : le domaine
+# de sssd (sssd_t) n'a le droit de se connecter qu'a ceux-la. Un annuaire servi
+# ailleurs (1636 sur la demo Boreal, #27172) rend connect() EACCES, sssd reste
+# « offline » et AUCUNE session ne s'ouvre, sans rien dire a l'ecran (#27223).
+PORTS_LDAP_SELINUX = frozenset({389, 636, 3268, 3269, 7389})
+
+
+def ports_ldap(uri) -> list:
+    """Ports TCP des annuaires d'un ldap_uri (« ldaps://h:p », plusieurs separes
+    par des virgules comme sssd l'accepte). Port absent = 636 en ldaps, 389 en
+    ldap. Une entree illisible est ignoree : sssd-gate s'en charge."""
+    from urllib.parse import urlsplit
+    ports = []
+    for brut in re.split(r"[,\s]+", uri or ""):
+        if not brut:
+            continue
+        try:
+            parts = urlsplit(brut)
+            port = parts.port
+        except ValueError:
+            continue
+        if parts.scheme not in ("ldap", "ldaps") or not parts.hostname:
+            continue
+        port = port or (636 if parts.scheme == "ldaps" else 389)
+        if port not in ports:
+            ports.append(port)
+    return ports
+
+
+def _declarer_port_ldap(root, port, run):
+    """Range `port` sous ldap_port_t dans la politique SELinux du systeme
+    installe. `-a` echoue si le port a deja un type : on le modifie alors (-m)."""
+    # -N : ne pas recharger la politique dans le noyau de l'INSTALLATEUR (le
+    # chroot vise le systeme installe, qui la chargera a son demarrage).
+    base = ["semanage", "port", "-N", "-p", "tcp", "-t", "ldap_port_t"]
+    try:
+        run(_chroot(root, base[:2] + ["-a"] + base[2:] + [str(port)]), check=True)
+    except subprocess.CalledProcessError:
+        # Deja type (rejeu, ou type par une autre regle) : la politique de
+        # l'organisation dit que l'annuaire est la, on le range sous LDAP.
+        run(_chroot(root, base[:2] + ["-m"] + base[2:] + [str(port)]), check=True)
+
+
 def _exiger(condition, message):
     """Leve si la condition est fausse — sert a faire ECHOUER une action que le
     journal d'installation afficherait sinon en OK. Une action qui ne verifie
@@ -439,6 +482,13 @@ def apply(policy, root="/", run=subprocess.run, writer=None):
             "politique en mode sssd sans ldap_uri ou sans bind_dn"))
         record("sssd-conf", lambda: writer(
             "/etc/sssd/sssd.conf", render_sssd_conf(policy), mode=0o600))
+        # Un annuaire hors des ports LDAP connus de SELinux : sans cette
+        # declaration, sssd ne le joint jamais (#27223). Une action par port,
+        # en echec visible si semanage manque ou refuse.
+        for port in ports_ldap(login.get("ldap_uri", "")):
+            if port not in PORTS_LDAP_SELINUX:
+                record(f"sssd-port-selinux-{port}",
+                       lambda port=port: _declarer_port_ldap(root, port, run))
         # ⚠️ check=True, et c'est le coeur du correctif. Ces deux gestes sont la
         # difference entre une machine qui ouvre une session et une qui n'en
         # ouvre aucune. En check=False, un paquet absent de l'image les faisait

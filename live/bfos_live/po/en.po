@@ -6,111 +6,111 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#: bfos_live/greeter.py:298
+#: bfos_live/greeter.py:309
 msgid "Connexion à greetd perdue ({raison})."
 msgstr "Lost connection to greetd ({raison})."
 
-#: bfos_live/greeter.py:351 bfos_live/greeter.py:643
+#: bfos_live/greeter.py:366 bfos_live/greeter.py:658
 msgid "Préparation de la connexion…"
 msgstr "Getting ready to sign in…"
 
-#: bfos_live/greeter.py:404 bfos_live/greeter.py:636
+#: bfos_live/greeter.py:419 bfos_live/greeter.py:651
 msgid "Domaine de ton organisation"
 msgstr "Your organization's domain"
 
-#: bfos_live/greeter.py:406 bfos_live/greeter.py:635
+#: bfos_live/greeter.py:421 bfos_live/greeter.py:650
 msgid "Continuer"
 msgstr "Continue"
 
-#: bfos_live/greeter.py:418 bfos_live/greeter.py:637
+#: bfos_live/greeter.py:433 bfos_live/greeter.py:652
 msgid "Changer d'organisation"
 msgstr "Change organization"
 
-#: bfos_live/greeter.py:442 bfos_live/greeter.py:632
+#: bfos_live/greeter.py:457 bfos_live/greeter.py:647
 msgid "Mot de passe du Wi-Fi"
 msgstr "Wi-Fi password"
 
-#: bfos_live/greeter.py:443 bfos_live/greeter.py:633
+#: bfos_live/greeter.py:458 bfos_live/greeter.py:648
 msgid "Se connecter au Wi-Fi"
 msgstr "Connect to Wi-Fi"
 
-#: bfos_live/greeter.py:454 bfos_live/greeter.py:634
+#: bfos_live/greeter.py:469 bfos_live/greeter.py:649
 msgid "Wi-Fi"
 msgstr "Wi-Fi"
 
-#: bfos_live/greeter.py:493
+#: bfos_live/greeter.py:508
 msgid "Code valide encore {duree}"
 msgstr "Code valid for {duree}"
 
-#: bfos_live/greeter.py:494
+#: bfos_live/greeter.py:509
 msgid "Nouveau code en préparation…"
 msgstr "New code on its way…"
 
-#: bfos_live/greeter.py:508
+#: bfos_live/greeter.py:523
 msgid "Scanne ce code avec ton téléphone pour te connecter."
 msgstr "Scan this code with your phone to sign in."
 
-#: bfos_live/greeter.py:510
+#: bfos_live/greeter.py:525
 msgid "Ou va sur {adresse} et entre le code ci-dessus."
 msgstr "Or go to {adresse} and enter the code above."
 
-#: bfos_live/greeter.py:518
+#: bfos_live/greeter.py:533
 msgid "Organisation : {nom}"
 msgstr "Organization: {nom}"
 
-#: bfos_live/greeter.py:546 bfos_live/greeter.py:576
+#: bfos_live/greeter.py:561 bfos_live/greeter.py:591
 msgid "Ouverture de ta session"
 msgstr "Starting your session"
 
-#: bfos_live/greeter.py:547
+#: bfos_live/greeter.py:562
 msgid "{etape_texte} ({etape} sur {total})"
 msgstr "{etape_texte} ({etape} of {total})"
 
-#: bfos_live/greeter.py:565 bfos_live/pam_helper.py:837
+#: bfos_live/greeter.py:580 bfos_live/pam_helper.py:837
 msgid "Comment veux-tu ouvrir ta session ?"
 msgstr "How would you like to start your session?"
 
-#: bfos_live/greeter.py:596 bfos_live/pam_helper.py:886
+#: bfos_live/greeter.py:611 bfos_live/pam_helper.py:886
 msgid "Quel est le domaine de ton organisation ?"
 msgstr "What is your organization's domain?"
 
-#: bfos_live/greeter.py:597 bfos_live/pam_helper.py:887
+#: bfos_live/greeter.py:612 bfos_live/pam_helper.py:887
 msgid "Celui de son site Web ou de son Odoo, par exemple exemple.com."
 msgstr "The one for its website or its Odoo, for example example.com."
 
-#: bfos_live/greeter.py:614
+#: bfos_live/greeter.py:629
 msgid "Recherche de ton organisation…"
 msgstr "Looking up your organization…"
 
-#: bfos_live/greeter.py:624
+#: bfos_live/greeter.py:639
 msgid "Changement d'organisation…"
 msgstr "Changing organization…"
 
-#: bfos_live/greeter.py:659
+#: bfos_live/greeter.py:674
 msgid "Réseau derrière un portail : la connexion pourrait échouer."
 msgstr "This network has a sign-in page: connecting may fail."
 
-#: bfos_live/greeter.py:662
+#: bfos_live/greeter.py:678
 msgid "Pas de réseau. Branche un câble ou choisis un Wi-Fi."
 msgstr "No network. Plug in a cable or pick a Wi-Fi network."
 
-#: bfos_live/greeter.py:663
+#: bfos_live/greeter.py:680 bfos_live/greeter.py:701
 msgid "En attente du réseau…"
 msgstr "Waiting for the network…"
 
-#: bfos_live/greeter.py:679
+#: bfos_live/greeter.py:721
 msgid "Aucun Wi-Fi trouvé."
 msgstr "No Wi-Fi networks found."
 
-#: bfos_live/greeter.py:687
+#: bfos_live/greeter.py:729
 msgid "Choisis d'abord un réseau."
 msgstr "Pick a network first."
 
-#: bfos_live/greeter.py:692
+#: bfos_live/greeter.py:734
 msgid "Ce réseau demande un mot de passe."
 msgstr "This network needs a password."
 
-#: bfos_live/greeter.py:694
+#: bfos_live/greeter.py:736
 msgid "Connexion à {ssid}…"
 msgstr "Connecting to {ssid}…"
 

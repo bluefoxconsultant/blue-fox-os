@@ -763,3 +763,116 @@ def test_deposer_changement(tmp_path):
     from bfos_live import greeter as g
     assert g.deposer_changement(str(tmp_path / "changer")) and (tmp_path / "changer").exists()
     assert g.deposer_changement(str(tmp_path / "absent" / "changer")) is False
+
+
+# --- reseau arrive apres l'attente (#27223) ---------------------------------
+# VM filaire, demo Boreal : « Pas de reseau » et le panneau Wi-Fi restaient a
+# l'ecran pendant tout le parcours, alors que la configuration etait bien lue.
+
+def test_travail_signale_le_retour_du_reseau_une_seule_fois(app):
+    from bfos_live import greeter as g
+    s = g.Signaux()
+    retours = []
+    s.reseau_retabli.connect(lambda: retours.append(1))
+    etats = iter(["unknown", "none", "full"])
+    client = FauxClient([info(MSG_QR), {"type": "success"}])
+    g.Travail(s, "bfos-connexion", client_usine=lambda: client,
+              connectivite=lambda: next(etats), dormir=lambda s: None).run()
+    assert retours == [1]
+
+
+def test_travail_sans_attente_ne_signale_rien(app):
+    from bfos_live import greeter as g
+    s = g.Signaux()
+    retours = []
+    s.reseau_retabli.connect(lambda: retours.append(1))
+    client = FauxClient([{"type": "success"}])
+    g.Travail(s, "bfos-connexion", client_usine=lambda: client,
+              connectivite=lambda: "full", dormir=lambda s: None).run()
+    assert retours == []
+
+
+def test_ecran_retire_le_bandeau_et_referme_son_wifi(app):
+    from bfos_live import greeter as g
+    e = g.Ecran(reseau_mod=FauxReseau([("Bureau", True, 70, False)]))
+    e.montrer_attente_reseau("none")
+    assert "Pas de réseau" in e.etiquette_reseau.text() and not e.panneau.isHidden()
+    e.reseau_retabli()
+    assert e.etiquette_reseau.text() == "" and e.panneau.isHidden()
+
+
+def test_ecran_garde_le_wifi_ouvert_par_la_personne(app):
+    from bfos_live import greeter as g
+    e = g.Ecran(reseau_mod=FauxReseau([("Bureau", True, 70, False)]))
+    e.basculer_wifi_a_la_main()
+    e.reseau_retabli()
+    assert not e.panneau.isHidden()
+
+
+def test_ecran_retire_l_avis_de_portail(app):
+    from bfos_live import greeter as g
+    e = g.Ecran(reseau_mod=FauxReseau())
+    e.montrer_attente_reseau("portal")
+    assert "portail" in e.etiquette_reseau.text()
+    e.reseau_retabli()
+    assert e.etiquette_reseau.text() == ""
+
+
+def test_travail_portail_puis_reseau_complet(app):
+    """none -> portal (la tentative echoue) -> full : l'avis de portail se retire."""
+    from bfos_live import greeter as g
+    s = g.Signaux()
+    vus = []
+    s.attente_reseau.connect(lambda e: vus.append(e))
+    s.reseau_retabli.connect(lambda: vus.append("retabli"))
+    etats = iter(["none", "portal", "full"])
+    client = FauxClient([{"type": "success"}])
+    usines = iter([greetd_ipc.ErreurIPC("ferme"), client])
+
+    def usine():
+        x = next(usines)
+        if isinstance(x, Exception):
+            raise x
+        return x
+    g.Travail(s, "bfos-connexion", client_usine=usine,
+              connectivite=lambda: next(etats), dormir=lambda s: None).run()
+    assert vus == ["none", "portal", "retabli"]
+
+
+def test_changer_de_langue_apres_le_retour_ne_rejoue_pas_l_attente(app):
+    """Relecture du 2026-10-31 : _dernier rejouait montrer_attente_reseau."""
+    from bfos_live import greeter as g
+    e = g.Ecran(reseau_mod=FauxReseau([("Bureau", True, 70, False)]))
+    e.montrer_attente_reseau("none")
+    e.reseau_retabli()
+    assert e._dernier is None and e.consigne.text() == ""
+    assert e.panneau.isHidden() and e.etiquette_reseau.text() == ""
+
+
+def test_le_wifi_reste_ouvert_pendant_la_saisie(app):
+    from bfos_live import greeter as g
+    e = g.Ecran(reseau_mod=FauxReseau([("Bureau", True, 70, False)]))
+    e.montrer_attente_reseau("none")
+    e.mdp.setText("en cours")
+    e.reseau_retabli()
+    assert not e.panneau.isHidden()
+
+
+def test_avis_retire_meme_apres_un_changement_de_langue(app):
+    """Relecture n° 2 : l'avis de portail affiche en francais ne correspondait
+    plus au texte anglais et restait a l'ecran."""
+    from bfos_live import greeter as g
+    e = g.Ecran(reseau_mod=FauxReseau())
+    e.montrer_attente_reseau("portal")
+    e.etiquette_reseau.setText("Network behind a portal (autre langue)")
+    e.reseau_retabli()
+    assert e.etiquette_reseau.text() == ""
+
+
+def test_le_wifi_reste_ouvert_si_le_champ_a_le_focus(app):
+    from bfos_live import greeter as g
+    e = g.Ecran(reseau_mod=FauxReseau([("Bureau", True, 70, False)]))
+    e.montrer_attente_reseau("none")
+    e.mdp.hasFocus = lambda: True
+    e.reseau_retabli()
+    assert not e.panneau.isHidden()

@@ -910,6 +910,24 @@ def emit_skel_kdeglobals(b: dict, files_root: Path) -> Path:
     return target
 
 
+# Brave (Flatpak) range son profil sous ~/.var/app/com.brave.Browser/config/
+# BraveSoftware/Brave-Browser. Chromium saute son accueil de premier lancement
+# (« Définir Brave comme navigateur par défaut ») quand le fichier témoin
+# « First Run » y existe : vu au premier Brave d'un poste installé, 2026-10-31
+# (#27223). Les lanceurs de PWA passent deja --no-first-run ; Brave ouvert
+# depuis le menu, non.
+BRAVE_PROFIL_SKEL = "etc/skel/.var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser"
+
+
+def emit_skel_brave_first_run(b: dict, files_root: Path) -> Path:
+    """Le témoin « First Run » de Brave dans /etc/skel (fichier vide)."""
+    target = files_root / BRAVE_PROFIL_SKEL / "First Run"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("")
+    LOG.info("emit skel brave first run %s", target)
+    return target
+
+
 def emit_skel_plasma_appletsrc(b: dict, files_root: Path) -> Path:
     """Pre-seed plasma-org.kde.plasma.desktop-appletsrc with the BF wallpaper.
 
@@ -976,6 +994,7 @@ def emit_all(tenant: dict, files_root: Path) -> dict:
         "xdg_kdeglobals": emit_xdg_kdeglobals(b, files_root),
         "skel_kdeglobals": emit_skel_kdeglobals(b, files_root),
         "skel_appletsrc": emit_skel_plasma_appletsrc(b, files_root),
+        "skel_brave_first_run": emit_skel_brave_first_run(b, files_root),
         "icon_theme": emit_icon_theme(b, files_root),
         "neofetch": emit_neofetch_config(b, files_root),
         "fastfetch": emit_fastfetch_config(b, files_root),

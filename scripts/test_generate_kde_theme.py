@@ -489,3 +489,13 @@ def test_look_and_feel_donne_le_fond_d_un_profil_neuf(tmp_path: Path):
     body = (artifacts["look_and_feel"] / "contents/defaults").read_text()
     assert "\n[Wallpaper]\nImage=bf\n" in body
     assert (tmp_path / "usr/share/wallpapers/bf").is_dir()
+
+
+def test_skel_brave_first_run(tmp_path: Path):
+    """#27223 : sans ce témoin, Brave ouvert depuis le menu affiche son accueil
+    de premier lancement sur un poste neuf."""
+    artifacts = gkt.emit_all({"slug": "bf"}, tmp_path)
+    cible = artifacts["skel_brave_first_run"]
+    assert cible == tmp_path / ("etc/skel/.var/app/com.brave.Browser/config/"
+                                "BraveSoftware/Brave-Browser/First Run")
+    assert cible.is_file() and cible.read_text() == ""

@@ -61,15 +61,19 @@ def _valid_extensions(extensions: list[dict] | None) -> list[dict]:
 
 def _build_policy(nextcloud_url: str, pwas: list[dict] | None = None,
                   extensions: list[dict] | None = None) -> dict:
+    """`nextcloud_url` : la page d'accueil de Brave. Vide (organisation sans
+    Nextcloud ni Odoo connus) : pas de page d'accueil imposee, le reste
+    s'applique quand meme (#27223)."""
     policy = {
-        "HomepageLocation": nextcloud_url,
-        "HomepageIsNewTabPage": False,
         "DefaultBrowserSettingEnabled": False,
         "PasswordManagerEnabled": False,
         # Statistiques anonymes de Brave (P3A) coupees : sinon chaque fenetre
         # de PWA ouvre sur un bandeau « Got it / Disable » (vu en VM, 2026-10-24).
         "BraveP3AEnabled": False,
     }
+    if nextcloud_url:
+        policy["HomepageLocation"] = nextcloud_url
+        policy["HomepageIsNewTabPage"] = False
     extensions = _valid_extensions(extensions)
     if extensions:
         policy["ExtensionInstallForcelist"] = [
@@ -98,9 +102,10 @@ def apply_brave_policy(
     pwas: list[dict] | None = None,
     extensions: list[dict] | None = None,
 ) -> tuple[bool, str]:
-    nc_url = get_service_url(tenant, "nextcloud")
-    if not nc_url:
-        return False, "URL Nextcloud absente du tenant"
+    # Page d'accueil : le Nextcloud de l'organisation, a defaut son Odoo. Une
+    # organisation sans Nextcloud recoit quand meme ses extensions et ses PWA :
+    # avant le 2026-10-31, toute la politique Brave sautait faute d'url (#27223).
+    nc_url = get_service_url(tenant, "nextcloud") or get_service_url(tenant, "odoo")
     home = home or Path.home()
     target = _policy_path(home)
     try:

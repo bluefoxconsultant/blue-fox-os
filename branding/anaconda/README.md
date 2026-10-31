@@ -64,7 +64,7 @@ Confirm at the Anaconda install screen:
 The installer title bar string « FEDORA LINUX 43 INSTALLATION » is composed
 from `Product` + `Version` in `/.buildstamp` inside stage2 — not the profile
 config. To fully close the title half of #22419, the overlay also needs to
-patch `/.buildstamp` (set `Product=Blue Fox OS`, `Version=0.1.1`). The
+patch `/.buildstamp` (set `Product=Blue Fox OS`, `Version=1.0`, `IsFinal=True` depuis #27223). The
 overlay script ships a `buildstamp.ini` placeholder for this — to be
 verified on the first real boot test after this PR merges.
 

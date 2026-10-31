@@ -504,3 +504,72 @@ def test_vconsole_keymap_filtre():
 def test_vconsole_sans_keymap_retombe_sur_ca(install):
     import bfos_apply
     assert bfos_apply.render_vconsole_conf({"install": install}).startswith("KEYMAP=ca\n")
+
+
+# --- port de l'annuaire hors de ldap_port_t (#27223) ------------------------
+# Demo Boreal, 2026-10-31 : ldaps sur 1636, SELinux refuse connect() a sssd_t
+# (AVC name_connect … unreserved_port_t), sssd reste « offline », aucune session.
+
+@pytest.mark.parametrize("uri, attendu", [
+    ("ldaps://auth.example.com:1636", [1636]),
+    ("ldaps://auth.example.com", [636]),
+    ("ldap://auth.example.com", [389]),
+    ("ldaps://a.example.com:1636, ldaps://b.example.com:3269", [1636, 3269]),
+    ("ldaps://a.example.com:1636,ldaps://a.example.com:1636", [1636]),
+    ("ldaps://ok\nrogue_uri = 1", [636]),
+    ("ldaps://h:99999", []),
+    ("https://h:1636", []),
+    ("", []),
+    (None, []),
+])
+def test_ports_ldap(uri, attendu):
+    assert ba.ports_ldap(uri) == attendu
+
+
+def _politique_port(uri):
+    return {**POLICY, "install": {**POLICY["install"],
+                                  "login": {**POLICY["install"]["login"], "ldap_uri": uri}}}
+
+
+def test_port_non_standard_declare_a_selinux(tmp_path):
+    vus = []
+    res = {a: ok for a, ok, _ in ba.apply(_politique_port("ldaps://auth.example.com:1636"),
+                                         root=str(tmp_path),
+                                         run=lambda argv, check=False: vus.append(argv))}
+    assert res["sssd-port-selinux-1636"] is True
+    assert ["chroot", str(tmp_path), "semanage", "port", "-a", "-N", "-p", "tcp",
+            "-t", "ldap_port_t", "1636"] in vus
+
+
+@pytest.mark.parametrize("port", [389, 636, 3268, 3269, 7389])
+def test_port_standard_ne_touche_pas_selinux(tmp_path, port):
+    vus = []
+    res = ba.apply(_politique_port(f"ldaps://auth.example.com:{port}"), root=str(tmp_path),
+                   run=lambda argv, check=False: vus.append(argv))
+    assert not [a for a, _ok, _d in res if a.startswith("sssd-port-selinux")]
+    assert not [v for v in vus if "semanage" in v]
+
+
+def test_port_deja_type_est_modifie(tmp_path):
+    """semanage port -a echoue quand le port a deja un type : on passe a -m."""
+    vus = []
+    def run(argv, check=False):
+        vus.append(argv)
+        if "-a" in argv and "semanage" in argv:
+            raise subprocess.CalledProcessError(1, argv)
+    res = {a: ok for a, ok, _ in ba.apply(_politique_port("ldaps://h.example.com:1636"),
+                                         root=str(tmp_path), run=run)}
+    assert res["sssd-port-selinux-1636"] is True
+    assert any("-m" in v and "semanage" in v for v in vus)
+
+
+def test_semanage_absent_se_voit(tmp_path):
+    """Sans semanage, l'etape ECHOUE au journal : jamais un OK sur une machine
+    qui n'ouvrira aucune session."""
+    def run(argv, check=False):
+        if "semanage" in argv:
+            raise FileNotFoundError("semanage")
+    res = {a: ok for a, ok, _ in ba.apply(_politique_port("ldaps://h.example.com:1636"),
+                                         root=str(tmp_path), run=run)}
+    assert res["sssd-port-selinux-1636"] is False
+    assert res["sssd-enable"] is True

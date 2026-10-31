@@ -209,6 +209,7 @@ class Signaux(QObject):
     progres = pyqtSignal(dict)
     erreur = pyqtSignal(str)
     attente_reseau = pyqtSignal(str)
+    reseau_retabli = pyqtSignal()
     choix = pyqtSignal(dict, str)
     domaine = pyqtSignal(dict, str)
     fin = pyqtSignal()
@@ -280,14 +281,24 @@ class Travail(threading.Thread):
 
     def run(self):
         client = None
+        attendait = False
         while not self.arret.is_set():
             etat = self.connectivite()
             if etat in ("none", "unknown"):
                 self.signaux.attente_reseau.emit(etat)
+                attendait = True
                 self.dormir(self.pause)
                 continue
+            if attendait and etat != "portal":
+                # Le reseau est arrive apres une attente : l'ecran retire son
+                # « Pas de reseau » et referme le Wi-Fi qu'il avait ouvert de
+                # lui-meme (vu en VM filaire, demo Boreal, #27223).
+                self.signaux.reseau_retabli.emit()
+                attendait = False
             if etat == "portal":
                 self.signaux.attente_reseau.emit(etat)
+                # Sorti du portail plus tard : l'avis se retire comme le bandeau.
+                attendait = True
             try:
                 if client is None:
                     client = self.client_usine()
@@ -318,6 +329,10 @@ class Ecran(QWidget):
 
         haut = QHBoxLayout()
         self.etiquette_reseau = QLabel("")
+        self._wifi_ouvert_par_l_ecran = False
+        # Vrai tant que le bandeau porte un avis reseau (absent ou portail) :
+        # un drapeau plutot que son texte, qu'un changement de langue modifie.
+        self._avis_reseau = False
         self.etiquette_reseau.setObjectName("doux")
         self.heure = QLabel("")
         self.heure.setFont(QFont("Lexend", 16))
@@ -452,7 +467,7 @@ class Ecran(QWidget):
         self.panneau.hide()
         bas = QHBoxLayout()
         self.bouton_wifi = QPushButton(_("Wi-Fi"))
-        self.bouton_wifi.clicked.connect(self.basculer_wifi)
+        self.bouton_wifi.clicked.connect(self.basculer_wifi_a_la_main)
         bas.addWidget(self.bouton_wifi)
         # Langue de l'ecran (et de l'aide PAM, qui relit le choix) : une par fichier PO.
         self.choix_langue = QComboBox()
@@ -657,9 +672,11 @@ class Ecran(QWidget):
     def montrer_attente_reseau(self, etat):
         if etat == "portal":
             self.etiquette_reseau.setText(_("Réseau derrière un portail : la connexion pourrait échouer."))
+            self._avis_reseau = True
             return
         self._dernier = (self.montrer_attente_reseau, (etat,))
         self.etiquette_reseau.setText(_("Pas de réseau. Branche un câble ou choisis un Wi-Fi."))
+        self._avis_reseau = True
         self.consigne.setText(_("En attente du réseau…"))
         self.occupe()
         self.qr.montrer(None)
@@ -667,6 +684,31 @@ class Ecran(QWidget):
         self.expire_a = None
         if self.panneau.isHidden():
             self.basculer_wifi()
+            self._wifi_ouvert_par_l_ecran = True
+
+    def reseau_retabli(self):
+        """Le reseau est la : plus de « Pas de reseau » ni d'avis de portail, et
+        le panneau Wi-Fi ouvert par l'ecran se referme (jamais celui que la
+        personne a ouvert, ni pendant qu'elle y tape un mot de passe)."""
+        if self._avis_reseau:
+            self.etiquette_reseau.setText("")
+            self._avis_reseau = False
+        # L'ecran d'attente n'est plus l'ecran courant : un changement de langue
+        # ne doit pas le rejouer (il rouvrirait le Wi-Fi et effacerait le QR, et
+        # aucun nouveau signal ne le retirerait, relecture du 2026-10-31).
+        if self._dernier and self._dernier[0] == self.montrer_attente_reseau:
+            self._dernier = None
+            if self.consigne.text() == _("En attente du réseau…"):
+                self.consigne.setText("")
+        en_saisie = self.mdp.hasFocus() or bool(self.mdp.text())
+        if self._wifi_ouvert_par_l_ecran and not self.panneau.isHidden() and not en_saisie:
+            self.panneau.hide()
+        if not en_saisie:
+            self._wifi_ouvert_par_l_ecran = False
+
+    def basculer_wifi_a_la_main(self):
+        self._wifi_ouvert_par_l_ecran = False
+        self.basculer_wifi()
 
     def basculer_wifi(self):
         if self.panneau.isHidden():
@@ -707,6 +749,7 @@ def brancher(ecran, signaux, app):
     signaux.progres.connect(ecran.montrer_progres)
     signaux.erreur.connect(ecran.montrer_erreur)
     signaux.attente_reseau.connect(ecran.montrer_attente_reseau)
+    signaux.reseau_retabli.connect(ecran.reseau_retabli)
     signaux.choix.connect(ecran.montrer_choix)
     signaux.domaine.connect(ecran.montrer_domaine)
     signaux.fin.connect(app.quit)

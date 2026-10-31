@@ -153,15 +153,59 @@ def _services_de_politique(prov: dict) -> dict:
     return retenus
 
 
+def _hote(url) -> str:
+    try:
+        return (urlsplit(url).hostname or "").lower() if isinstance(url, str) else ""
+    except ValueError:
+        return ""
+
+
+def organisation_etrangere(tenant: dict, prov: dict) -> bool:
+    """Vrai si la politique vient d'une AUTRE organisation que celle de l'image.
+
+    L'image bf porte les adresses de Blue Fox ; une organisation installee
+    depuis elle (demo Boreal, #27172) recoit sa politique, ou une url vide
+    voulait dire « garder celle de l'image » (#27109). Pour elle, c'est faux :
+    l'accueil proposait le Nextcloud de Blue Fox a une employee de Boreal
+    (#27223). On compare le domaine de l'organisation a l'hote Odoo de
+    l'image ; sans l'un ou l'autre, on ne conclut rien (comportement d'avant).
+    """
+    domaine = ((prov or {}).get("org") or {}).get("domain")
+    domaine = domaine.strip().lower().strip(".") if isinstance(domaine, str) else ""
+    # _domain_of (bf_policy) se replie sur le site web, qui peut garder son
+    # www., un chemin ou un port : on n'en garde que l'hote.
+    domaine = _hote("https://" + domaine) if domaine else ""
+    if domaine.startswith("www."):
+        domaine = domaine[4:]
+    services = (tenant or {}).get("services")
+    odoo = services.get("odoo") if isinstance(services, dict) else None
+    hote = _hote(odoo.get("url") if isinstance(odoo, dict) else "")
+    if not domaine or not hote:
+        return False
+    # Hote de l'image egal au domaine ou sous lui. PAS l'inverse : une
+    # organisation en sous-domaine de l'image (client.bluefoxconsultant.com,
+    # bfos.demo.symbifox.com face a demo.symbifox.com) reste etrangere.
+    return not (hote == domaine or hote.endswith("." + domaine))
+
+
 def _superposer_services(tenant: dict, prov: dict) -> dict:
     """Copie du tenant ou les services de la politique remplacent les url de
-    l'image. Rend le tenant lui-meme s'il n'y a rien a superposer."""
+    l'image. Rend le tenant lui-meme s'il n'y a rien a superposer.
+
+    Organisation etrangere a l'image : AUCUN service de l'image ne survit, pas
+    meme ceux que la politique ne nomme pas (imap, smtp, talk…) — seuls ceux
+    que la politique designe restent (#27223)."""
     services = _services_de_politique(prov)
-    if not services:
+    etrangere = organisation_etrangere(tenant, prov)
+    if not services and not etrangere:
         return tenant
     merged = dict(tenant)
-    tous = merged.get("services")
+    tous = {} if etrangere else merged.get("services")
     tous = dict(tous) if isinstance(tous, dict) else {}
+    if etrangere:
+        LOG.info("politique d'une autre organisation que l'image : services de "
+                 "l'image ecartes, seuls ceux de la politique restent (%s)",
+                 ", ".join(sorted(services)) or "aucun")
     for nom, url in services.items():
         entree = tous.get(nom)
         entree = dict(entree) if isinstance(entree, dict) else {}
