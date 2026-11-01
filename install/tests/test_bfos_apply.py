@@ -604,6 +604,8 @@ def test_semanage_absent_se_voit(tmp_path):
                                          root=str(tmp_path), run=run)}
     assert res["sssd-port-selinux-1636"] is False
     assert res["sssd-enable"] is True
+
+
 # ------------------------------------------------ postes partages (bf_policy 18.0.2.12.0)
 SEAT_POLICY = {
     **POLICY,

@@ -488,6 +488,8 @@ def apply_screen_lock(policy, path=None, base=None) -> tuple:
     if restored:
         what += ", reglage local retabli"
     return True, what, restored
+
+
 def _authtok_en_place(sssd_conf):
     """Le mot de passe de liaison du sssd.conf en place, ou "" s'il n'y en a pas."""
     try:

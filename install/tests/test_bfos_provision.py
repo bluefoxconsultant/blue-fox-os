@@ -2218,8 +2218,11 @@ class TestRefusMfaEnClair:
         def get(url, token):
             raise _http_error(403, '{"error": "second factor required"}')
         dit = []
+        pauses = []
         with pytest.raises(bp.ProvisionError, match="second factor required"):
-            bp.fetch_policy(POLICY_URL, "TOK", get=get, out=dit.append)
+            bp.fetch_policy(POLICY_URL, "TOK", get=get, out=dit.append,
+                            sleep=pauses.append)
+        assert pauses == [bp.PAUSE_MFA_REQUISE]
         assert any("Double authentification requise : activez-la dans Authentik puis"
                    in m for m in dit)
 
@@ -2239,7 +2242,8 @@ class _Res:
 
 
 class TestSondeSignature:
-    """M1 : avertissement seulement, au meme juge que le telechargement."""
+    """La sonde ne juge pas : elle nuance (refusee, absente, inconnue) et seul
+    un refus de signature lisible fait sauter le flux d'appareil."""
 
     def _sonde(self, res):
         vus = []
@@ -2386,6 +2390,8 @@ def test_disposition_inconnue_garde_les_deux_copies(tmp_path):
     mnt, _ = _jouer_copie(tmp_path, None)
     for nom in ("sysroot", "sysimage"):
         assert len(_secrets(mnt / nom)) == 3
+
+
 # ------------------------------------------------ postes partages (bf_policy 18.0.2.12.0)
 def test_seat_code_from_env_then_cmdline(tmp_path):
     cmdline = tmp_path / "cmdline"

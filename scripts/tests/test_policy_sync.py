@@ -695,6 +695,8 @@ def test_le_service_redemande_la_configuration_sans_echouer():
     assert cmd.startswith("-"), "hors session Plasma l'appel echoue : il doit etre tolere"
     assert cmd.split()[1:] == ["--user", "call", "org.kde.screensaver",
                                "/ScreenSaver", "org.kde.screensaver", "configure"]
+
+
 # ------------------------------------------------ postes partages (bf_policy 18.0.2.12.0)
 SEAT_POLICY = {
     "schema": "bf-policy/v2",

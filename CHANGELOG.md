@@ -18,7 +18,6 @@ Format : [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning Ca
 ### Limites connues
 
 - La porte canari juge l'image N avec la politique de N, pas avec celle des postes (N-1) : une image signée par une clé que N-1 ignore la passe, et le parc la refuse (pas de gel, mais plus aucune mise à jour). À vérifier à la main lors d'un changement de clé (README, « Clé de secours cosign », étape 6) ; jugement par N-1 reporté après le 3 novembre.
-- La sonde de signature de l'installateur prend une panne de lecture des signatures pour une image non signée (avertissement seulement ; le téléchargement juge).
 
 ### Changed
 
@@ -32,6 +31,9 @@ Format : [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning Ca
 - Les identifiants Nextcloud déposés par l'installation ne servent que si l'agent monte le Nextcloud pour lequel ils ont été frappés ; sinon le dépôt est effacé et le SSO prend le relais. Corrige le cas d'une autre organisation installée depuis l'image bf, dont le mot de passe d'application serait parti vers le Nextcloud de Blue Fox.
 - Reste pour la phase 2 : replis en dur de l'agent, `%post` des services, libellés.
 
+- `bluefox-policy-sync.timer` passe d'une fois par jour à **toutes les heures** (étalé sur 15 min, fixe par machine) : un prêt s'ouvre dans l'heure.
+- La sonde de signature de l'installateur distingue un refus de signature d'une panne de lecture des signatures (« inconnue », avertissement seulement) ; un refus lisible fait sauter le flux d'appareil (porté de la copie servie par bf_zerotouch_install 18.0.4.0.7, #27109).
+
 ### Added
 
 **Postes partagés : laboratoire et prêt** (#26119, avec bf_policy 18.0.2.12.0) :
@@ -40,10 +42,6 @@ Format : [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning Ca
 - `bluefox-policy-sync` réécrit l'accès des postes partagés quand un prêt commence ou finit ; l'agent d'accueil applique la session sans assistant.
 - Le mot de passe de liaison de l'annuaire reste dans `sssd.conf` quand `/machine` ne le sert plus (bf_policy 18.0.2.11.2) : la synchro le reprend du fichier en place, et sans mot de passe nulle part elle garde le fichier au lieu d'écrire un poste sans session.
 - Une fois `sssd.conf` écrit, l'installation réécrit la politique stagée sans le mot de passe de liaison (#26137, déjà dans la copie servie par bf_zerotouch_install 18.0.4.0.4) ; elle le garde si `sssd.conf` a échoué, pour qu'on puisse rejouer le script à la main.
-
-### Changed
-
-- `bluefox-policy-sync.timer` passe d'une fois par jour à **toutes les heures** (étalé sur 15 min, fixe par machine) : un prêt s'ouvre dans l'heure.
 
 **Re-synchronisation de la politique sur les machines déjà installées** (#23909) :
 - Une machine reçoit désormais une identité à elle. Pendant le `%pre`, tant que le porteur OIDC de l'opérateur est en main, `bfos_provision.py` appelle `POST /api/v1/policy/enroll` et met le secret rendu dans `/etc/bluefox/machine.json` (0600, root). Odoo n'en conserve que le sha256.

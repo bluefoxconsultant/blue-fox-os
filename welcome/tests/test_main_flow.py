@@ -283,6 +283,8 @@ def test_sans_nextcloud_aucune_page_et_application_directe():
     lire.assert_not_called()
     applique.assert_called_once()
     assert applique.call_args.args[2] is None
+
+
 SEAT = {"schema": "bf-policy/v2", "user": {"login": ""},
         "seat": {"profile": "labo", "kind": "lab"}, "session": {"mounts": [], "pwas": []}}
 
