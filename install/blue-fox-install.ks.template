@@ -189,6 +189,11 @@ for ROOT in /mnt/sysroot /mnt/sysimage; do
   if [ -d "$ROOT" ]; then
     mkdir -p "$ROOT/var/lib/bluefox-welcome"
     if bfos_secrets_ici "$ROOT"; then
+      # cp, PAS install : `install` n'existe pas dans l'installateur v1.0.0. La copie
+      # echouait en silence (2>/dev/null || true) et aucune politique n'etait appliquee :
+      # ni nom d'hote, ni locale, ni sssd, ni bfos_apply (mesure au banc le 2026-10-27,
+      # #26870). Le fichier porte le mot de passe de liaison : la source est deja en 0600
+      # (write_private), que cp garde, et chmod le reaffirme.
       cp /tmp/bfos-provision.json "$ROOT/var/lib/bluefox-welcome/provisioning.json" 2>/dev/null || true
       chmod 600 "$ROOT/var/lib/bluefox-welcome/provisioning.json" 2>/dev/null || true
       if [ -f /tmp/bfos-machine.json ]; then
