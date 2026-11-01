@@ -344,7 +344,7 @@ def test_etiqueter_ajoute_la_cle_selinux(tmp_path, monkeypatch):
 
 
 # ----------------------------------------------------------------- interface
-qt = pytest.importorskip("PyQt6.QtWidgets")
+qt = pytest.importorskip("PyQt6.QtWidgets", exc_type=ImportError)
 
 
 @pytest.fixture(scope="module")

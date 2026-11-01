@@ -108,7 +108,19 @@ def test_po_part_avec_le_paquet():
 # ------------------------------------------------------------------ assistant en anglais
 # Seuls les essais d'interface demandent PyQt6 : un saut au niveau du module emportait aussi
 # les essais de catalogue (relecture adverse du 2026-10-27).
-requiert_qt = pytest.mark.skipif(importlib.util.find_spec("PyQt6") is None, reason="PyQt6 absent")
+def _qt_utilisable():
+    """PyQt6 installé ne suffit pas : sans ses bibliothèques système (libEGL,
+    libxkbcommon), l'import de QtWidgets échoue. Le test se saute alors."""
+    if importlib.util.find_spec("PyQt6") is None:
+        return False
+    try:
+        import PyQt6.QtWidgets  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+requiert_qt = pytest.mark.skipif(not _qt_utilisable(), reason="PyQt6 absent ou inutilisable")
 
 
 @requiert_qt

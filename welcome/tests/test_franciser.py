@@ -5,7 +5,7 @@ import pytest
 
 from bluefox_welcome import langue
 
-pytest.importorskip("PyQt6.QtWidgets")
+pytest.importorskip("PyQt6.QtWidgets", exc_type=ImportError)
 
 
 @pytest.mark.parametrize("code,attendu", [("fr", ["Terminer", "Annuler", "Suivant", "Précédent"]),
