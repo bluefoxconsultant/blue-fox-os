@@ -815,6 +815,11 @@ MESSAGE_MFA_REQUISE = (
     "  Cette installation continue SANS la politique de l'organisation\n"
     "  (poste autonome, non gere).\n"
     + "=" * 70 + "\n")
+# Le temps de lire avant qu'Anaconda ne reprenne l'ecran : la suite du %pre
+# (repli, plan de partitionnement, sonde) ne demande rien a l'operateur, et
+# le message disparaissait sous l'installateur graphique (relecture adverse 2).
+# Meme duree que PAUSE_IMAGE_NON_SIGNEE.
+PAUSE_MFA_REQUISE = 20
 
 
 def fetch_policy(policy_url, token, get=_get, sleep=time.sleep, out=None):
@@ -841,6 +846,7 @@ def fetch_policy(policy_url, token, get=_get, sleep=time.sleep, out=None):
             if exc.code == 403 and _error_code(exc) == "second factor required":
                 if out is not None:
                     out(MESSAGE_MFA_REQUISE)
+                    sleep(PAUSE_MFA_REQUISE)
                 raise ProvisionError(
                     "policy fetch HTTP 403 (second factor required)") from exc
             raise ProvisionError(f"policy fetch HTTP {exc.code}") from exc
@@ -1512,19 +1518,31 @@ def armer_verification_image(url, exiger=False, out=None, chemin_iso=None,
 # de toucher aux couches, puis demande a la destination si elle a deja la
 # premiere couche. On lui donne une destination qui n'existe pas
 # (127.0.0.1:1, port ferme ; Go ne passe jamais 127.0.0.1 par un mandataire) :
-#   - « Source image rejected » : signature absente ou invalide ;
+#   - « Source image rejected » ET un verdict sur la signature (« no
+#     signature exists », « invalid signature », « verification failed »,
+#     « not accepted ») : signature absente ou invalide ;
+#   - « Source image rejected » sans verdict : skopeo n'a pas pu LIRE les
+#     signatures (5xx, 429, coupure) ; on ne sait pas, donc « inconnue » ;
 #   - echec sur 127.0.0.1:1 : la signature a ete acceptee, rien n'a ete tire.
 # Mesure le 2026-10-29 (skopeo 1.22, ghcr.io) : factice:latest et
 # canari-signe acceptes en 2 s ; canari-non-signe (« no signature exists »),
 # cle jetable (« invalid signature »), registries.d absent : refuses.
 #
-# ⚠️ CE N'EST QU'UN AVERTISSEMENT. Le verdict qui compte reste celui du
+# ⚠️ LA SONDE N'AUTORISE RIEN. Le verdict qui compte reste celui du
 # telechargement (pas d'intervalle entre controle et usage, voir plus haut).
 # Un refus ici ne retombe JAMAIS sur la ligne non verifiee : ce serait
-# installer precisement l'image qu'on ne sait pas authentifier.
+# installer precisement l'image qu'on ne sait pas authentifier. Un refus
+# (verdict de signature, pas « inconnue ») fait seulement sauter le flux
+# d'appareil et l'inscription : l'installation ne peut pas aboutir, rien ne
+# doit en rester dans Odoo (campagne VM de #27109, voir main()).
 SONDE_DESTINATION = "docker://127.0.0.1:1/bfos-verification-prealable:essai"
 SONDE_DELAI = 90
 PAUSE_IMAGE_NON_SIGNEE = 20
+# Ce que skopeo (containers/image) ecrit quand il a JUGE la signature, en
+# minuscules. Tout autre motif sous « Source image rejected » est une panne
+# de lecture, pas un refus (relecture adverse 2).
+VERDICTS_SIGNATURE_REFUSEE = ("no signature exists", "invalid signature",
+                              "verification failed", "not accepted")
 MESSAGE_IMAGE_NON_SIGNEE = (
     "\n" + "=" * 70 + "\n"
     "  L'image du systeme n'est pas encore signee : reessayez dans quelques\n"
@@ -1532,6 +1550,25 @@ MESSAGE_IMAGE_NON_SIGNEE = (
     "  (L'installateur refusera de la telecharger : une image dont la\n"
     "  signature ne se verifie pas n'est jamais installee.)\n"
     + "=" * 70 + "\n")
+# Signature PRESENTE mais refusee (cle ou identite inattendue, signature
+# abimee) : « pas encore signee » tromperait l'operateur, attendre ne sert a
+# rien (campagne VM de #27109).
+MESSAGE_SIGNATURE_NON_RECONNUE = (
+    "\n" + "=" * 70 + "\n"
+    "  La signature de l'image du systeme n'est pas reconnue (cle ou\n"
+    "  identite inattendue) : n'installez pas cette image, contactez\n"
+    "  Blue Fox.\n"
+    "  (L'installateur refusera de la telecharger : une image dont la\n"
+    "  signature ne se verifie pas n'est jamais installee.)\n"
+    + "=" * 70 + "\n")
+
+
+def message_de_refus(detail):
+    """« Pas encore signee » seulement quand skopeo n'a trouve AUCUNE
+    signature ; toute autre raison de refus est une signature non reconnue."""
+    if "no signature exists" in (detail or "").lower():
+        return MESSAGE_IMAGE_NON_SIGNEE
+    return MESSAGE_SIGNATURE_NON_RECONNUE
 
 
 def sonder_signature_image(url, run=None, which=None, policy_path=None,
@@ -1558,7 +1595,10 @@ def sonder_signature_image(url, run=None, which=None, policy_path=None,
     sortie = ((res.stderr or "") + "\n" + (res.stdout or "")).strip()
     derniere = sortie.splitlines()[-1][:300] if sortie else ""
     if "Source image rejected" in sortie:
-        return "refusee", derniere
+        for ligne in reversed(sortie.splitlines()):
+            if any(v in ligne.lower() for v in VERDICTS_SIGNATURE_REFUSEE):
+                return "refusee", ligne.strip()[-300:]
+        return "inconnue", derniere
     if res.returncode == 0 or "127.0.0.1:1" in sortie:
         return "signee", "signature acceptee par la politique de l'installateur"
     return "inconnue", derniere or f"skopeo a rendu le code {res.returncode}"
@@ -1571,7 +1611,7 @@ def annoncer_signature(url, out, sonde=None):
         out("[bfos] signature de l'image confirmee avant l'installation "
             "(l'installateur la verifie de nouveau au telechargement).\n")
     elif etat == "refusee":
-        out(MESSAGE_IMAGE_NON_SIGNEE)
+        out(message_de_refus(detail))
         out(f"[bfos] verification prealable : {detail}\n")
     else:
         out(f"[bfos] verification prealable de la signature impossible "
@@ -1588,7 +1628,7 @@ def rappeler_signature(url, out, sonde=None, sleep=None):
     qu'Anaconda ne reprenne l'ecran. Rend l'etat final."""
     etat, detail = (sonde or sonder_signature_image)(url)
     if etat == "refusee":
-        out(MESSAGE_IMAGE_NON_SIGNEE)
+        out(message_de_refus(detail))
         out(f"[bfos] verification prealable (rappel) : {detail}\n")
         (sleep or time.sleep)(PAUSE_IMAGE_NON_SIGNEE)
     elif etat == "signee":
@@ -2245,8 +2285,8 @@ def main(argv=None):
             out(f"[bfos] verification de l'image non armee ({exc}) ; "
                 "le filet du %pre reste en place.\n")
         if armee:
-            # Avertissement seulement (M1) : la ligne verifiee reste en place
-            # quoi que dise la sonde, jamais de retour au filet.
+            # La ligne verifiee reste en place quoi que dise la sonde, jamais
+            # de retour au filet (M1) ; un refus saute le flux ci-dessous.
             try:
                 signature = annoncer_signature(image_ref, out)
             except Exception as exc:  # noqa: BLE001 — never abort the install
@@ -2254,15 +2294,29 @@ def main(argv=None):
                     f"impossible ({exc}).\n")
     else:
         out("[bfos] BFOS_IMAGE_REF absent : ligne d'image laissee au filet du %pre.\n")
-    try:
-        policy = run(out=out,
-                     after_policy=lambda tok, pol: _apres_politique(
-                         tok, pol, out=out))
-        out("[bfos] policy received for user "
-            f"{policy.get('user', {}).get('login', '?')}\n")
-    except Exception as exc:  # noqa: BLE001 — never abort the install
-        out(f"[bfos] provisioning failed ({exc}); using org fallback defaults\n")
+    if signature == "refusee":
+        # Verdict de signature (campagne VM de #27109) : Anaconda refusera
+        # l'image au telechargement, l'installation ne peut pas aboutir. Sans
+        # cette garde, le flux d'appareil, l'inscription et le sequestre
+        # tournaient quand meme : une fiche machine et une phrase sequestree
+        # dans Odoo pour une machine qui n'existera jamais. On n'authentifie
+        # personne et on laisse l'installation echouer au telechargement ; la
+        # ligne verifiee reste (jamais de retour au filet). « inconnue » ne
+        # passe pas ici : la sonde n'a rien juge.
+        out("[bfos] signature refusee : ni connexion ni inscription de cette "
+            "machine ; l'installateur s'arretera au telechargement de "
+            "l'image.\n")
         policy = fallback_policy()
+    else:
+        try:
+            policy = run(out=out,
+                         after_policy=lambda tok, pol: _apres_politique(
+                             tok, pol, out=out))
+            out("[bfos] policy received for user "
+                f"{policy.get('user', {}).get('login', '?')}\n")
+        except Exception as exc:  # noqa: BLE001 — never abort the install
+            out(f"[bfos] provisioning failed ({exc}); using org fallback defaults\n")
+            policy = fallback_policy()
     # The staged policy carries the operator login + LDAP endpoints (no token),
     # so keep it owner-only rather than the installer's default umask (0o644).
     write_private(STAGED_JSON, json.dumps(policy))
@@ -2270,7 +2324,11 @@ def main(argv=None):
     assurer_plan_de_partitionnement(out=out)
     if signature == "refusee":
         try:
-            rappeler_signature(image_ref, out)
+            if rappeler_signature(image_ref, out) == "signee":
+                # Signee entre-temps, mais personne ne s'est connecte.
+                out("[bfos] cette installation se fait SANS la politique de "
+                    "l'organisation (poste autonome, non gere) : recommencez-la "
+                    "pour un poste gere.\n")
         except Exception:  # noqa: BLE001 — never abort the install
             pass
     return 0
