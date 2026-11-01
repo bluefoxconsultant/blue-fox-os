@@ -1,0 +1,21 @@
+# Cle USB live Blue Fox OS generique (#26870, 2026-10-27) : relit, avant
+# l'ecran de connexion, le domaine de l'organisation retenu sur la cle (espace
+# des profils, en lecture seule, rien n'est cree) et le depose pour l'aide PAM.
+# Sans domaine retenu (ou sur une cle configuree pour une organisation), elle
+# ne fait rien : l'ecran demande le domaine.
+[Unit]
+Description=Blue Fox OS (cle live) : organisation retenue sur la cle
+DefaultDependencies=no
+After=local-fs.target systemd-tmpfiles-setup.service systemd-udev-settle.service systemd-udevd.service
+Before=greetd.service display-manager.service
+ConditionPathExists=/etc/bfos-live/live.json
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/bfos-live/session lire-organisation
+# Une cle lente ou abimee ne retient jamais l'ecran de connexion plus longtemps.
+TimeoutStartSec=45s
+
+[Install]
+WantedBy=greetd.service

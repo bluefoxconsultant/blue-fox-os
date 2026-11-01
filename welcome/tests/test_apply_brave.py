@@ -26,6 +26,7 @@ def test_apply_brave_policy_writes_json(tmp_home: Path, tenant_data: dict):
     payload = json.loads(_policy_path(tmp_home).read_text())
     assert payload["HomepageLocation"] == "https://nextcloud.bluefoxconsultant.com"
     assert payload["DefaultBrowserSettingEnabled"] is False
+    assert payload["BraveP3AEnabled"] is False
 
 
 def test_extensions_come_from_the_policy(tmp_home: Path, tenant_data: dict):
@@ -62,10 +63,22 @@ def test_malformed_extensions_are_skipped(tmp_home: Path, tenant_data: dict):
     assert payload["ExtensionInstallForcelist"] == [f"{BITWARDEN};{STORE}"]
 
 
-def test_apply_brave_policy_no_nc_url_fails(tmp_home: Path):
-    ok, msg = apply_brave_policy({"slug": "bf"}, home=tmp_home)
-    assert not ok
-    assert "Nextcloud" in msg
+def test_sans_nextcloud_la_politique_s_applique_quand_meme(tmp_home: Path):
+    """#27223 : sans Nextcloud, toute la politique Brave sautait (extensions,
+    PWA, P3A). La page d'accueil prend l'Odoo de l'organisation, ou rien."""
+    import json
+    ok, _msg = apply_brave_policy(
+        {"slug": "boreal", "services": {"odoo": {"url": "https://bfos.demo.symbifox.com"}}},
+        home=tmp_home, pwas=[{"name": "Odoo", "url": "https://bfos.demo.symbifox.com/odoo"}])
+    assert ok
+    pol = json.loads(next(tmp_home.rglob("*.json")).read_text())
+    assert pol["HomepageLocation"] == "https://bfos.demo.symbifox.com"
+    assert pol["BraveP3AEnabled"] is False
+    assert pol["WebAppInstallForceList"]
+    ok, _msg = apply_brave_policy({"slug": "x"}, home=tmp_home)
+    assert ok
+    pol = json.loads(next(tmp_home.rglob("*.json")).read_text())
+    assert "HomepageLocation" not in pol and "HomepageIsNewTabPage" not in pol
 
 
 # --- bf-policy/v2 session.pwas[] force-install (BFOSI10) --------------------
@@ -79,12 +92,12 @@ def test_apply_brave_policy_installs_pwas(tmp_home: Path, tenant_data: dict):
     assert ok, msg
     payload = json.loads(_policy_path(tmp_home).read_text())
     force = payload["WebAppInstallForceList"]
-    assert [e["url"] for e in force] == [
-        "https://nc.example/call", "https://erp.example"]
+    # L'épinglée a son lanceur dans la barre des tâches (pwa_lanceurs) : ni
+    # installée une 2e fois par Brave, ni rouverte à chaque démarrage (#26870).
+    assert [e["url"] for e in force] == ["https://erp.example"]
     assert all(e["default_launch_container"] == "window" for e in force)
-    # Only the pinned PWA is opened at startup.
-    assert payload["RestoreOnStartup"] == 4
-    assert payload["RestoreOnStartupURLs"] == ["https://nc.example/call"]
+    assert "RestoreOnStartup" not in payload
+    assert "RestoreOnStartupURLs" not in payload
     assert "2 PWA" in msg
 
 

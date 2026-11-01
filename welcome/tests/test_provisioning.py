@@ -343,3 +343,61 @@ def test_brave_ouvre_le_nextcloud_de_la_politique(tmp_home):
     pol = json.loads((tmp_home / ".var/app/com.brave.Browser/config/BraveSoftware"
                       "/Brave-Browser/policies/managed/blue-fox.json").read_text())
     assert pol["HomepageLocation"] == "https://cloud.autre.org"
+
+
+# ---------------------------------------------------------------------------
+# Organisation etrangere a l'image (#27223)
+# ---------------------------------------------------------------------------
+# Demo Boreal installee depuis l'image bf : la politique envoie des url vides
+# pour les services qu'elle n'a pas, et l'image pretait ceux de Blue Fox.
+from bluefox_welcome.provisioning import organisation_etrangere  # noqa: E402
+
+IMAGE_BF = {**IMAGE, "services": {**IMAGE["services"],
+                                  "odoo": {"url": "https://bluefoxconsultant.com"},
+                                  "smtp": {"host": "smtp.migadu.com", "port": 465}}}
+
+
+def _pol_org(domaine, services):
+    return _pol(services, org={"name": "X", "domain": domaine})
+
+
+@pytest.mark.parametrize("domaine, attendu", [
+    ("bluefoxconsultant.com", False),
+    ("BlueFoxConsultant.com.", False),
+    ("www.bluefoxconsultant.com", False),
+    ("www.bluefoxconsultant.com/fr", False),
+    ("bluefoxconsultant.com:443", False),
+    ("os.bluefoxconsultant.com", True),
+    ("client.bluefoxconsultant.com", True),
+    ("bfos.demo.symbifox.com", True),
+    ("autre.org", True),
+    ("", False),
+    (None, False),
+])
+def test_organisation_etrangere(domaine, attendu):
+    assert organisation_etrangere(IMAGE_BF, _pol_org(domaine, {})) is attendu
+
+
+def test_image_sans_odoo_ne_conclut_rien():
+    assert organisation_etrangere(IMAGE, _pol_org("autre.org", {})) is False
+
+
+def test_etrangere_sans_nextcloud_ne_garde_aucun_service_de_l_image():
+    pol = _pol_org("bfos.demo.symbifox.com", {
+        "nextcloud": {"url": "", "oidc_client_id": ""},
+        "vaultwarden": {"url": ""},
+        "authentik": {"url": "https://auth.bfos.demo.symbifox.com"},
+        "odoo": {"url": "https://bfos.demo.symbifox.com"}})
+    merged = merge_branding(IMAGE_BF, pol)
+    assert set(merged["services"]) == {"authentik", "odoo"}
+    assert _url(merged, "odoo") == "https://bfos.demo.symbifox.com"
+    assert "nextcloud" not in merged["services"] and "imap" not in merged["services"]
+    assert IMAGE_BF["services"]["nextcloud"]["url"] == "https://nextcloud.bluefoxconsultant.com"
+
+
+def test_meme_organisation_garde_l_image_pour_les_url_vides():
+    """Blue Fox sur l'image bf : une url vide garde celle de l'image (#27109)."""
+    pol = _pol_org("bluefoxconsultant.com", {"nextcloud": {"url": ""}})
+    merged = merge_branding(IMAGE_BF, pol)
+    assert _url(merged, "nextcloud") == "https://nextcloud.bluefoxconsultant.com"
+    assert merged["services"]["imap"]["host"] == "imap.migadu.com"

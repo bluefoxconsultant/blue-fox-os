@@ -1,0 +1,31 @@
+#!/usr/bin/python3 -I
+"""Au build de l'image (#26870) : chaque catalogue de la cle et de l'agent d'accueil se lit, et
+chaque traduction porte exactement les champs de son texte. Un catalogue abime fait echouer
+le build, jamais la connexion (relecture adverse du 2026-10-27)."""
+import glob
+import string
+import sys
+
+sys.path.insert(0, "/usr/libexec/bfos-live")
+from bfos_live import langue  # noqa: E402
+
+import bluefox_welcome  # noqa: E402
+
+DOSSIERS = [langue.DOSSIER_PO, bluefox_welcome.__path__[0] + "/po"]
+
+
+def champs(texte):
+    return sorted((n, c, s) for _l, n, s, c in string.Formatter().parse(texte) if n is not None)
+
+
+n = 0
+for dossier in DOSSIERS:
+    fichiers = sorted(glob.glob(dossier + "/*.po"))
+    if not fichiers:
+        sys.exit(f"aucun catalogue dans {dossier}")
+    for po in fichiers:
+        for msgid, msgstr in langue.lire_po(po).items():
+            if champs(msgid) != champs(msgstr):
+                sys.exit(f"{po} : champs differents pour {msgid!r}")
+            n += 1
+print(f"langues : {n} traductions verifiees")

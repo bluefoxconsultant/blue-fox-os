@@ -1,0 +1,14 @@
+# Applis integrees a l'ISO de la cle live (#26870), installees au build.
+# Une cle demarre en memoire vive : sans elles, chaque session retelechargerait
+# plusieurs Gio. Union, au 2026-10-23, de :
+#   - la liste par defaut de l'image (recipes/bf.yml, default-flatpaks) ;
+#   - la politique de Blue Fox dans Odoo (bf_policy, onglet Applis).
+# Une appli ajoutee a la politique apres le build s'installe a l'ouverture de
+# session (en memoire vive) jusqu'a la prochaine ISO.
+com.brave.Browser
+org.mozilla.thunderbird
+com.nextcloud.desktopclient.nextcloud
+com.bitwarden.desktop
+io.anytype.anytype
+org.libreoffice.LibreOffice
+org.mozilla.firefox

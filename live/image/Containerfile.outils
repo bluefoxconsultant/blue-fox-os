@@ -1,0 +1,7 @@
+# Outils de fabrication de l'ISO live (#26870) : `build-iso.sh` tourne la-dedans.
+# Recette reconstituee le 2026-10-26 depuis l'historique de bfos-iso-outils:43
+# (serveur de build), pour construire aussi sur un poste (podman sans privileges).
+FROM registry.fedoraproject.org/fedora:43
+RUN dnf -y install --setopt=install_weak_deps=False podman fuse-overlayfs squashfs-tools \
+        squashfs-tools-ng xorriso mtools dosfstools python3-libselinux python3 tar \
+    && dnf clean all

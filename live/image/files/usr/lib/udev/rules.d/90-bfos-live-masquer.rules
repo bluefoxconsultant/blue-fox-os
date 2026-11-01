@@ -1,0 +1,26 @@
+# Volumes internes de la cle live Blue Fox OS (#26870, 2026-10-27) : udisks les
+# ignore, donc Dolphin ne les propose plus dans Peripheriques (vus au tournage :
+# profil, bfos-profil, BFOS_LIVE, BFOS_PROFILS et une entree sans nom).
+#  - le support de la cle (ISO), sa partition d'amorce EFI et celle des profils gardes ;
+#  - le systeme en lecture seule (squashfs) et les conteneurs LUKS des profils,
+#    montes en boucle ;
+#  - les profils ouverts, les couches du systeme live et les projections de la
+#    partition Ventoy (device-mapper).
+# Seuls des noms et des etiquettes propres a la cle sont reconnus : une ISO que
+# la personne monte elle-meme, ou une cle a elle, reste visible.
+# UDISKS_SYSTEM (relecture du 2026-10-27) : UDISKS_IGNORE ne fait que masquer ; sans
+# lui, la personne connectee montait la partition d'amorce en ecriture (grub.cfg,
+# donc du code root au demarrage suivant, chez la personne suivante). Monter un
+# volume « systeme » exige un administrateur, que la cle n'a pas.
+SUBSYSTEM!="block", GOTO="bfos_live_masquer_fin"
+ENV{ID_FS_LABEL}=="BFOS_LIVE|BFOS_PROFILS", ENV{UDISKS_IGNORE}="1", ENV{UDISKS_SYSTEM}="1"
+ENV{ID_PART_ENTRY_NAME}=="BFOS_PROFILS", ENV{UDISKS_IGNORE}="1", ENV{UDISKS_SYSTEM}="1"
+# Partition d'amorce EFI de la cle (et celle de Ventoy) : jamais une donnee de la
+# personne, d'ou le masquage limite au vfat de ces etiquettes (vue en VM le 2026-10-27).
+ENV{ID_FS_TYPE}=="vfat", ENV{ID_FS_LABEL}=="EFIBOOT|VTOYEFI", ENV{UDISKS_IGNORE}="1", ENV{UDISKS_SYSTEM}="1"
+KERNEL=="loop*", ENV{ID_FS_TYPE}=="squashfs", ENV{UDISKS_IGNORE}="1", ENV{UDISKS_SYSTEM}="1"
+KERNEL=="loop*", ENV{ID_FS_TYPE}=="crypto_LUKS", ENV{ID_FS_LABEL}=="bfos-profil", ENV{UDISKS_IGNORE}="1", ENV{UDISKS_SYSTEM}="1"
+ENV{DM_NAME}=="bfos-profil-*|bfos-ventoy|live-rw|live-base|live-overlay-*|ventoy", ENV{UDISKS_IGNORE}="1", ENV{UDISKS_SYSTEM}="1"
+# Zone Flatpak de la cle (bfos_live/zone_flatpak.py), montee en boucle.
+KERNEL=="loop*", ENV{ID_FS_LABEL}=="bfos-flatpak", ENV{UDISKS_IGNORE}="1", ENV{UDISKS_SYSTEM}="1"
+LABEL="bfos_live_masquer_fin"

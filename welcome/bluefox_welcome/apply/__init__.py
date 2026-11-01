@@ -9,8 +9,12 @@ from .brave_policy import apply_brave_policy
 from .kde_theme import apply_kde_theme
 from .horloges import appliquer_horloges
 from .photo import appliquer_photo
+from .emplacements import ajouter_emplacements
+from .pwa_lanceurs import appliquer_pwa_epinglees
 
 __all__ = [
+    "ajouter_emplacements",
+    "appliquer_pwa_epinglees",
     "appliquer_horloges",
     "appliquer_photo",
     "apply_rclone_mount",

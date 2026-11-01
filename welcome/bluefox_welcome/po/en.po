@@ -1,0 +1,199 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: bluefox-welcome\n"
+"Language: en\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+#: bluefox_welcome/main.py:182
+msgid "Échec : {erreur}"
+msgstr "Failed: {erreur}"
+
+#: bluefox_welcome/main.py:189
+msgid "Connecté en tant que <b>{nom}</b> ✓"
+msgstr "Signed in as <b>{nom}</b> ✓"
+
+#: bluefox_welcome/main.py:190
+msgid "Reconnecter"
+msgstr "Sign in again"
+
+#: bluefox_welcome/main.py:197
+msgid "Délai dépassé — réessayez."
+msgstr "Timed out. Please try again."
+
+#: bluefox_welcome/main.py:204
+msgid "Impossible de démarrer la connexion : {erreur}"
+msgstr "Couldn't start signing in: {erreur}"
+
+#: bluefox_welcome/main.py:211
+msgid "Connectez-vous dans le navigateur…"
+msgstr "Sign in from your browser…"
+
+#: bluefox_welcome/main.py:340 bluefox_welcome/main.py:653
+msgid "Terminer"
+msgstr "Finish"
+
+#: bluefox_welcome/main.py:340
+msgid "Annuler"
+msgstr "Cancel"
+
+#: bluefox_welcome/main.py:341 bluefox_welcome/main.py:516
+msgid "Suivant"
+msgstr "Next"
+
+#: bluefox_welcome/main.py:341
+msgid "Précédent"
+msgstr "Back"
+
+#: bluefox_welcome/main.py:398 bluefox_welcome/main.py:456
+msgid "Blue Fox OS — Premier démarrage"
+msgstr "Blue Fox OS — First-time setup"
+
+#: bluefox_welcome/main.py:409 bluefox_welcome/main.py:507
+msgid "Bienvenue sur Blue Fox OS"
+msgstr "Welcome to Blue Fox OS"
+
+#: bluefox_welcome/main.py:412
+msgid "Configuration automatique de votre poste pour <b>{login}</b>."
+msgstr "Setting up this computer for <b>{login}</b>."
+
+#: bluefox_welcome/main.py:414
+msgid "Connectez-vous une fois à Nextcloud (SSO) pour activer vos fichiers. Le thème, le navigateur, le vault et les comptes mail sont configurés automatiquement à la fin."
+msgstr "Sign in to Nextcloud once (single sign-on) to turn on your files. The theme, browser, vault and email accounts are set up automatically at the end."
+
+#: bluefox_welcome/main.py:417 bluefox_welcome/main.py:569
+msgid "Se connecter à Nextcloud (SSO)"
+msgstr "Sign in to Nextcloud (SSO)"
+
+#: bluefox_welcome/main.py:419
+msgid "Non connecté — vous pouvez ignorer et le faire plus tard."
+msgstr "Not signed in. You can skip this and do it later."
+
+#: bluefox_welcome/main.py:511
+msgid "Cet assistant configure votre poste pour le tenant <b>{slug}</b>."
+msgstr "This assistant sets up your computer for the <b>{slug}</b> organization."
+
+#: bluefox_welcome/main.py:513
+msgid "Étapes : compte Authentik, fichiers Nextcloud, vault Bitwarden."
+msgstr "Steps: Authentik account, Nextcloud files, Bitwarden vault."
+
+#: bluefox_welcome/main.py:515
+msgid "Vous pouvez ignorer une étape avec {suivant} et la reprendre plus tard."
+msgstr "You can skip any step with {suivant} and come back to it later."
+
+#: bluefox_welcome/main.py:524
+msgid "Identité — Authentik"
+msgstr "Identity — Authentik"
+
+#: bluefox_welcome/main.py:529
+msgid "Votre compte unique Blue Fox donne accès à Nextcloud + Odoo + Vaultwarden via le même mot de passe (BFOSI2)."
+msgstr "Your single Blue Fox account gives you access to Nextcloud, Odoo and Vaultwarden with the same password (BFOSI2)."
+
+#: bluefox_welcome/main.py:532
+msgid "Connectez-vous à Authentik dans le navigateur pour configurer le MFA TOTP la première fois."
+msgstr "Sign in to Authentik in your browser to set up two-step verification (TOTP) the first time."
+
+#: bluefox_welcome/main.py:534 bluefox_welcome/main.py:612
+msgid "Ouvrir {adresse}"
+msgstr "Open {adresse}"
+
+#: bluefox_welcome/main.py:537
+msgid "Votre courriel Blue Fox :"
+msgstr "Your Blue Fox email:"
+
+#: bluefox_welcome/main.py:539
+msgid "prenom@bluefoxconsultant.com"
+msgstr "firstname@bluefoxconsultant.com"
+
+#: bluefox_welcome/main.py:551
+msgid "Fichiers Nextcloud"
+msgstr "Nextcloud files"
+
+#: bluefox_welcome/main.py:555
+msgid "Configuration du dossier Nextcloud (BFOSP3)."
+msgstr "Setting up your Nextcloud folder (BFOSP3)."
+
+#: bluefox_welcome/main.py:556
+msgid "Serveur : <code>{adresse}</code>"
+msgstr "Server: <code>{adresse}</code>"
+
+#: bluefox_welcome/main.py:557
+msgid "Cible : <code>~/Nextcloud/</code> — visible dans Dolphin et toutes les apps."
+msgstr "Location: <code>~/Nextcloud/</code>, visible in Dolphin and every app."
+
+#: bluefox_welcome/main.py:560
+msgid "Monter Nextcloud dans ~/Nextcloud après la connexion"
+msgstr "Mount Nextcloud in ~/Nextcloud after signing in"
+
+#: bluefox_welcome/main.py:566
+msgid "Connectez-vous une seule fois : l'authentification se fait dans le navigateur avec votre compte Blue Fox (SSO Authentik). Aucun mot de passe à saisir ici."
+msgstr "You only sign in once: it happens in your browser with your Blue Fox account (Authentik single sign-on). There's no password to type here."
+
+#: bluefox_welcome/main.py:571
+msgid "Non connecté."
+msgstr "Not signed in."
+
+#: bluefox_welcome/main.py:584
+msgid "Mail / calendrier / contacts seront ajoutés à KAccounts (System Settings → Online Accounts)."
+msgstr "Email, calendar and contacts will be added to KAccounts (System Settings → Online Accounts)."
+
+#: bluefox_welcome/main.py:602
+msgid "Vault Bitwarden"
+msgstr "Bitwarden vault"
+
+#: bluefox_welcome/main.py:607
+msgid "Bitwarden Desktop sera pré-configuré pour : <code>{adresse}</code>"
+msgstr "Bitwarden Desktop will be preset for: <code>{adresse}</code>"
+
+#: bluefox_welcome/main.py:610
+msgid "Lance Bitwarden depuis le menu après l'assistant et connecte-toi — l'URL self-hosted sera déjà remplie."
+msgstr "After this assistant, start Bitwarden from the menu and sign in. The self-hosted server address will already be filled in."
+
+#: bluefox_welcome/main.py:621
+msgid "Récapitulatif"
+msgstr "Summary"
+
+#: bluefox_welcome/main.py:635
+msgid "monté au clic suivant (connecté : {nom})"
+msgstr "mounted when you click Finish (signed in as {nom})"
+
+#: bluefox_welcome/main.py:637
+msgid "connecté ({nom}) — mount décoché"
+msgstr "signed in ({nom}), mounting turned off"
+
+#: bluefox_welcome/main.py:639
+msgid "reporté (connexion SSO non complétée)"
+msgstr "postponed (single sign-on not completed)"
+
+#: bluefox_welcome/main.py:641
+msgid "Tenant : <b>{slug}</b>"
+msgstr "Organization: <b>{slug}</b>"
+
+#: bluefox_welcome/main.py:642
+msgid "Compte BF : {courriel}"
+msgstr "Blue Fox account: {courriel}"
+
+#: bluefox_welcome/main.py:643
+msgid "NC Files (rclone mount, SSO) : {etat}"
+msgstr "Nextcloud files (rclone mount, SSO): {etat}"
+
+#: bluefox_welcome/main.py:644
+msgid "Bitwarden Desktop : URL Vaultwarden injectée au clic suivant"
+msgstr "Bitwarden Desktop: Vaultwarden address set when you click Finish"
+
+#: bluefox_welcome/main.py:645
+msgid "Brave : policy + extensions de l'organisation poussées au clic suivant"
+msgstr "Brave: your organization's policy and extensions applied when you click Finish"
+
+#: bluefox_welcome/main.py:646
+msgid "Mail/Calendar/Contacts : System Settings ouvert au clic suivant"
+msgstr "Email, calendar and contacts: System Settings opens when you click Finish"
+
+#: bluefox_welcome/main.py:650
+msgid "Configuration prête"
+msgstr "Ready to set up"
+
+#: bluefox_welcome/main.py:652
+msgid "Cliquez <b>{bouton}</b> pour exécuter les configurations."
+msgstr "Click <b>{bouton}</b> to apply these settings."

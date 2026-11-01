@@ -72,12 +72,16 @@ def test_apply_from_policy_skip_sso_no_mount():
     assert kw["user_email"] == "olivier@bluefoxconsultant.com"
 
 
+# Un tenant qui designe un Nextcloud : le parcours SSO ne s'ouvre que la (#27223).
+TENANT_NC = {"slug": "bf", "services": {"nextcloud": {"url": "https://nextcloud.bluefoxconsultant.com"}}}
+
+
 def test_provisioned_flow_headless_applies_without_mount():
     # No PyQt6 -> headless apply, never blocks the firstboot (decision A path).
     with mock.patch.dict("sys.modules", {"PyQt6": None, "PyQt6.QtWidgets": None,
                                          "PyQt6.QtCore": None}), \
          mock.patch.object(main, "_apply_from_policy") as apply_:
-        rc = main._run_provisioned_flow({"slug": "bf"}, POLICY)
+        rc = main._run_provisioned_flow(TENANT_NC, POLICY)
     assert rc == 0
     apply_.assert_called_once()
     assert apply_.call_args.kwargs.get("nc_creds", "missing") is None
@@ -98,7 +102,7 @@ def test_identifiants_deposes_suppriment_toute_interaction():
          mock.patch.object(main.seat_credentials, "effacer") as effacer, \
          mock.patch.object(main, "_apply_from_policy") as applique, \
          mock.patch.object(main, "_run_provisioned_flow_sso") as sso:
-        rc = main._run_provisioned_flow({"slug": "bf"}, POLICY)
+        rc = main._run_provisioned_flow(TENANT_NC, POLICY)
     assert rc == 0
     lire.assert_called_once()
     sso.assert_not_called()          # aucune page, aucun navigateur
@@ -112,7 +116,7 @@ def test_sans_identifiants_le_parcours_sso_reste_le_repli():
          mock.patch.object(main, "_apply_from_policy") as applique, \
          mock.patch.object(main, "_run_provisioned_flow_sso",
                            return_value=0) as sso:
-        rc = main._run_provisioned_flow({"slug": "bf"}, POLICY)
+        rc = main._run_provisioned_flow(TENANT_NC, POLICY)
     assert rc == 0
     sso.assert_called_once()
     applique.assert_not_called()
@@ -122,7 +126,7 @@ def test_le_depot_n_est_pas_efface_quand_il_n_a_pas_servi():
     with mock.patch.object(main.seat_credentials, "lire", return_value=None), \
          mock.patch.object(main.seat_credentials, "effacer") as effacer, \
          mock.patch.object(main, "_run_provisioned_flow_sso", return_value=0):
-        main._run_provisioned_flow({"slug": "bf"}, POLICY)
+        main._run_provisioned_flow(TENANT_NC, POLICY)
     effacer.assert_not_called()
 
 
@@ -260,3 +264,22 @@ def test_refresh_brave_suit_le_nextcloud_de_la_politique(tmp_path):
         main.refresh_browser_policy(home=tmp_path)
     tenant = brave.call_args.args[0]
     assert tenant["services"]["nextcloud"]["url"] == "https://cloud.autre.org"
+
+
+# ---------------------------------------------------------------------------
+# Organisation sans Nextcloud : aucune page, aucun Nextcloud par defaut (#27223)
+# ---------------------------------------------------------------------------
+# Demo Boreal, 2026-10-31 : l'accueil proposait « Se connecter a Nextcloud
+# (SSO) » en se rabattant sur nextcloud.bluefoxconsultant.com.
+
+def test_sans_nextcloud_aucune_page_et_application_directe():
+    with mock.patch.object(main.seat_credentials, "lire") as lire, \
+         mock.patch.object(main, "_apply_from_policy") as applique, \
+         mock.patch.object(main, "_run_provisioned_flow_sso") as sso:
+        rc = main._run_provisioned_flow({"slug": "boreal", "services": {
+            "odoo": {"url": "https://bfos.demo.symbifox.com"}}}, POLICY)
+    assert rc == 0
+    sso.assert_not_called()
+    lire.assert_not_called()
+    applique.assert_called_once()
+    assert applique.call_args.args[2] is None

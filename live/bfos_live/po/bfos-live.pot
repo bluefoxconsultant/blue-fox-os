@@ -1,0 +1,555 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: bfos-live\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+#: bfos_live/greeter.py:309
+msgid "Connexion à greetd perdue ({raison})."
+msgstr ""
+
+#: bfos_live/greeter.py:366 bfos_live/greeter.py:658
+msgid "Préparation de la connexion…"
+msgstr ""
+
+#: bfos_live/greeter.py:419 bfos_live/greeter.py:651
+msgid "Domaine de ton organisation"
+msgstr ""
+
+#: bfos_live/greeter.py:421 bfos_live/greeter.py:650
+msgid "Continuer"
+msgstr ""
+
+#: bfos_live/greeter.py:433 bfos_live/greeter.py:652
+msgid "Changer d'organisation"
+msgstr ""
+
+#: bfos_live/greeter.py:457 bfos_live/greeter.py:647
+msgid "Mot de passe du Wi-Fi"
+msgstr ""
+
+#: bfos_live/greeter.py:458 bfos_live/greeter.py:648
+msgid "Se connecter au Wi-Fi"
+msgstr ""
+
+#: bfos_live/greeter.py:469 bfos_live/greeter.py:649
+msgid "Wi-Fi"
+msgstr ""
+
+#: bfos_live/greeter.py:508
+msgid "Code valide encore {duree}"
+msgstr ""
+
+#: bfos_live/greeter.py:509
+msgid "Nouveau code en préparation…"
+msgstr ""
+
+#: bfos_live/greeter.py:523
+msgid "Scanne ce code avec ton téléphone pour te connecter."
+msgstr ""
+
+#: bfos_live/greeter.py:525
+msgid "Ou va sur {adresse} et entre le code ci-dessus."
+msgstr ""
+
+#: bfos_live/greeter.py:533
+msgid "Organisation : {nom}"
+msgstr ""
+
+#: bfos_live/greeter.py:561 bfos_live/greeter.py:591
+msgid "Ouverture de ta session"
+msgstr ""
+
+#: bfos_live/greeter.py:562
+msgid "{etape_texte} ({etape} sur {total})"
+msgstr ""
+
+#: bfos_live/greeter.py:580 bfos_live/pam_helper.py:837
+msgid "Comment veux-tu ouvrir ta session ?"
+msgstr ""
+
+#: bfos_live/greeter.py:611 bfos_live/pam_helper.py:886
+msgid "Quel est le domaine de ton organisation ?"
+msgstr ""
+
+#: bfos_live/greeter.py:612 bfos_live/pam_helper.py:887
+msgid "Celui de son site Web ou de son Odoo, par exemple exemple.com."
+msgstr ""
+
+#: bfos_live/greeter.py:629
+msgid "Recherche de ton organisation…"
+msgstr ""
+
+#: bfos_live/greeter.py:639
+msgid "Changement d'organisation…"
+msgstr ""
+
+#: bfos_live/greeter.py:674
+msgid "Réseau derrière un portail : la connexion pourrait échouer."
+msgstr ""
+
+#: bfos_live/greeter.py:678
+msgid "Pas de réseau. Branche un câble ou choisis un Wi-Fi."
+msgstr ""
+
+#: bfos_live/greeter.py:680 bfos_live/greeter.py:701
+msgid "En attente du réseau…"
+msgstr ""
+
+#: bfos_live/greeter.py:721
+msgid "Aucun Wi-Fi trouvé."
+msgstr ""
+
+#: bfos_live/greeter.py:729
+msgid "Choisis d'abord un réseau."
+msgstr ""
+
+#: bfos_live/greeter.py:734
+msgid "Ce réseau demande un mot de passe."
+msgstr ""
+
+#: bfos_live/greeter.py:736
+msgid "Connexion à {ssid}…"
+msgstr ""
+
+#: bfos_live/greeter_flow.py:162
+msgid "Question inattendue, nouvelle tentative."
+msgstr ""
+
+#: bfos_live/greeter_flow.py:170
+msgid "Impossible de démarrer la session."
+msgstr ""
+
+#: bfos_live/itinerant.py:150
+msgid "Ton bureau dépasse la taille gardée dans Nextcloud."
+msgstr ""
+
+#: bfos_live/itinerant.py:163
+msgid "Ton bureau gardé dans Nextcloud est illisible."
+msgstr ""
+
+#: bfos_live/itinerant.py:174
+msgid "Ton bureau gardé dans Nextcloud ne s'ouvre pas avec la clé de ton organisation."
+msgstr ""
+
+#: bfos_live/itinerant.py:198
+msgid "Nextcloud est injoignable : bureau Nextcloud indisponible."
+msgstr ""
+
+#: bfos_live/itinerant.py:231
+msgid "Nextcloud est injoignable : ton bureau n'a pas pu être échangé."
+msgstr ""
+
+#: bfos_live/itinerant.py:310
+msgid "Ton bureau gardé dans Nextcloud n'a pas pu être récupéré."
+msgstr ""
+
+#: bfos_live/itinerant.py:323 bfos_live/itinerant.py:333 bfos_live/itinerant.py:345 bfos_live/itinerant.py:363 bfos_live/itinerant.py:768 bfos_live/itinerant.py:341 bfos_live/session.py:1523
+msgid "Ton bureau n'a pas pu être envoyé dans Nextcloud."
+msgstr ""
+
+#: bfos_live/itinerant.py:443
+msgid "Ton bureau Nextcloud est déjà ouvert sur un autre poste (depuis {depuis}). Ferme cette session, ou choisis une session éphémère."
+msgstr ""
+
+#: bfos_live/itinerant.py:449 bfos_live/itinerant.py:518 bfos_live/itinerant.py:479 bfos_live/itinerant.py:257 bfos_live/itinerant.py:291 bfos_live/itinerant.py:374 bfos_live/itinerant.py:640 bfos_live/itinerant.py:264 bfos_live/session.py:1381
+msgid "Nextcloud ne répond pas : bureau Nextcloud indisponible."
+msgstr ""
+
+#: bfos_live/itinerant.py:456 bfos_live/itinerant.py:462
+msgid "Ton bureau Nextcloud a été ouvert ailleurs : il n'est plus sauvegardé ici."
+msgstr ""
+
+#: bfos_live/itinerant.py:506 bfos_live/itinerant.py:301 bfos_live/itinerant.py:399
+msgid "Nextcloud refuse de garder ton bureau."
+msgstr ""
+
+#: bfos_live/itinerant.py:623 bfos_live/itinerant.py:675
+msgid "Pas assez de mémoire libre sur ce PC pour ouvrir ton bureau Nextcloud."
+msgstr ""
+
+#: bfos_live/itinerant.py:669 bfos_live/itinerant.py:681
+msgid "Ton bureau Nextcloud est introuvable pour le moment. Réessaie plus tard, ou choisis une session éphémère."
+msgstr ""
+
+#: bfos_live/itinerant.py:708
+msgid "Ton bureau gardé dans Nextcloud n'a pas pu être remis en place."
+msgstr ""
+
+#: bfos_live/itinerant.py:747
+msgid "Ton bureau n'a pas pu être préparé pour Nextcloud."
+msgstr ""
+
+#: bfos_live/itinerant.py:750
+msgid "Ton bureau a fondu d'un coup : par prudence, il n'est pas envoyé dans Nextcloud. Préviens ton organisation si ce n'est pas voulu."
+msgstr ""
+
+#: bfos_live/itinerant.py:765 bfos_live/itinerant.py:772
+msgid "Ton bureau Nextcloud a disparu du nuage : il n'est pas remplacé."
+msgstr ""
+
+#: bfos_live/organisation.py:147 bfos_live/organisation.py:177
+msgid "Impossible de joindre ce domaine. Vérifie-le, et le réseau."
+msgstr ""
+
+#: bfos_live/organisation.py:180 bfos_live/organisation.py:172
+msgid "Ce domaine ne sert pas de clé Blue Fox OS."
+msgstr ""
+
+#: bfos_live/organisation.py:183 bfos_live/organisation.py:174 bfos_live/organisation.py:188 bfos_live/pam_helper.py:917
+msgid "Ce domaine ne répond pas correctement. Vérifie-le."
+msgstr ""
+
+#: bfos_live/organisation.py:243 bfos_live/organisation.py:232
+msgid "Ce domaine ne sert pas une configuration valide."
+msgstr ""
+
+#: bfos_live/organisation.py:357 bfos_live/pam_helper.py:1371 bfos_live/pam_helper.py:1239 bfos_live/session.py:1087 bfos_live/session.py:1165 bfos_live/session.py:1617 bfos_live/session.py:1621 bfos_live/session.py:1664 bfos_live/session.py:1670 bfos_live/session.py:181
+msgid "Erreur interne."
+msgstr ""
+
+#: bfos_live/pam_helper.py:129
+msgid "Session éphémère"
+msgstr ""
+
+#: bfos_live/pam_helper.py:130
+msgid "Rien n'est gardé sur la clé. Tes fichiers Nextcloud restent sur Nextcloud ; tout le reste disparaît à l'extinction."
+msgstr ""
+
+#: bfos_live/pam_helper.py:132
+msgid "Garder mon bureau sur cette clé"
+msgstr ""
+
+#: bfos_live/pam_helper.py:133
+msgid "Ton dossier personnel est gardé, chiffré, sur la clé : réglages, navigateur, applis que tu installes. Seul ton compte peut l'ouvrir."
+msgstr ""
+
+#: bfos_live/pam_helper.py:136
+msgid "Garder mon bureau dans Nextcloud"
+msgstr ""
+
+#: bfos_live/pam_helper.py:137
+msgid "Ton dossier personnel est gardé, chiffré, dans ton Nextcloud : tu le retrouves sur n'importe quelle clé, sans les caches. L'ouverture et la fermeture prennent un peu plus de temps."
+msgstr ""
+
+#: bfos_live/pam_helper.py:267 bfos_live/pam_helper.py:252 bfos_live/pam_helper.py:249
+msgid "Cette clé n'est pas configurée."
+msgstr ""
+
+#: bfos_live/pam_helper.py:294 bfos_live/pam_helper.py:1254
+msgid "Aucune organisation choisie. Redémarre la clé."
+msgstr ""
+
+#: bfos_live/pam_helper.py:315 bfos_live/pam_helper.py:313
+msgid "Réponse d'identité illisible."
+msgstr ""
+
+#: bfos_live/pam_helper.py:318
+msgid "Réponse d'un autre fournisseur d'identité."
+msgstr ""
+
+#: bfos_live/pam_helper.py:323 bfos_live/pam_helper.py:326
+msgid "Réponse destinée à une autre application."
+msgstr ""
+
+#: bfos_live/pam_helper.py:333
+msgid "Autorisation expirée, recommence."
+msgstr ""
+
+#: bfos_live/pam_helper.py:336
+msgid "L'horloge de ce PC est déréglée."
+msgstr ""
+
+#: bfos_live/pam_helper.py:339 bfos_live/pam_helper.py:1220 bfos_live/pam_helper.py:331
+msgid "Réponse d'identité incomplète."
+msgstr ""
+
+#: bfos_live/pam_helper.py:343
+msgid "La double authentification est obligatoire pour ces clés."
+msgstr ""
+
+#: bfos_live/pam_helper.py:352
+msgid "Ton compte n'a pas accès aux clés Blue Fox OS."
+msgstr ""
+
+#: bfos_live/pam_helper.py:408 bfos_live/pam_helper.py:417 bfos_live/pam_helper.py:503 bfos_live/pam_helper.py:513
+msgid "Impossible d'ouvrir ta session sur cette clé."
+msgstr ""
+
+#: bfos_live/pam_helper.py:527
+msgid "Impossible de créer ta session sur cette clé."
+msgstr ""
+
+#: bfos_live/pam_helper.py:639
+msgid "Mot de passe impossible à vérifier pour l'instant. Laisse le champ vide pour recevoir un code."
+msgstr ""
+
+#: bfos_live/pam_helper.py:774
+msgid "Trop d'essais de mot de passe : approuve le code sur ton téléphone."
+msgstr ""
+
+#: bfos_live/pam_helper.py:776
+msgid "Mot de passe (vide : code sur ton téléphone)"
+msgstr ""
+
+#: bfos_live/pam_helper.py:789
+msgid "Mot de passe refusé."
+msgstr ""
+
+#: bfos_live/pam_helper.py:808
+msgid ""
+"Ouvre {complet} sur ton téléphone pour te connecter,\n"
+"ou va sur {uri} et entre le code {code}."
+msgstr ""
+
+#: bfos_live/pam_helper.py:820
+msgid ""
+"Pour déverrouiller, va sur {court} avec ton téléphone\n"
+"et entre le code {code}."
+msgstr ""
+
+#: bfos_live/pam_helper.py:841
+msgid "Réponds {choix}."
+msgstr ""
+
+#: bfos_live/pam_helper.py:842
+msgid " ou "
+msgstr ""
+
+#: bfos_live/pam_helper.py:877
+msgid "Réponse non comprise."
+msgstr ""
+
+#: bfos_live/pam_helper.py:878 bfos_live/pam_helper.py:971 bfos_live/pam_helper.py:1175 bfos_live/pam_helper.py:228
+msgid "Connexion annulée."
+msgstr ""
+
+#: bfos_live/pam_helper.py:949
+msgid "Ce n'est pas un nom de domaine. Exemple : exemple.com"
+msgstr ""
+
+#: bfos_live/pam_helper.py:960
+msgid "Continuer avec {nom}"
+msgstr ""
+
+#: bfos_live/pam_helper.py:961
+msgid "{domaine} · connexion par {emetteur}"
+msgstr ""
+
+#: bfos_live/pam_helper.py:963
+msgid "Changer de domaine"
+msgstr ""
+
+#: bfos_live/pam_helper.py:965
+msgid "Est-ce bien ton organisation ?"
+msgstr ""
+
+#: bfos_live/pam_helper.py:981
+msgid "Changement d'organisation."
+msgstr ""
+
+#: bfos_live/pam_helper.py:1086
+msgid "La préparation de ta session a pris trop de temps."
+msgstr ""
+
+#: bfos_live/pam_helper.py:1096
+msgid "Ta session n'a pas pu être préparée."
+msgstr ""
+
+#: bfos_live/pam_helper.py:1145
+msgid "Ouverture de ton profil chiffré… La première fois, sa création sur la clé peut prendre quelques minutes."
+msgstr ""
+
+#: bfos_live/pam_helper.py:1147
+msgid "Récupération de ton bureau dans Nextcloud… Selon sa taille et le réseau, cela peut prendre une minute ou deux."
+msgstr ""
+
+#: bfos_live/pam_helper.py:1149
+msgid "Préparation de ta session…"
+msgstr ""
+
+#: bfos_live/pam_helper.py:1156
+msgid "Premier bureau gardé dans ton Nextcloud : il y sera envoyé toutes les 15 minutes et à la fermeture."
+msgstr ""
+
+#: bfos_live/pam_helper.py:1159
+msgid "Nouveau profil créé sur cette clé. S'il devait déjà en exister un, préviens ton organisation."
+msgstr ""
+
+#: bfos_live/pam_helper.py:1164
+msgid "Annuler"
+msgstr ""
+
+#: bfos_live/pam_helper.py:1165
+msgid "Revenir à l'écran de connexion."
+msgstr ""
+
+#: bfos_live/pam_helper.py:1168
+msgid "Préparation de ta session éphémère…"
+msgstr ""
+
+#: bfos_live/pam_helper.py:1205
+msgid "Impossible de joindre le service d'identité. Vérifie le réseau."
+msgstr ""
+
+#: bfos_live/pam_helper.py:1215
+msgid "Le code a expiré. Un nouveau code arrive."
+msgstr ""
+
+#: bfos_live/pam_helper.py:1217
+msgid "Connexion refusée sur le téléphone."
+msgstr ""
+
+#: bfos_live/pam_helper.py:1218
+msgid "Le service d'identité ne répond plus. Recommence."
+msgstr ""
+
+#: bfos_live/pam_helper.py:1243
+msgid "Connexion impossible pour ce compte."
+msgstr ""
+
+#: bfos_live/pam_helper.py:1274
+msgid "Cette session appartient à quelqu'un d'autre."
+msgstr ""
+
+#: bfos_live/pam_helper.py:1384
+msgid "Erreur interne. Recommence."
+msgstr ""
+
+#: bfos_live/reseau.py:86
+msgid "Connecté à {ssid}."
+msgstr ""
+
+#: bfos_live/reseau.py:87
+msgid "raison inconnue"
+msgstr ""
+
+#: bfos_live/reseau.py:89
+msgid "Mot de passe Wi-Fi refusé."
+msgstr ""
+
+#: bfos_live/reseau.py:90 bfos_live/reseau.py:84
+msgid "Échec de la connexion : {raison}"
+msgstr ""
+
+#: bfos_live/session.py:627
+msgid "Le profil persistant n'est pas offert sur cette clé USB."
+msgstr ""
+
+#: bfos_live/session.py:632
+msgid "Le serveur de ton organisation ne répond pas : profil persistant indisponible."
+msgstr ""
+
+#: bfos_live/session.py:635
+msgid "Ton profil persistant a été révoqué par ton organisation."
+msgstr ""
+
+#: bfos_live/session.py:638
+msgid "Le serveur de ton organisation refuse de servir ton profil."
+msgstr ""
+
+#: bfos_live/session.py:646 bfos_live/session.py:643
+msgid "Réponse illisible du serveur de ton organisation."
+msgstr ""
+
+#: bfos_live/session.py:726
+msgid "Ton profil n'a pas pu s'ouvrir sur cette clé USB."
+msgstr ""
+
+#: bfos_live/session.py:746
+msgid "Cette clé USB ne peut pas garder de profil (support en lecture seule)."
+msgstr ""
+
+#: bfos_live/session.py:760 bfos_live/session.py:767 bfos_live/session.py:794 bfos_live/session.py:822 bfos_live/session.py:790 bfos_live/session.py:801 bfos_live/session.py:810 bfos_live/session.py:815
+msgid "Cette clé USB ne peut pas garder de profil."
+msgstr ""
+
+#: bfos_live/session.py:840 bfos_live/session.py:868
+msgid "La partition de profils n'a pas pu être créée."
+msgstr ""
+
+#: bfos_live/session.py:855
+msgid "Il n'y a pas assez de place libre sur cette clé USB pour un profil."
+msgstr ""
+
+#: bfos_live/session.py:888
+msgid "La partition de profils de cette clé USB est illisible."
+msgstr ""
+
+#: bfos_live/session.py:906
+msgid "La partition Ventoy de cette clé USB n'est pas dans un format pris en charge."
+msgstr ""
+
+#: bfos_live/session.py:927
+msgid "Le dossier des profils sur cette clé USB a été modifié hors de Blue Fox OS."
+msgstr ""
+
+#: bfos_live/session.py:1043
+msgid "Il n'y a plus assez de place sur cette clé USB pour un nouveau profil."
+msgstr ""
+
+#: bfos_live/session.py:1077 bfos_live/session.py:1066
+msgid "Le profil sur cette clé USB a été modifié hors de Blue Fox OS : il n'est pas ouvert."
+msgstr ""
+
+#: bfos_live/session.py:1111
+msgid "Le profil sur cette clé USB est illisible."
+msgstr ""
+
+#: bfos_live/session.py:1117
+msgid "Ton profil sur cette clé USB ne s'ouvre pas avec la clé de déchiffrement servie par ton organisation (elle a peut-être été remplacée)."
+msgstr ""
+
+#: bfos_live/session.py:1367
+msgid "Nextcloud n'est pas configuré pour ton organisation : bureau Nextcloud indisponible."
+msgstr ""
+
+#: bfos_live/session.py:1471
+msgid "Bureau Nextcloud"
+msgstr ""
+
+#: bfos_live/session.py:1483
+msgid "Ton bureau n'est pas sauvegardé : il n'a pas été ouvert correctement."
+msgstr ""
+
+#: bfos_live/session.py:1682
+msgid "Lecture des réglages de ton organisation…"
+msgstr ""
+
+#: bfos_live/session.py:1688
+msgid "Ouverture de ton profil chiffré…"
+msgstr ""
+
+#: bfos_live/session.py:1689
+msgid "Récupération de ton bureau dans Nextcloud…"
+msgstr ""
+
+#: bfos_live/session.py:1690
+msgid "Préparation de ton bureau…"
+msgstr ""
+
+#: bfos_live/session.py:1739
+msgid "Connexion à Nextcloud…"
+msgstr ""
+
+#: bfos_live/session.py:1778
+msgid "Connexion à Odoo…"
+msgstr ""
+
+#: bfos_live/session.py:1786
+msgid "Préparation de tes applications…"
+msgstr ""
+
+#: bfos_live/session.py:1925
+msgid "Erreur interne en préparant ta session."
+msgstr ""
+
+#: bfos_live/zone_flatpak.py:367
+msgid "Les applications de cette clé datent du {date}. Pour les garder à jour, garde ton bureau sur la clé une fois, ou installe une clé plus récente."
+msgstr ""
+
+#: bfos_live/zone_flatpak.py:371
+msgid "Applications"
+msgstr ""

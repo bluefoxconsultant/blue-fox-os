@@ -128,10 +128,10 @@ patch_menu() {
     done
 
     sed -i -E "s|^([[:space:]]*linux(efi)?[[:space:]]+/images/pxeboot/vmlinuz[[:space:]].*)\$|\1 ${BF_PARAMS}|" "$cfg"
-    sed -i -E "s|menuentry 'Install Fedora Linux [0-9]+ in basic graphics mode'|menuentry 'Installer Blue Fox OS (mode graphique de base)'|" "$cfg"
-    sed -i -E "s|menuentry 'Test this media \& install Fedora Linux [0-9]+'|menuentry 'Tester le support \\& installer Blue Fox OS'|" "$cfg"
-    sed -i -E "s|menuentry 'Install Fedora Linux [0-9]+'|menuentry 'Installer Blue Fox OS'|" "$cfg"
-    sed -i -E "s|menuentry 'Rescue a Fedora Linux system'|menuentry 'Depanner un systeme Blue Fox OS'|" "$cfg"
+    sed -i -E "s#menuentry 'Install (Fedora Linux|Blue Fox OS) [0-9]+ in basic graphics mode'#menuentry 'Installer Blue Fox OS (mode graphique de base)'#" "$cfg"
+    sed -i -E "s#menuentry 'Test this media \& install (Fedora Linux|Blue Fox OS) [0-9]+'#menuentry 'Tester le support \\& installer Blue Fox OS'#" "$cfg"
+    sed -i -E "s#menuentry 'Install (Fedora Linux|Blue Fox OS) [0-9]+'#menuentry 'Installer Blue Fox OS'#" "$cfg"
+    sed -i -E "s#menuentry 'Rescue a (Fedora Linux|Blue Fox OS) system'#menuentry 'Depanner un systeme Blue Fox OS'#" "$cfg"
     sed -i -E "s|menuentry 'Boot first drive'|menuentry 'Demarrer sur le premier disque'|" "$cfg"
     sed -i -E "s|submenu 'Troubleshooting -->'|submenu 'Depannage -->'|" "$cfg"
 }

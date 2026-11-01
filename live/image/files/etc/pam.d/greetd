@@ -1,0 +1,21 @@
+#%PAM-1.0
+# Cle USB live Blue Fox OS (#26870). Repris du fichier de Fedora 44, sauf
+# l'authentification : UNIQUEMENT le QR (pam_bfos.so), aucun mot de passe.
+auth       required    pam_bfos.so
+auth       include     postlogin
+
+account    required    pam_sepermit.so
+account    required    pam_nologin.so
+account    include     system-auth
+
+password   required    pam_deny.so
+
+session    required    pam_selinux.so close
+session    required    pam_loginuid.so
+session    required    pam_selinux.so open
+session    optional    pam_keyinit.so force revoke
+session    required    pam_namespace.so
+session    include     system-auth
+session    include     postlogin
+# A la fermeture : revocation des jetons Authentik de la session.
+session    required    pam_bfos.so

@@ -3,9 +3,17 @@ import configparser
 
 import pytest
 
+from bluefox_welcome.apply import horloges as h
 from bluefox_welcome.apply.horloges import (
     appliquer_horloges, horloges_de_la_politique,
 )
+from bluefox_welcome.apply.horloges import fuseau_local as vrai_fuseau_local
+
+
+@pytest.fixture(autouse=True)
+def poste_en_utc(monkeypatch):
+    """Le fuseau du poste ne vient jamais de la machine qui joue les essais."""
+    monkeypatch.setattr(h, "fuseau_local", lambda: "UTC")
 
 PANNEAU = """[Containments][1]
 plugin=org.kde.plasma.folder
@@ -107,3 +115,67 @@ def test_sans_horloge_dans_le_panneau_on_ne_fabrique_rien(tmp_path):
 def test_sans_fichier_de_panneau_on_le_dit(tmp_path):
     ok, msg = appliquer_horloges({}, appletsrc=tmp_path / "absent", relancer=lambda: True)
     assert not ok and "absent" in msg
+
+
+MONTREAL = {"session": {"clock": {"second_timezone": "America/Montreal"}}}
+
+
+def test_pas_de_seconde_horloge_sur_le_fuseau_du_poste(tmp_path):
+    """Cle live : la session prend le fuseau de la politique (vu en VM, deux fois
+    la meme heure)."""
+    f = _panneau(tmp_path)
+    ok, msg = appliquer_horloges(MONTREAL, appletsrc=f, relancer=lambda: True,
+                                 local=lambda: "America/Montreal")
+    assert ok and "fuseau du poste" in msg
+    assert _lire(f).get("Containments][2][General", "AppletOrder") == "3;7;21"
+
+
+def test_alias_du_meme_fuseau_reconnu(tmp_path):
+    zi = tmp_path / "zoneinfo" / "America"
+    zi.mkdir(parents=True)
+    (zi / "Toronto").write_bytes(b"TZif-regles")
+    (zi / "Montreal").write_bytes(b"TZif-regles")
+    (zi / "Vancouver").write_bytes(b"TZif-autres")
+    assert h.meme_fuseau("America/Montreal", "America/Toronto", zoneinfo=tmp_path / "zoneinfo")
+    assert not h.meme_fuseau("America/Montreal", "America/Vancouver", zoneinfo=tmp_path / "zoneinfo")
+    assert not h.meme_fuseau("America/Montreal", None)
+    assert not h.meme_fuseau("../../etc/passwd", "../../etc/passwd/x", zoneinfo=tmp_path / "zoneinfo")
+
+
+def test_seconde_horloge_en_double_retiree(tmp_path):
+    f = _panneau(tmp_path)
+    appliquer_horloges(MONTREAL, appletsrc=f, relancer=lambda: True, local=lambda: "UTC")
+    assert _lire(f).get("Containments][2][General", "AppletOrder") == "3;7;21;22"
+    ok, msg = appliquer_horloges(MONTREAL, appletsrc=f, relancer=lambda: True,
+                                 local=lambda: "America/Montreal")
+    assert ok and "1 retiree" in msg
+    conf = _lire(f)
+    assert conf.get("Containments][2][General", "AppletOrder") == "3;7;21"
+    assert not [s for s in conf.sections() if s.startswith("Containments][2][Applets][22")]
+    assert conf.has_section("Containments][2][Applets][21")
+
+
+def test_horloge_reglee_par_la_personne_jamais_retiree(tmp_path):
+    corps = PANNEAU.replace("AppletOrder=3;7;21", "AppletOrder=3;7;21;30") + """
+[Containments][2][Applets][30]
+plugin=org.kde.plasma.digitalclock
+
+[Containments][2][Applets][30][Configuration][Appearance]
+selectedTimeZones=America/Montreal
+"""
+    f = _panneau(tmp_path, corps)
+    appliquer_horloges(MONTREAL, appletsrc=f, relancer=lambda: True,
+                       local=lambda: "America/Montreal")
+    assert _lire(f).get("Containments][2][General", "AppletOrder") == "3;7;21;30"
+
+
+def test_fuseau_local_lu_du_lien(tmp_path, monkeypatch):
+    zi = tmp_path / "usr" / "share" / "zoneinfo" / "America"
+    zi.mkdir(parents=True)
+    (zi / "Toronto").write_bytes(b"x")
+    lien = tmp_path / "localtime"
+    lien.symlink_to(zi / "Toronto")
+    monkeypatch.setattr(h, "LOCALTIME", lien)
+    assert vrai_fuseau_local() == "America/Toronto"
+    monkeypatch.setattr(h, "LOCALTIME", tmp_path / "absent")
+    assert vrai_fuseau_local() is None

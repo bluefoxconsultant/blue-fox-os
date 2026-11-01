@@ -149,7 +149,9 @@ chmod 600 /tmp/bfos-autopart.ks
 # La forme par defaut est VERROUILLEE : elle satisfait Anaconda sans ouvrir
 # quoi que ce soit. bfos_provision.py ne lui donne un mot de passe qu'une fois
 # la phrase du disque confirmee par Odoo, donc revelable et tracee.
-printf '%s\n' 'user --name=bfos-secours --groups=wheel --lock' > /tmp/bfos-compte.ks
+# uid 60999 : au-dessus de UID_MAX, l'ecran de connexion ne le liste pas (voir
+# UID_SECOURS dans bfos_provision.py, qui reecrit cette ligne).
+printf '%s\n' 'user --name=bfos-secours --groups=wheel --uid=60999 --gid=60999 --lock' > /tmp/bfos-compte.ks
 chmod 600 /tmp/bfos-compte.ks
 cat > /tmp/bfos_provision.py <<'BFOSPROVISIONEOF'
 {{PROVISION_SCRIPT}}
@@ -166,33 +168,52 @@ python3 /tmp/bfos_provision.py || true
 # machine simply won't follow later policy changes on its own.
 # ---------------------------------------------------------------------------
 %post --nochroot --log=/tmp/bfos-provision-copy.log
+# Les SECRETS (politique, secret de la machine, identifiants Nextcloud) ne vont
+# que dans la racine du systeme installe : celle qui porte usr/lib/os-release.
+# L'autre est la racine physique d'ostree (/sysroot une fois demarre). La boucle
+# ci-dessous y deposait une 2e copie de machine.json, mesuree au banc le
+# 2026-10-27 (#26870) : /sysroot/etc/bluefox/machine.json, hors de toute
+# politique de nettoyage. Le reste de la boucle (gravure BFL4, EFI, entrees BLS)
+# a besoin des deux racines et n'est pas touche. Si aucune ne porte os-release
+# (disposition inconnue), on garde l'ancien comportement : une copie de trop
+# vaut mieux qu'une installation sans politique.
+BFOS_CIBLE=""
+for ROOT in /mnt/sysroot /mnt/sysimage; do
+  if [ -e "$ROOT/usr/lib/os-release" ] || [ -L "$ROOT/usr/lib/os-release" ]; then
+    BFOS_CIBLE="$ROOT"; break
+  fi
+done
+bfos_secrets_ici() { [ -z "$BFOS_CIBLE" ] || [ "$1" = "$BFOS_CIBLE" ]; }
+echo "[bfos] racine du systeme installe : ${BFOS_CIBLE:-introuvable, copie dans les deux}"
 for ROOT in /mnt/sysroot /mnt/sysimage; do
   if [ -d "$ROOT" ]; then
     mkdir -p "$ROOT/var/lib/bluefox-welcome"
-    cp /tmp/bfos-provision.json "$ROOT/var/lib/bluefox-welcome/provisioning.json" 2>/dev/null || true
-    chmod 600 "$ROOT/var/lib/bluefox-welcome/provisioning.json" 2>/dev/null || true
-    if [ -f /tmp/bfos-machine.json ]; then
-      mkdir -p "$ROOT/etc/bluefox"
-      chmod 700 "$ROOT/etc/bluefox" 2>/dev/null || true
-      cp /tmp/bfos-machine.json "$ROOT/etc/bluefox/machine.json" 2>/dev/null || true
-      # 0600 root : c'est un secret. Le poser avant tout autre traitement.
-      chmod 600 "$ROOT/etc/bluefox/machine.json" 2>/dev/null || true
-    fi
+    if bfos_secrets_ici "$ROOT"; then
+      cp /tmp/bfos-provision.json "$ROOT/var/lib/bluefox-welcome/provisioning.json" 2>/dev/null || true
+      chmod 600 "$ROOT/var/lib/bluefox-welcome/provisioning.json" 2>/dev/null || true
+      if [ -f /tmp/bfos-machine.json ]; then
+        mkdir -p "$ROOT/etc/bluefox"
+        chmod 700 "$ROOT/etc/bluefox" 2>/dev/null || true
+        cp /tmp/bfos-machine.json "$ROOT/etc/bluefox/machine.json" 2>/dev/null || true
+        # 0600 root : c'est un secret. Le poser avant tout autre traitement.
+        chmod 600 "$ROOT/etc/bluefox/machine.json" 2>/dev/null || true
+      fi
 
-    # --- Identifiants Nextcloud obtenus en %pre (#22436) ---------------------
-    # Frappes pendant que le porteur de l'operateur valait encore, pour que le
-    # premier demarrage n'ait pas a redemander un SSO a la personne qui vient
-    # d'autoriser l'installation. Absent = degradation prevue : l'agent
-    # d'accueil retombe sur le parcours navigateur d'avant.
-    #
-    # 0600 root ICI, puis remis a l'usager du siege au premier demarrage par
-    # bluefox-seat-credentials.service : l'uid vient de l'annuaire et n'est pas
-    # connaissable a cet instant. L'agent tourne EN TANT QUE l'usager ; un
-    # 0644 le rendrait lisible par n'importe quel compte de la machine.
-    if [ -f /tmp/bfos-nc-credentials.json ]; then
-      cp /tmp/bfos-nc-credentials.json \
-         "$ROOT/var/lib/bluefox-welcome/nc-credentials.json" 2>/dev/null || true
-      chmod 600 "$ROOT/var/lib/bluefox-welcome/nc-credentials.json" 2>/dev/null || true
+      # --- Identifiants Nextcloud obtenus en %pre (#22436) ---------------------
+      # Frappes pendant que le porteur de l'operateur valait encore, pour que le
+      # premier demarrage n'ait pas a redemander un SSO a la personne qui vient
+      # d'autoriser l'installation. Absent = degradation prevue : l'agent
+      # d'accueil retombe sur le parcours navigateur d'avant.
+      #
+      # 0600 root ICI, puis remis a l'usager du siege au premier demarrage par
+      # bluefox-seat-credentials.service : l'uid vient de l'annuaire et n'est pas
+      # connaissable a cet instant. L'agent tourne EN TANT QUE l'usager ; un
+      # 0644 le rendrait lisible par n'importe quel compte de la machine.
+      if [ -f /tmp/bfos-nc-credentials.json ]; then
+        cp /tmp/bfos-nc-credentials.json \
+           "$ROOT/var/lib/bluefox-welcome/nc-credentials.json" 2>/dev/null || true
+        chmod 600 "$ROOT/var/lib/bluefox-welcome/nc-credentials.json" 2>/dev/null || true
+      fi
     fi
 
     # --- BFOSL4 : l'etat de l'installateur, grave dans le systeme installe ---
@@ -212,6 +233,15 @@ for ROOT in /mnt/sysroot /mnt/sysimage; do
     {
       echo "=== BFOSL4 / lu pendant l'installation (tache BF #23940) ==="
       echo "date : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      echo "racine du systeme installe (secrets) : ${BFOS_CIBLE:-introuvable, copie dans les deux}"
+      # Presence et mode des secrets, jamais leur contenu. Un « No such file » ici, dans la
+      # racine des secrets, veut dire que la copie a echoue : machine sans politique.
+      if bfos_secrets_ici "$ROOT"; then
+        ls -l "$ROOT/var/lib/bluefox-welcome/provisioning.json" "$ROOT/etc/bluefox/machine.json" \
+              "$ROOT/var/lib/bluefox-welcome/nc-credentials.json" 2>&1 || true
+      else
+        echo "(pas de secrets dans cette racine : $ROOT)"
+      fi
       echo
       echo "--- surface 5 : swap actif pendant le %pre ---"
       echo "\$ swapon --show"
@@ -308,7 +338,9 @@ done
 # change redemande simplement sa phrase.
 # ---------------------------------------------------------------------------
 if [ -f /tmp/bfos-tpm-enrol ] && [ -f /tmp/bfos-autopart.ks ]; then
-  for ROOT in /mnt/sysroot /mnt/sysimage; do
+  # La racine installee d'abord (c'est elle qui porte etc/crypttab) ; l'ordre d'avant
+  # sinon. Mesure au banc le 2026-10-27 : /mnt/sysroot dans les deux cas.
+  for ROOT in ${BFOS_CIBLE:-/mnt/sysroot /mnt/sysimage}; do
     [ -d "$ROOT" ] || continue
     GRAVURE="$ROOT/var/log/anaconda/bfosl4-installateur.log"
     mkdir -p "$(dirname "$GRAVURE")" 2>/dev/null || true

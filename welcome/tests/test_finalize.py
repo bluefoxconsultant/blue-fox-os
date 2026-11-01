@@ -32,6 +32,7 @@ POLICY_WITH_SESSION = {
 _APPLY_NAMES = (
     "apply_rclone_mount", "apply_session_mounts", "apply_bitwarden_prefs",
     "apply_brave_policy", "apply_kde_theme",
+    "ajouter_emplacements", "appliquer_pwa_epinglees",
 )
 
 
@@ -141,7 +142,7 @@ def test_one_failing_apply_does_not_abort_the_rest(state_dir, monkeypatch):
     must still be written (best-effort contract)."""
     ok = {n: MagicMock(return_value=(True, "ok")) for n in (
         "apply_rclone_mount", "apply_bitwarden_prefs",
-        "apply_kde_theme")}
+        "apply_kde_theme", "ajouter_emplacements", "appliquer_pwa_epinglees")}
     for name, m in ok.items():
         monkeypatch.setattr(main_mod, name, m)
     monkeypatch.setattr(main_mod, "apply_brave_policy",
@@ -160,3 +161,19 @@ def test_kde_online_accounts_page_is_never_opened(applies, state_dir):
     assert not hasattr(main_mod, "apply_kaccounts")
     _finalize()
     assert "kaccounts" not in main_mod.USER_LOG.read_text()
+
+
+def test_emplacements_et_pwa_epinglees_appliques(applies, state_dir):
+    """#26870 : le montage va dans Dolphin, les PWA épinglées à la barre."""
+    _finalize(prov=POLICY_WITH_SESSION)
+    assert applies["ajouter_emplacements"].call_count == 1
+    assert applies["appliquer_pwa_epinglees"].call_args.args[0] == \
+        POLICY_WITH_SESSION["session"]["pwas"]
+
+
+def test_points_de_montage():
+    from pathlib import Path
+    h = Path("/maison/u")
+    assert main_mod.points_de_montage([], home=h) == [("Nextcloud", h / "Nextcloud")]
+    assert main_mod.points_de_montage(
+        [{"name": "Docs", "mount_point": "Docs"}], home=h) == [("Docs", h / "Docs")]

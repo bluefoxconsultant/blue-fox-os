@@ -133,6 +133,14 @@ TPM_MARKER = "/tmp/bfos-tpm-enrol"
 # compte local hors annuaire le 2026-09-11.
 COMPTE_INCLUDE = "/tmp/bfos-compte.ks"
 COMPTE_SECOURS = "bfos-secours"
+# uid FIXE, au-dessus de UID_MAX (60000 dans /etc/login.defs) : l'ecran de
+# connexion de Fedora 44 (plasma-login-manager) ne liste que les comptes entre
+# UID_MIN et UID_MAX, et n'a pas de HideUsers comme SDDM. Avec l'uid 1000, il
+# proposait bfos-secours en tete et l'usager de l'annuaire devait passer par
+# « Autre… » (#26870, 2026-10-27). 60999 est dans la plage que systemd laisse
+# libre (60706-61183, UIDS-GIDS.md) : un compte ordinaire, joignable en console
+# et par « Autre… », hors des plages homed, conteneurs et usagers dynamiques.
+UID_SECOURS = 60999
 # Un nom que l'annuaire ne sert pas : un homonyme LDAP serait masque par le
 # compte local, puisque nsswitch lit `files` avant `sss`.
 _COMPTE_SUR = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -711,6 +719,19 @@ _PAUSE_REPRISE_RESEAU = 5
 def poll_token(token_url, client_id, device_code, interval, expires_in,
                post=_post_form, sleep=time.sleep, now=time.monotonic, out=None):
     """Poll the token endpoint until the operator authorizes, or time out."""
+    return poll_token_response(
+        token_url, client_id, device_code, interval, expires_in,
+        post=post, sleep=sleep, now=now, out=out)["access_token"]
+
+
+def poll_token_response(token_url, client_id, device_code, interval, expires_in,
+                        post=_post_form, sleep=time.sleep, now=time.monotonic,
+                        out=None):
+    """Comme poll_token, mais rend la reponse ENTIERE du point de jeton.
+
+    La cle USB live (#26870) a besoin de l'id_token (qui est la personne) et
+    du refresh_token (session Nextcloud), pas seulement du jeton d'acces.
+    """
     deadline = now() + min(int(expires_in), _MAX_WAIT)
     wait = max(int(interval), 1)
     grant = "urn:ietf:params:oauth:grant-type:device_code"
@@ -749,7 +770,7 @@ def poll_token(token_url, client_id, device_code, interval, expires_in,
         except ValueError as exc:
             raise ProvisionError(f"token response bad JSON: {exc}") from exc
         if d.get("access_token"):
-            return d["access_token"]
+            return d
         err = d.get("error")
         if err == "authorization_pending":
             continue
@@ -954,7 +975,7 @@ def write_compte(passphrase=None, path=None, nom=COMPTE_SECOURS, out=None):
     """
     out = out or (lambda _m: None)
     path = path or COMPTE_INCLUDE
-    base = f"user --name={nom} --groups=wheel"
+    base = f"user --name={nom} --groups=wheel --uid={UID_SECOURS} --gid={UID_SECOURS}"
     if passphrase and not _COMPTE_SUR.match(passphrase):
         out("[bfos] phrase de forme inattendue : le compte de secours reste "
             "verrouille plutot que de produire un kickstart invalide\n")

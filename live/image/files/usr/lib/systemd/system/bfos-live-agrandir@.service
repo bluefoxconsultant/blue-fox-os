@@ -1,0 +1,19 @@
+# Cle USB live Blue Fox OS (#26870, 2026-10-25) : agrandit le profil de %i
+# quand il est presque plein. Lancee en fin de preparation, la session
+# s'ouvre sans l'attendre ; arretee avec elle (PartOf), avant que le profil
+# ne soit referme (After= : arretee en premier).
+[Unit]
+Description=Blue Fox OS (cle live) : agrandissement du profil de %i
+After=bfos-live-session@%i.service
+Requisite=bfos-live-session@%i.service
+PartOf=bfos-live-session@%i.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/bfos-live/session agrandir %i
+TimeoutStartSec=45min
+Nice=10
+# best-effort au plus bas : idle pourrait etre affame par le systeme, qui
+# lit sur la meme cle, jusqu'au delai.
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

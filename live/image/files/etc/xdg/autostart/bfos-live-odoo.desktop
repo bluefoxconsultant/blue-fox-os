@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Blue Fox OS - Odoo connecté
+Comment=Ouvre Odoo avec le lien de connexion à usage unique déposé par la session (#26870)
+Exec=/usr/libexec/bfos-live/ouvrir-odoo
+NoDisplay=true
+X-KDE-autostart-phase=2
+OnlyShowIn=KDE;

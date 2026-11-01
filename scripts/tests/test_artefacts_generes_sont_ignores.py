@@ -44,9 +44,12 @@ def test_chaque_fichier_emis_est_ignore(tmp_path):
     assert emis, "la generation n'a rien ecrit : le test ne prouverait rien"
 
     chemins = [f"files/{p}" for p in emis]
+    # Une ligne par chemin : un artefact a une espace dans son nom (« First
+    # Run » de Brave, #27223) ; split() le coupait en deux et le disait oublie.
+    # (-z exigerait --stdin.)
     r = subprocess.run(["git", "check-ignore", "--no-index", *chemins],
                        cwd=REPO, capture_output=True, text=True)
-    ignores = set(r.stdout.split())
+    ignores = set(r.stdout.splitlines())
     oublies = [c for c in chemins if c not in ignores]
     assert not oublies, (
         "ces artefacts generes ne sont pas dans .gitignore ; ils saliront "

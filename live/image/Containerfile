@@ -1,0 +1,127 @@
+# Image de la cle USB live Blue Fox OS (#26870), derivee de l'image publiee.
+# Contexte de construction : la racine du depot.
+#
+# ⚠️ TROIS couches seulement au-dessus de l'image de base : elle en porte deja
+# ~128, et au-dela de ~133 la liste des couches depasse la limite des options
+# de montage du noyau ; podman retombe alors sur une methode de diff tres lente
+# (une seule ligne COPY y a pris plus de 15 min). Tout passe donc par une
+# etape d'assemblage, copiee en un bloc. La 1re couche (paquets et Flatpak,
+# plusieurs Gio) vient AVANT le code : corriger le code ne la refait pas.
+ARG BASE=ghcr.io/bluefoxconsultant/blue-fox-os-bf:latest
+
+FROM registry.fedoraproject.org/fedora:44 AS assemblage
+RUN dnf -y install --setopt=install_weak_deps=False gcc pam-devel selinux-policy-devel && dnf clean all
+COPY live/pam/pam_bfos.c /src/pam_bfos.c
+COPY install/bfos_provision.py install/bfos_apply.py /arbre/usr/libexec/bfos-live/
+COPY live/bfos_live/__init__.py live/bfos_live/greetd_ipc.py live/bfos_live/greeter_flow.py live/bfos_live/reseau.py live/bfos_live/pam_helper.py live/bfos_live/session.py live/bfos_live/itinerant.py live/bfos_live/langue.py live/bfos_live/organisation.py live/bfos_live/zone_flatpak.py /arbre/usr/libexec/bfos-live/bfos_live/
+COPY live/bfos_live/po/ /arbre/usr/libexec/bfos-live/bfos_live/po/
+COPY live/bfos_live/pam_helper.py /arbre/usr/libexec/bfos-live/pam-helper
+COPY live/bfos_live/session.py /arbre/usr/libexec/bfos-live/session
+COPY live/image/applis/flatpaks.txt /arbre/usr/share/bfos-live/flatpaks.txt
+COPY live/bfos_live/greeter.py /arbre/usr/libexec/bfos-live/greeter
+COPY live/bfos_live/ouvrir_odoo.py /arbre/usr/libexec/bfos-live/ouvrir-odoo
+COPY live/image/theme-premiere-image.py /arbre/usr/libexec/bfos-live/theme-premiere-image
+# L'agent d'accueil de cet arbre remplace celui de l'image de base (#26870,
+# 2026-10-24 : chemin du montage Nextcloud, emplacements Dolphin, PWA
+# epinglees) tant que l'image publiee ne le porte pas.
+COPY welcome/bluefox_welcome/ /arbre/usr/share/bfos-live/bluefox_welcome/
+COPY live/image/files/ /arbre/
+COPY live/selinux/ /src/selinux/
+# Script Plymouth regenere depuis ce depot (#26870, 2026-10-27) : celui de
+# l'image publiee calculait la mise en page une seule fois, sur le tampon EFI,
+# et laissait le logo dans le coin gauche une fois l'ecran a sa vraie
+# definition. Seul le .script est repris ; le dracut final l'integre.
+ARG THEME_TENANT=bf
+COPY scripts/generate_kde_theme.py /src/theme/scripts/generate_kde_theme.py
+COPY welcome/bluefox_welcome/__init__.py /src/theme/welcome/bluefox_welcome/__init__.py
+COPY welcome/bluefox_welcome/branding/ /src/theme/welcome/bluefox_welcome/branding/
+COPY config/${THEME_TENANT}.json /src/theme/tenant.json
+# go-w sur /etc : le depot garde ses fichiers en 0664, rien de pam.d ni de skel
+# ne doit rester inscriptible par le groupe dans l'image.
+RUN set -eux; \
+    SLUG="$(python3 -I -c "import json; print(json.load(open('/src/theme/tenant.json'))['slug'])")"; \
+    python3 -I /src/theme/scripts/generate_kde_theme.py /src/theme/tenant.json /src/theme/sortie; \
+    install -D -m 0644 "/src/theme/sortie/usr/share/plymouth/themes/$SLUG/$SLUG.script" \
+        "/arbre/usr/share/plymouth/themes/$SLUG/$SLUG.script"; \
+    grep -q '^fun placer' "/arbre/usr/share/plymouth/themes/$SLUG/$SLUG.script"; \
+    mkdir -p /arbre/usr/lib64/security; \
+    gcc -O2 -g -fPIC -Wall -Wextra -Werror -D_FORTIFY_SOURCE=3 -fstack-protector-strong \
+        -shared -Wl,-z,relro,-z,now -Wl,--no-undefined \
+        -o /arbre/usr/lib64/security/pam_bfos.so /src/pam_bfos.c -lpam; \
+    make -C /src/selinux -f /usr/share/selinux/devel/Makefile bfos_live.pp; \
+    install -D -m 0644 /src/selinux/bfos_live.pp /arbre/usr/share/selinux/packages/bfos_live.pp; \
+    chown -R root:root /arbre; \
+    chmod 0755 /arbre/usr/libexec/bfos-live/pam-helper /arbre/usr/libexec/bfos-live/greeter \
+               /arbre/usr/libexec/bfos-live/session /arbre/usr/libexec/bfos-live/ouvrir-odoo; \
+    find /arbre/usr/share/bfos-live/bluefox_welcome -name __pycache__ -prune -exec rm -rf {} +; \
+    chmod 0644 /arbre/usr/lib64/security/pam_bfos.so /arbre/etc/bfos-live/*.json; \
+    chmod -R go-w /arbre/etc
+
+FROM ${BASE}
+# Couche 1 (#26870, 2026-10-23) : paquets et applis, sans rien de notre code.
+#  - Applis integrees (flatpaks.txt) : une cle en memoire vive ne peut pas
+#    retelecharger plusieurs Gio a chaque demarrage. Leur mise a jour en
+#    memoire vive (flatpak-system-update.timer) est coupee : la prochaine ISO
+#    les porte a jour.
+#  - L'agent d'accueil (theme, fond, Nextcloud, applis Odoo) GARDE : il part a
+#    l'ouverture de session comme sur un poste installe, et lit la politique et
+#    les identifiants que bfos-live-session@ depose.
+#  - cryptsetup, gdisk : profil persistant chiffre sur la cle.
+#  - Plus de Firefox en RPM : la politique le fournit en Flatpak.
+# Le dossier lie ne contient QUE la liste : un script de banc ajoute a
+# live/image ne refait plus cette couche de plusieurs Gio.
+RUN --mount=type=bind,source=live/image/applis,target=/tmp/bfos-image set -eux; \
+    dnf -y install --setopt=install_weak_deps=False greetd cage dracut-live \
+        cryptsetup gdisk e2fsprogs util-linux policycoreutils; \
+    dnf clean all; \
+    flatpak remote-add --system --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo; \
+    APPS="$(grep -v '^#' /tmp/bfos-image/flatpaks.txt | grep -v '^$')"; \
+    flatpak install --system --noninteractive --assumeyes flathub $APPS; \
+    for a in $APPS; do flatpak info --system "$a" >/dev/null; done; \
+    python3 -I -c "import configparser as c; p = c.ConfigParser(interpolation=None); p.read('/var/lib/flatpak/repo/config'); r = p['remote \"flathub\"']; assert r['gpg-verify'] == 'true' and r['url'].startswith('https://'), dict(r)"; \
+    mkdir -p /usr/share/bfos-live; \
+    { echo "date=$(date -u +%F)"; echo "empreinte=$({ flatpak list --system --columns=ref,active | sort; cat /var/lib/flatpak/repo/config /var/lib/flatpak/repo/*.trustedkeys.gpg; } | sha256sum | cut -c1-16)"; } > /usr/share/bfos-live/flatpak-image.txt
+# Couche 2 : notre code et nos fichiers, en un bloc.
+COPY --from=assemblage /arbre/ /
+# Couche 3 : configuration. Groupe bfos-live (sysusers) : Flatpak sans mot de
+# passe (polkit, liste fermee).
+RUN set -eux; \
+    for u in plasmalogin.service bluefox-rebase.service bluefox-tpm-enroll.service \
+             bluefox-seat-credentials.service bluefox-policy-sync.timer \
+             bluefox-flatpaks-verify.timer bluefox-refresh-md.timer \
+             flatpak-system-update.timer bootloader-update.service; do \
+        systemctl disable "$u" || true; \
+    done; \
+    systemd-sysusers; getent group bfos-live; \
+    test -f /etc/xdg/autostart/bluefox-welcome.desktop; \
+    chmod 0644 /usr/share/bluefox/tenant.json; \
+    grep -qx 'Indexing-Enabled=false' /etc/xdg/baloofilerc; \
+    grep -qx 'enabled=False' /etc/xdg/user-dirs.conf; \
+    udevadm verify --resolve-names=never /usr/lib/udev/rules.d/90-bfos-live-masquer.rules; \
+    install -d -m 0755 /etc/skel/Desktop /etc/skel/Downloads; \
+    grep -qx 'XDG_DOWNLOAD_DIR="$HOME/Downloads"' /etc/skel/.config/user-dirs.dirs; \
+    test "$(grep -c '^XDG_' /etc/skel/.config/user-dirs.dirs)" = 2; \
+    python3 -I -c "import json; s = json.load(open('/usr/share/bluefox/tenant.json'))['services']; assert s['nextcloud']['url'] and s['vaultwarden']['url']"; \
+    W="$(python3 -I -c 'import bluefox_welcome, os; print(os.path.dirname(bluefox_welcome.__file__))')"; \
+    rm -rf "$W"; cp -a /usr/share/bfos-live/bluefox_welcome "$W"; \
+    python3 -I -c "import bluefox_welcome.main, bluefox_welcome.apply.pwa_lanceurs, bluefox_welcome.apply.emplacements"; \
+    python3 -I /usr/libexec/bfos-live/theme-premiere-image; \
+    grep -q '^\[Colors:Window\]' /etc/skel/.config/kdeglobals; \
+    grep -q '^tmpfs /run tmpfs .*size=50%' /etc/fstab; \
+    grep -qx 'overlay / overlay defaults,x-gvfs-hide 0 0' /etc/fstab; \
+    rpm -q rclone fuse3 device-mapper; command -v gdbus dmsetup blkid; \
+    KV="$(ls /usr/lib/modules)"; modinfo -k "$KV" exfat >/dev/null; \
+    systemctl enable greetd.service bfos-live-organisation.service bfos-live-flatpak.service bfos-live-flatpak-maj.timer; \
+    grep -qx 'empreinte=[0-9a-f]\{16\}' /usr/share/bfos-live/flatpak-image.txt; \
+    grep -qx 'bfos-flatpak /var/lib/flatpak overlay noauto,x-gvfs-hide 0 0' /etc/fstab; \
+    semodule -i /usr/share/selinux/packages/bfos_live.pp; \
+    semodule -l | grep -qx bfos_live; \
+    ln -sf /usr/lib/systemd/system/greetd.service /etc/systemd/system/display-manager.service; \
+    python3 -I -c "import sys; sys.path.insert(0, '/usr/libexec/bfos-live'); import bfos_provision, bfos_apply, bfos_live.greeter_flow, bfos_live.reseau, bfos_live.session, bfos_live.itinerant, bfos_live.langue, bfos_live.organisation, bfos_live.zone_flatpak; from bfos_live import langue; assert 'en' in langue.disponibles()"; \
+    python3 -I /usr/libexec/bfos-live/verifier-langues; \
+    KVER="$(ls /usr/lib/modules)"; \
+    dracut --no-hostonly --add "dmsquash-live" --force "/usr/lib/modules/$KVER/initramfs.img" "$KVER"; \
+    lsinitrd "/usr/lib/modules/$KVER/initramfs.img" | grep -q dmsquash-live; \
+    if lsinitrd -f etc/fstab "/usr/lib/modules/$KVER/initramfs.img" | grep -q 'x-gvfs-hide'; then echo 'fstab de la cle dans l initramfs : sysroot.mount viserait overlay' >&2; exit 1; fi; \
+    THEME="$(awk -F= '/^Theme=/{print $2}' /etc/plymouth/plymouthd.conf)"; \
+    lsinitrd -f "/usr/share/plymouth/themes/$THEME/$THEME.script" "/usr/lib/modules/$KVER/initramfs.img" | grep -q '^fun placer'
