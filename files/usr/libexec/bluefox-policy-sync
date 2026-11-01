@@ -310,7 +310,6 @@ def trigger_flatpak_setup(run=subprocess.run) -> bool:
         return False
 
 
-<<<<<<< HEAD
 # ------------------------------------------------------ verrouillage d'ecran
 # Bornes de policies.auto_lock_minutes : 0 = non impose (la personne regle son
 # poste elle-meme), 1 a 1440 = verrouillage impose apres n minutes. La meme
@@ -489,7 +488,6 @@ def apply_screen_lock(policy, path=None, base=None) -> tuple:
     if restored:
         what += ", reglage local retabli"
     return True, what, restored
-=======
 def _authtok_en_place(sssd_conf):
     """Le mot de passe de liaison du sssd.conf en place, ou "" s'il n'y en a pas."""
     try:
@@ -536,7 +534,6 @@ def apply_seat_access(policy, apply_mod, sssd_conf=SSSD_CONF, run=subprocess.run
     run(["sss_cache", "-E"], check=False)
     run(["systemctl", "try-restart", "sssd.service"], check=False)
     return True, "acces du poste mis a jour"
->>>>>>> feat/shared-seats
 
 
 def write_state(path, **fields):
@@ -551,12 +548,8 @@ def write_state(path, **fields):
 def sync(machine_path=MACHINE_JSON, provisioning_path=PROVISIONING_JSON,
          flatpak_dir=FLATPAK_DIR, state_path=STATE_JSON,
          apply_module=APPLY_MODULE, opener=None, run=subprocess.run,
-<<<<<<< HEAD
-         trigger=True, public_path=None, lock_path=LOCK_PATH,
-         lock_base=LOCK_BASE) -> int:
-=======
-         trigger=True, public_path=None, sssd_conf=None) -> int:
->>>>>>> feat/shared-seats
+         trigger=True, public_path=None, sssd_conf=None,
+         lock_path=LOCK_PATH, lock_base=LOCK_BASE) -> int:
     machine = read_machine(machine_path)
     if machine is None:
         log("machine non enrolee — rien a synchroniser")
