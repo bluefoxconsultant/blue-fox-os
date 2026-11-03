@@ -12,8 +12,8 @@ déjà en service.
 
 ## État
 
-Version courante : **1.0.0** (tag `v1.0.0`, publiée le 2026-09-27), première
-version stable. La [release](https://github.com/bluefoxconsultant/blue-fox-os/releases/tag/v1.0.0)
+Version courante : **1.0.1** (tag `v1.0.1`, publiée le 2026-11-01), version
+corrective de la 1.0.0 du 2026-09-27. La [release](https://github.com/bluefoxconsultant/blue-fox-os/releases/tag/v1.0.1)
 fournit les ISO `bf` et `bf-surface`, découpées en parts à recoller, avec leur
 sha256, leur signature cosign et `cosign.pub`.
 
@@ -26,7 +26,7 @@ fusion, comme sur chaque PR.
   `bf-surface`, `factice`) sont rebâties depuis `main` et republiées chaque
   semaine, signées et attestées, une fois passée la porte canari (voir
   « Chaîne de build »). Ce qui est fusionné sur `main` atteint les
-  postes à la publication suivante ; les ISO restent celles de la 1.0.0
+  postes à la publication suivante ; les ISO restent celles de la 1.0.1
   jusqu'à la prochaine version.
 - **Les postes vérifient la signature depuis la publication du 2026-11-01.**
   Avant, la politique de conteneurs de l'image ne couvrait pas `ghcr.io` et
@@ -34,6 +34,9 @@ fusion, comme sur chaque PR.
   une fois à jour (`bluefox-origine-signee`), sans redémarrage. La même
   publication apporte le verrouillage d'écran piloté par la politique et les
   adresses des services lues dans la politique (CHANGELOG, `[Unreleased]`).
+- **La clé USB live est distribuée à part.** Sa version courante, la 1.1.2,
+  se télécharge sur [os.bluefoxconsultant.com](https://os.bluefoxconsultant.com/telecharger.html)
+  avec son sha256 et sa signature cosign. Son code n'est pas dans ce dépôt.
 - **La politique ne s'applique que sur le chemin zero-touch.** Le kickstart
   autonome `install/bf-os.ks` n'appelle ni `bfos_provision.py` ni
   `bfos_apply.py` : une install par ce chemin donne une machine brandée mais
