@@ -96,6 +96,8 @@ APPLY_MODULE = "/usr/lib/bluefox/bfos_apply.py"
 # (ostree range le /etc de l'image sous /usr/etc). Voir apply_screen_lock.
 LOCK_PATH = "/etc/xdg/kscreenlockerrc"
 LOCK_BASE = "/usr/etc/xdg/kscreenlockerrc"
+WIPE_HELPER = "/usr/libexec/bluefox-wipe"
+DEPARTURE_MARKER = "/var/lib/bluefox-welcome/departure-pending.json"
 AUTH_PREFIX = "bfos-machine "
 TIMEOUT = 30
 
@@ -538,6 +540,67 @@ def apply_seat_access(policy, apply_mod, sssd_conf=SSSD_CONF, run=subprocess.run
     return True, "acces du poste mis a jour"
 
 
+# ------------------------------------------------------- ordre de depart
+def rejouer_compte_rendu(run=subprocess.run, helper=WIPE_HELPER,
+                         marker=DEPARTURE_MARKER):
+    """Un compte rendu de depart en attente ? On le remet avant tout le reste.
+
+    Un poste qui a efface ses cles et n'a pas pu le dire au serveur garde ce
+    marqueur et NE redemarre pas : sa fiche resterait sur « ordre remis » sans
+    jamais savoir. Remettre le compte rendu est donc le geste le plus urgent de
+    la synchronisation, avant meme de tirer la politique.
+    """
+    if not os.path.exists(marker):
+        return False, "aucun compte rendu en attente"
+    code, _ = _lancer(helper, ["--rejouer-le-compte-rendu"], run=run)
+    return True, f"compte rendu en attente rejoue (code {code})"
+
+
+def _lancer(helper, args, entree=None, run=subprocess.run):
+    """Lance l'assistant d'effacement. Rend (code, note). Ne leve pas."""
+    try:
+        proc = run([helper] + list(args), input=entree, text=True, check=False)
+    except (OSError, ValueError) as exc:
+        return 127, str(exc)
+    return proc.returncode, ""
+
+
+def apply_departure_order(policy, run=subprocess.run, helper=WIPE_HELPER):
+    """Passe un ordre de depart a l'assistant. Rend (agi, detail).
+
+    ⚠️ L'ordre part sur l'ENTREE STANDARD : les arguments d'un processus se
+    lisent dans /proc, et le compte rendu voyage avec le jeton de la machine.
+
+    Rien n'est verifie deux fois ici. C'est l'assistant qui compare le
+    `machine_uuid` de l'ordre a celui du poste, parce que c'est lui qui detruit :
+    la garde est a cote du geste, en un seul endroit, pas repartie entre deux
+    fichiers qui pourraient diverger.
+    """
+    depart = policy.get("departure")
+    if not isinstance(depart, dict):
+        return False, "politique sans bloc de depart"
+    ordre = depart.get("order")
+    if not isinstance(ordre, dict):
+        return False, "aucun ordre de depart"
+    if not os.path.exists(helper):
+        # Image d'avant cet assistant : on le dit fort plutot que de laisser
+        # croire qu'un ordre a ete execute.
+        return False, f"{helper} absent de l'image : ORDRE NON EXECUTE"
+    seat = isinstance(policy.get("seat"), dict)
+    login = ((policy.get("user") or {}).get("login") or "")
+    charge = json.dumps(dict(ordre, seat=seat, login=login))
+    code, note = _lancer(helper, [], entree=charge, run=run)
+    if note:
+        log(note)
+    mode = ordre.get("mode", "?")
+    if code == 0:
+        return True, f"ordre de depart « {mode} » execute"
+    if code == 2:
+        return False, f"ordre de depart « {mode} » REFUSE par l'assistant"
+    return True, (f"ordre de depart « {mode} » incomplet (code {code}) : "
+                  "voir le journal de bluefox-wipe")
+
+
 def write_state(path, **fields):
     """Trace de la derniere synchronisation, pour le diagnostic a froid."""
     try:
@@ -551,11 +614,20 @@ def sync(machine_path=MACHINE_JSON, provisioning_path=PROVISIONING_JSON,
          flatpak_dir=FLATPAK_DIR, state_path=STATE_JSON,
          apply_module=APPLY_MODULE, opener=None, run=subprocess.run,
          trigger=True, public_path=None, sssd_conf=None,
-         lock_path=LOCK_PATH, lock_base=LOCK_BASE) -> int:
+         lock_path=LOCK_PATH, lock_base=LOCK_BASE,
+         wipe_helper=WIPE_HELPER, marker_path=DEPARTURE_MARKER) -> int:
     machine = read_machine(machine_path)
     if machine is None:
         log("machine non enrolee — rien a synchroniser")
         return 0
+
+    # Le plus urgent d'abord : un poste efface qui n'a pas pu le dire. S'il
+    # arrive a rendre compte, l'assistant le redemarre et rien de ce qui suit
+    # n'a lieu.
+    rejoue, detail_rejeu = rejouer_compte_rendu(run=run, helper=wipe_helper,
+                                                marker=marker_path)
+    if rejoue:
+        log(detail_rejeu)
 
     policy, note = fetch_policy(machine["endpoint"], machine["token"],
                                 opener=opener)
@@ -565,6 +637,22 @@ def sync(machine_path=MACHINE_JSON, provisioning_path=PROVISIONING_JSON,
         write_state(state_path, last_attempt=stamp, status="skipped", detail=note,
                     machine_uuid=machine.get("machine_uuid", ""))
         return 0
+
+    # ⚠️ Charge reduite : l'usager du poste n'est plus autorise, mais un ordre
+    # de depart attend. Elle ne porte QUE cet ordre et ne doit surtout pas
+    # devenir la politique du poste — un poste simplement verrouille y perdrait
+    # toute sa configuration.
+    if policy.get("order_only"):
+        agi, detail_depart = apply_departure_order(policy, run=run,
+                                                   helper=wipe_helper)
+        log(f"charge reduite (usager non autorise) : {detail_depart}")
+        write_state(state_path, last_attempt=stamp, last_success=stamp,
+                    status="ok" if agi else "partial",
+                    changes=["ordre de depart"] if agi else [],
+                    machine_uuid=machine.get("machine_uuid", ""),
+                    hostname=machine.get("hostname", ""),
+                    departure=detail_depart, order_only=True)
+        return 0 if agi else 1
 
     rc = 0
     changes = []
@@ -577,6 +665,19 @@ def sync(machine_path=MACHINE_JSON, provisioning_path=PROVISIONING_JSON,
         write_state(state_path, last_attempt=stamp, status="error", detail=str(exc),
                     machine_uuid=machine.get("machine_uuid", ""))
         return 1
+
+    # L'ordre de depart passe AVANT les applications, l'acces et le verrou : un
+    # poste a effacer n'attend pas qu'une synchro Flatpak se termine. En mode
+    # « wipe » reussi, l'assistant redemarre le poste et la suite n'a pas lieu.
+    agi, detail_depart = apply_departure_order(policy, run=run,
+                                               helper=wipe_helper)
+    if detail_depart not in ("aucun ordre de depart",
+                             "politique sans bloc de depart"):
+        log(detail_depart)
+    if agi:
+        changes.append("ordre de depart")
+    elif "ORDRE NON EXECUTE" in detail_depart or "REFUSE" in detail_depart:
+        rc = 1
 
     apply_mod = load_apply(apply_module)
     if apply_mod is None:
@@ -627,7 +728,8 @@ def sync(machine_path=MACHINE_JSON, provisioning_path=PROVISIONING_JSON,
     write_state(state_path, last_attempt=stamp, last_success=stamp,
                 status="ok" if rc == 0 else "partial",
                 changes=changes, machine_uuid=machine.get("machine_uuid", ""),
-                hostname=machine.get("hostname", ""), screen_lock=detail_lock)
+                hostname=machine.get("hostname", ""), screen_lock=detail_lock,
+                departure=detail_depart)
     return rc
 
 

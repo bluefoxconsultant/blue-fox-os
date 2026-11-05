@@ -112,6 +112,11 @@ def _paths(tmp_path):
         # une politique avec auto_lock_minutes ecrirait sur le poste de dev.
         "lock_path": str(tmp_path / "etc" / "xdg" / "kscreenlockerrc"),
         "lock_base": str(tmp_path / "usr" / "etc" / "xdg" / "kscreenlockerrc"),
+        # Meme raison que les deux precedents : sans ces chemins, un essai
+        # irait lire le marqueur d'effacement du poste de dev et lancerait son
+        # /usr/libexec/bluefox-wipe.
+        "wipe_helper": str(tmp_path / "usr" / "libexec" / "bluefox-wipe"),
+        "marker_path": str(tmp_path / "departure-pending.json"),
     }
 
 
@@ -792,3 +797,231 @@ def test_seat_without_any_bind_password_keeps_its_file(tmp_path, machine):
     _seat_sync(tmp_path, machine, _sans_mot_de_passe(SEAT_POLICY), runs)
     assert (tmp_path / "sssd.conf").read_text() == "[domain/bluefox]\nldap_uri = ldaps://x\n"
     assert ["systemctl", "try-restart", "sssd.service"] not in runs
+
+
+# ------------------------------------------------- ordre de depart (#23941)
+# Le detail de l'effacement est garde dans test_departure_wipe.py. Ici, on
+# garde le CHAINAGE : ce que la synchro passe a l'assistant, dans quel ordre,
+# et ce qu'elle fait quand il manque.
+ORDRE = {"mode": "wipe", "machine_uuid": "uuid-1", "order_id": "ord-1"}
+
+
+class _RunsProc(list):
+    """Comme _Runs, mais rend un CompletedProcess : l'assistant est lance avec
+    `input=`, et la synchro lit son code de retour."""
+
+    def __init__(self, code=0):
+        super().__init__()
+        self.code = code
+        self.entrees = []
+
+    def __call__(self, argv, **kwargs):
+        self.append(list(argv))
+        self.entrees.append(kwargs.get("input"))
+
+        class _P:
+            returncode = self.code
+            stdout = ""
+            stderr = ""
+        return _P()
+
+
+def _avec_ordre(ordre=None, **extra):
+    policy = json.loads(json.dumps(POLICY))
+    policy["departure"] = {"on_revoke": "wipe", "offline_max_days": 7}
+    if ordre is not None:
+        policy["departure"]["order"] = ordre
+    policy.update(extra)
+    return policy
+
+
+def _helper(tmp_path):
+    chemin = tmp_path / "usr" / "libexec" / "bluefox-wipe"
+    chemin.parent.mkdir(parents=True, exist_ok=True)
+    chemin.write_text("#!/bin/true\n")
+    return chemin
+
+
+def test_l_ordre_part_sur_l_entree_standard_et_pas_en_argument(tmp_path, machine):
+    _helper(tmp_path)
+    runs = _RunsProc()
+    rc = sync_mod.sync(machine_path=str(machine),
+                       opener=_opener(json.dumps(_avec_ordre(ORDRE))),
+                       run=runs, **_paths(tmp_path))
+    assert rc == 0
+    lances = [a for a in runs if "bluefox-wipe" in " ".join(a)]
+    assert len(lances) == 1
+    # L'ordre n'est NULLE PART dans la ligne de commande : /proc est public.
+    assert lances[0][1:] == []
+    assert "ord-1" not in " ".join(lances[0])
+    charge = json.loads([e for e in runs.entrees if e][0])
+    assert charge["order_id"] == "ord-1"
+    assert charge["machine_uuid"] == "uuid-1"
+    assert charge["login"] == "olivier@bluefoxconsultant.com"
+    assert charge["seat"] is False
+
+
+def test_un_poste_partage_le_dit_a_l_assistant(tmp_path, machine):
+    _helper(tmp_path)
+    runs = _RunsProc()
+    policy = _avec_ordre(dict(ORDRE, mode="lock"),
+                         seat={"profile": "labo", "borrowers": []})
+    sync_mod.sync(machine_path=str(machine), opener=_opener(json.dumps(policy)),
+                  run=runs, **_paths(tmp_path))
+    charge = json.loads([e for e in runs.entrees if e][0])
+    assert charge["seat"] is True
+
+
+def test_sans_ordre_l_assistant_n_est_jamais_lance(tmp_path, machine):
+    _helper(tmp_path)
+    runs = _RunsProc()
+    rc = sync_mod.sync(machine_path=str(machine),
+                       opener=_opener(json.dumps(_avec_ordre())), run=runs,
+                       **_paths(tmp_path))
+    assert rc == 0
+    assert [a for a in runs if "bluefox-wipe" in " ".join(a)] == []
+
+
+def test_une_politique_sans_bloc_de_depart_ne_change_rien(tmp_path, machine):
+    _helper(tmp_path)
+    runs = _RunsProc()
+    rc = sync_mod.sync(machine_path=str(machine), opener=_opener(), run=runs,
+                       **_paths(tmp_path))
+    assert rc == 0
+    assert [a for a in runs if "bluefox-wipe" in " ".join(a)] == []
+    etat = json.loads((tmp_path / "policy-sync.json").read_text())
+    assert etat["departure"] == "politique sans bloc de depart"
+
+
+def test_un_assistant_absent_de_l_image_se_dit_fort(tmp_path, machine):
+    """Une image d'avant cet assistant ne doit pas laisser croire a un
+    effacement."""
+    runs = _RunsProc()
+    rc = sync_mod.sync(machine_path=str(machine),
+                       opener=_opener(json.dumps(_avec_ordre(ORDRE))),
+                       run=runs, **_paths(tmp_path))
+    assert rc == 1
+    etat = json.loads((tmp_path / "policy-sync.json").read_text())
+    assert "ORDRE NON EXECUTE" in etat["departure"]
+    assert "ordre de depart" not in etat["changes"]
+
+
+def test_un_ordre_refuse_par_l_assistant_fait_sortir_en_echec(tmp_path, machine):
+    _helper(tmp_path)
+    runs = _RunsProc(code=2)
+    rc = sync_mod.sync(machine_path=str(machine),
+                       opener=_opener(json.dumps(_avec_ordre(ORDRE))),
+                       run=runs, **_paths(tmp_path))
+    assert rc == 1
+    etat = json.loads((tmp_path / "policy-sync.json").read_text())
+    assert "REFUSE" in etat["departure"]
+
+
+def test_un_ordre_incomplet_reste_un_ordre_agi(tmp_path, machine):
+    """Code 1 : l'assistant a travaille mais n'a pas pu finir (compte rendu
+    remis a plus tard). Ce n'est pas un refus."""
+    _helper(tmp_path)
+    runs = _RunsProc(code=1)
+    sync_mod.sync(machine_path=str(machine),
+                  opener=_opener(json.dumps(_avec_ordre(ORDRE))),
+                  run=runs, **_paths(tmp_path))
+    etat = json.loads((tmp_path / "policy-sync.json").read_text())
+    assert "incomplet" in etat["departure"]
+    assert "ordre de depart" in etat["changes"]
+
+
+def test_l_ordre_passe_avant_les_applications(tmp_path, machine):
+    """Un poste a effacer n'attend pas la convergence Flatpak."""
+    _helper(tmp_path)
+    runs = _RunsProc()
+    sync_mod.sync(machine_path=str(machine),
+                  opener=_opener(json.dumps(_avec_ordre(ORDRE))),
+                  run=runs, **_paths(tmp_path))
+    lignes = [" ".join(a) for a in runs]
+    rang_wipe = next(i for i, l in enumerate(lignes) if "bluefox-wipe" in l)
+    rang_flatpak = next(i for i, l in enumerate(lignes)
+                        if "system-flatpak-setup" in l)
+    assert rang_wipe < rang_flatpak
+
+
+def test_un_compte_rendu_en_attente_se_rejoue_avant_tout(tmp_path, machine):
+    _helper(tmp_path)
+    paths = _paths(tmp_path)
+    Path(paths["marker_path"]).write_text(json.dumps(
+        {"order_id": "ord-1", "result": "done", "reboot": True}))
+    runs = _RunsProc()
+    sync_mod.sync(machine_path=str(machine), opener=_opener(), run=runs,
+                  **paths)
+    lances = [a for a in runs if "bluefox-wipe" in " ".join(a)]
+    assert lances == [[paths["wipe_helper"], "--rejouer-le-compte-rendu"]]
+    # Et c'est bien le PREMIER geste de la synchronisation.
+    assert runs[0] == lances[0]
+
+
+def test_sans_marqueur_rien_ne_se_rejoue(tmp_path, machine):
+    _helper(tmp_path)
+    runs = _RunsProc()
+    sync_mod.sync(machine_path=str(machine), opener=_opener(), run=runs,
+                  **_paths(tmp_path))
+    assert [a for a in runs if "rejouer" in " ".join(a)] == []
+
+
+def test_une_charge_reduite_n_ecrase_pas_la_politique(tmp_path, machine):
+    """Usager non autorise + ordre en attente : la charge ne porte que l'ordre.
+
+    Si elle devenait le provisioning.json du poste, un poste simplement
+    verrouille y perdrait toute sa configuration.
+    """
+    _helper(tmp_path)
+    paths = _paths(tmp_path)
+    # Une politique complete d'abord, pour avoir quelque chose a perdre.
+    sync_mod.sync(machine_path=str(machine), opener=_opener(), run=_RunsProc(),
+                  **paths)
+    avant = Path(paths["provisioning_path"]).read_text()
+
+    reduite = {"schema": "bf-policy/v2", "order_only": True, "install": {},
+               "user": {"login": "olivier@bluefoxconsultant.com"},
+               "departure": {"on_revoke": "wipe", "offline_max_days": 7,
+                             "order": ORDRE}}
+    runs = _RunsProc()
+    rc = sync_mod.sync(machine_path=str(machine),
+                       opener=_opener(json.dumps(reduite)), run=runs, **paths)
+    assert rc == 0
+    assert Path(paths["provisioning_path"]).read_text() == avant
+    assert [a for a in runs if "bluefox-wipe" in " ".join(a)]
+    charge = json.loads([e for e in runs.entrees if e][0])
+    assert charge["order_id"] == "ord-1"
+    etat = json.loads(Path(paths["state_path"]).read_text())
+    assert etat["order_only"] is True
+    assert etat["changes"] == ["ordre de depart"]
+
+
+def test_une_charge_reduite_ne_touche_a_rien_d_autre(tmp_path, machine):
+    _helper(tmp_path)
+    paths = _paths(tmp_path)
+    reduite = {"schema": "bf-policy/v2", "order_only": True, "install": {},
+               "user": {"login": "x"},
+               "departure": {"on_revoke": "lock", "offline_max_days": 7,
+                             "order": dict(ORDRE, mode="lock")}}
+    runs = _RunsProc()
+    sync_mod.sync(machine_path=str(machine), opener=_opener(json.dumps(reduite)),
+                  run=runs, **paths)
+    # Ni listes Flatpak, ni sssd.conf, ni verrou d'ecran, ni copie de session.
+    assert not (tmp_path / "flatpaks" / "install").exists()
+    assert not Path(paths["public_path"]).exists()
+    assert not Path(paths["lock_path"]).exists()
+    assert [a for a in runs if "system-flatpak-setup" in " ".join(a)] == []
+
+
+def test_une_charge_reduite_sans_assistant_sort_en_echec(tmp_path, machine):
+    paths = _paths(tmp_path)
+    reduite = {"schema": "bf-policy/v2", "order_only": True, "install": {},
+               "user": {"login": "x"},
+               "departure": {"on_revoke": "wipe", "offline_max_days": 7,
+                             "order": ORDRE}}
+    rc = sync_mod.sync(machine_path=str(machine),
+                       opener=_opener(json.dumps(reduite)), run=_RunsProc(),
+                       **paths)
+    assert rc == 1
+    etat = json.loads(Path(paths["state_path"]).read_text())
+    assert "ORDRE NON EXECUTE" in etat["departure"]

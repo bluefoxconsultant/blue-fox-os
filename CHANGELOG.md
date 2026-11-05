@@ -36,6 +36,19 @@ Format : [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning Ca
 
 ### Added
 
+**Départ de la personne : verrouiller ou effacer le poste** (#23941, #27365 ; avec bf_policy 18.0.2.11.6) :
+- `files/usr/libexec/bluefox-wipe` exécute un ordre servi dans le bloc `departure` de la politique. `lock` : purge du cache d'identifiants de sssd (`sss_cache -E`, arrêt, retrait des bases, relance), donc la session hors ligne cesse tout de suite au lieu de durer encore `offline_max_days` ; le disque n'est pas touché. `wipe` : `cryptsetup luksErase --batch-mode` sur chaque volume `crypto_LUKS`, puis redémarrage.
+- L'ordre arrive sur l'**entrée standard**, jamais en argument : les arguments d'un processus se lisent dans /proc, et le compte rendu voyage avec le jeton de la machine. La garde est à côté du geste : l'ordre nomme sa machine, comparé à `/etc/bluefox/machine.json` avant de toucher à quoi que ce soit.
+- ⚠️ **Aucun volume LUKS trouvé n'est pas un succès** : le poste rend compte d'un échec plutôt que de faire basculer la fiche en « effacé » sur un poste intact.
+- Le compte rendu (`POST /api/v1/policy/departure-done`) passe **avant** le redémarrage, et s'il ne passe pas le poste **ne redémarre pas** : il verrouille ses sessions, garde un marqueur, et la synchronisation suivante réessaie de rendre compte avant de redémarrer. Un poste redémarré ne reparle plus, et « effacé » ne doit pas se confondre avec « jamais rallumé ».
+- Sur un poste **partagé**, un `lock` ne vise que l'usager (`sss_cache -u`) : purger tout le cache fermerait la porte aux autres emprunteurs.
+- `bluefox-policy-sync` rejoue un compte rendu en attente en premier geste, puis passe l'ordre avant les applications, l'accès et le verrou. Une charge `order_only` (usager plus autorisé, mais ordre en attente) n'écrase pas `provisioning.json`. Assistant absent de l'image : `rc=1` et « ORDRE NON EXECUTE » dans `policy-sync.json`, plutôt que de laisser croire à un effacement.
+
+Limites connues du départ :
+- Un poste qui ne se rebranche jamais ne s'efface jamais. C'est vrai de toutes les suites de gestion de parc, y compris celles qui le vendent comme une garantie : le chiffrement au repos reste la réponse, l'effacement est une ceinture de plus.
+- Latence : jusqu'à une heure (minuterie de synchronisation). Un poste éteint reçoit l'ordre à son retour.
+- `luksErase` détruit les emplacements de clés, pas les données : un volume dont la clé maîtresse aurait fuité avant l'effacement reste théoriquement déchiffrable par qui la détient.
+
 **Postes partagés : laboratoire et prêt** (#26119, avec bf_policy 18.0.2.12.0) :
 - `bfos.poste=<code>` à l'installation : le poste appartient au profil, pas à la personne qui l'installe ; le serveur le nomme.
 - sssd s'ouvre aux groupes du profil et aux emprunteurs inscrits ; un poste partagé sans personne passe en `deny` (sans règle, `simple` ouvrirait tout l'annuaire).

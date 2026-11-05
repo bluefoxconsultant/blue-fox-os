@@ -1,0 +1,422 @@
+#!/usr/bin/python3
+"""Execute un ordre de depart recu par la politique (#23941, #27365).
+
+DEUX ORDRES, DEUX PORTEES
+« lock »  : purge le cache d'identifiants de sssd. La session hors ligne cesse
+            tout de suite au lieu de durer encore `offline_max_days`. Le disque
+            n'est pas touche, et un retour en ligne de la personne, si ses
+            acces lui sont rendus, remarche comme avant.
+« wipe »  : detruit les emplacements de cles LUKS des volumes chiffres du
+            poste. Le volume devient definitivement illisible, en une fraction
+            de seconde et sans reecrire un seul secteur. Il n'y a pas de retour.
+
+POURQUOI UN FICHIER A PART
+Le chemin qui detruit des donnees se relit d'un seul morceau, sans avoir a
+suivre la synchronisation de la politique dans la tete. L'agent de synchro ne
+fait que passer l'ordre ici, sur l'entree standard.
+
+POURQUOI L'ORDRE ARRIVE SUR L'ENTREE STANDARD ET NON EN ARGUMENT
+Les arguments d'un processus se lisent dans /proc par n'importe qui. L'ordre
+lui-meme n'est pas un secret, mais le compte rendu voyage avec le jeton de la
+machine, qui en est un : rien de tout cela ne passe par la ligne de commande.
+
+LA GARDE QUI COMPTE
+L'ordre nomme SA machine. On le compare a /etc/bluefox/machine.json AVANT de
+toucher a quoi que ce soit : une politique recopiee d'un autre poste, ou un
+fichier bricole a la main, n'efface pas celui-ci.
+
+LE REBOOT N'EST PAS LE DERNIER GESTE, LE COMPTE RENDU L'EST
+Apres l'effacement, le poste tourne encore : son volume est ouvert, et il le
+restera jusqu'au redemarrage. On s'en sert pour rendre compte au serveur, parce
+qu'un poste redemarre ne reparlera plus jamais, et que « efface » et « jamais
+rallume » ne doivent pas se confondre sur la fiche. Si le compte rendu ne passe
+pas, le poste NE redemarre PAS : il coupe les sessions, garde un marqueur, et
+la synchronisation suivante reessaiera de rendre compte avant de redemarrer.
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+MACHINE_JSON = "/etc/bluefox/machine.json"
+MARQUEUR = "/var/lib/bluefox-welcome/departure-pending.json"
+SSSD_DB = "/var/lib/sss/db"
+AUTH_PREFIX = "bfos-machine "
+TIMEOUT = 30
+# Trois essais rapproches : une coupure reseau d'une seconde ne doit pas couter
+# une heure, et une coupure longue ne doit pas tenir le poste en l'air.
+ESSAIS_RAPPORT = 3
+ATTENTE_RAPPORT = 5
+
+
+def log(msg):
+    print(f"[bluefox-wipe] {msg}", file=sys.stderr, flush=True)
+
+
+def _run(cmd, run=subprocess.run):
+    """Lance une commande et rend (code, sortie). Ne leve pas."""
+    try:
+        proc = run(cmd, check=False, capture_output=True, text=True)
+    except (OSError, ValueError) as exc:
+        return 127, str(exc)
+    sortie = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    return proc.returncode, sortie
+
+
+# --------------------------------------------------------------- lecture
+def lire_machine(path=MACHINE_JSON):
+    """Fiche d'enrolement, ou None. Sans elle, aucun ordre n'est executable :
+    on ne saurait ni a qui rendre compte ni quelle machine on est."""
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        log(f"{path} illisible ({exc})")
+        return None
+    if not isinstance(data, dict):
+        return None
+    if not (data.get("token") and data.get("endpoint")
+            and data.get("machine_uuid")):
+        log(f"{path} incomplet : jeton, endpoint ou uuid manquant")
+        return None
+    return data
+
+
+def valider_ordre(ordre, machine):
+    """Rend (mode, raison_du_refus). `mode` est None si l'ordre est refuse."""
+    if not isinstance(ordre, dict):
+        return None, "ordre illisible"
+    mode = ordre.get("mode")
+    if mode not in ("lock", "wipe"):
+        return None, f"mode inconnu : {mode!r}"
+    if not ordre.get("order_id"):
+        return None, "ordre sans identifiant"
+    vise = ordre.get("machine_uuid")
+    if not vise:
+        return None, "ordre sans machine_uuid"
+    if vise != machine.get("machine_uuid"):
+        # Le refus qui compte : on ne detruit pas le disque de quelqu'un
+        # d'autre parce qu'un fichier de politique s'est promene.
+        return None, (f"ordre adresse a {vise!r}, ce poste est "
+                      f"{machine.get('machine_uuid')!r}")
+    return mode, ""
+
+
+# ------------------------------------------------------- cache sssd (lock)
+def purger_cache(seat=False, login="", run=subprocess.run):
+    """Ferme la fenetre hors ligne. Rend (ok, detail).
+
+    Sur un poste personnel, on invalide TOUT (`sss_cache -E`) et on retire les
+    bases : c'est le poste d'une personne qui part. Sur un poste partage, on
+    s'en tient a l'usager vise (`sss_cache -u`) : purger tout le cache
+    fermerait aussi la porte aux autres emprunteurs, qui n'ont rien demande.
+    """
+    gestes = []
+    if seat and login:
+        code, sortie = _run(["sss_cache", "-u", login], run=run)
+        gestes.append(f"sss_cache -u {login} → {code}")
+        if code != 0 and sortie:
+            log(sortie)
+    else:
+        code, sortie = _run(["sss_cache", "-E"], run=run)
+        gestes.append(f"sss_cache -E → {code}")
+        if code != 0 and sortie:
+            log(sortie)
+        # `sss_cache` invalide ; il ne retire pas le mot de passe hache du
+        # cache. Sans ce retrait, une session hors ligne reste possible.
+        code_stop, _ = _run(["systemctl", "stop", "sssd.service"], run=run)
+        gestes.append(f"stop sssd → {code_stop}")
+        retires, echecs = 0, 0
+        try:
+            for nom in sorted(os.listdir(SSSD_DB)):
+                chemin = os.path.join(SSSD_DB, nom)
+                if not os.path.isfile(chemin):
+                    continue
+                try:
+                    os.unlink(chemin)
+                    retires += 1
+                except OSError as exc:
+                    echecs += 1
+                    log(f"{chemin} non retire ({exc})")
+        except OSError as exc:
+            log(f"{SSSD_DB} illisible ({exc})")
+            echecs += 1
+        gestes.append(f"{retires} fichier(s) de cache retire(s)")
+        code_start, _ = _run(["systemctl", "start", "sssd.service"], run=run)
+        gestes.append(f"start sssd → {code_start}")
+        if echecs:
+            return False, "; ".join(gestes)
+    return code == 0, "; ".join(gestes)
+
+
+# --------------------------------------------------------- volumes (wipe)
+def volumes_luks(run=subprocess.run):
+    """Les volumes chiffres du poste, par leur chemin de peripherique.
+
+    Passe par `lsblk` plutot que par /etc/crypttab : crypttab nomme des UUID et
+    peut mentionner un volume absent, alors que lsblk dit ce qui est la.
+    """
+    code, sortie = _run(
+        ["lsblk", "--json", "--paths", "--output", "NAME,FSTYPE"], run=run)
+    if code != 0:
+        log(f"lsblk a rendu {code} : {sortie}")
+        return []
+    try:
+        arbre = json.loads(sortie)
+    except ValueError as exc:
+        log(f"sortie de lsblk illisible ({exc})")
+        return []
+
+    trouves = []
+
+    def descendre(noeuds):
+        for noeud in noeuds or []:
+            if not isinstance(noeud, dict):
+                continue
+            if noeud.get("fstype") == "crypto_LUKS" and noeud.get("name"):
+                trouves.append(noeud["name"])
+            descendre(noeud.get("children"))
+
+    descendre(arbre.get("blockdevices"))
+    # dict.fromkeys : un meme volume peut remonter deux fois (multipath).
+    return list(dict.fromkeys(trouves))
+
+
+def effacer_volumes(run=subprocess.run):
+    """Detruit les emplacements de cles de chaque volume. Rend (ok, detail).
+
+    ⚠️ AUCUN VOLUME TROUVE N'EST PAS UN SUCCES. Rendre « fait » sans avoir rien
+    efface ferait basculer la fiche en « efface » sur un poste intact : c'est
+    le mensonge le plus couteux que ce chemin pourrait raconter.
+    """
+    volumes = volumes_luks(run=run)
+    if not volumes:
+        return False, ("aucun volume LUKS trouve : rien n'a ete efface "
+                       "(poste non chiffre, ou lsblk indisponible)")
+    faits, rates = [], []
+    for dev in volumes:
+        code, sortie = _run(
+            ["cryptsetup", "luksErase", "--batch-mode", dev], run=run)
+        if code == 0:
+            faits.append(dev)
+        else:
+            rates.append(f"{dev} ({code} {sortie[:60]})")
+    detail = f"{len(faits)}/{len(volumes)} volume(s) efface(s)"
+    if rates:
+        return False, detail + " ; echecs : " + ", ".join(rates)
+    return True, detail + " : " + ", ".join(faits)
+
+
+# ------------------------------------------------------------ compte rendu
+def url_rapport(endpoint):
+    """Adresse du compte rendu, deduite de celle de la synchronisation.
+
+    Le poste ne se fait pas dire une adresse de plus par la politique : il
+    derive celle-ci de l'endpoint qu'il connait deja et qu'il a valide. Une
+    adresse servie a part serait un parametre de plus a verifier, pour rien.
+    """
+    endpoint = (endpoint or "").rstrip("/")
+    if not endpoint.endswith("/machine"):
+        return ""
+    return endpoint[: -len("/machine")] + "/departure-done"
+
+
+def rendre_compte(machine, order_id, resultat, detail="", opener=None):
+    """POST du compte rendu. Rend (ok, note)."""
+    url = url_rapport(machine.get("endpoint"))
+    if not url:
+        return False, f"endpoint inattendu : {machine.get('endpoint')!r}"
+    if not url.startswith("https://"):
+        return False, "compte rendu refuse hors https"
+    corps = json.dumps({
+        "order_id": order_id,
+        "result": resultat,
+        "detail": detail[:255],
+    }).encode()
+    req = urllib.request.Request(url, data=corps, method="POST")
+    req.add_header("Authorization", f"Bearer {AUTH_PREFIX}{machine['token']}")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Accept", "application/json")
+    ouvrir = opener or urllib.request.urlopen
+    try:
+        with ouvrir(req, timeout=TIMEOUT) as resp:
+            resp.read()
+            return True, f"HTTP {resp.status}"
+    except urllib.error.HTTPError as exc:
+        # 409 : le serveur ne reconnait plus cet ordre (annule, ou deja
+        # remplace). Inutile de reessayer, et inutile de garder le marqueur.
+        return (exc.code == 409), f"HTTP {exc.code}"
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return False, f"serveur injoignable ({exc})"
+
+
+def rendre_compte_avec_essais(machine, order_id, resultat, detail="",
+                              opener=None, dormir=time.sleep):
+    for essai in range(1, ESSAIS_RAPPORT + 1):
+        ok, note = rendre_compte(machine, order_id, resultat, detail,
+                                 opener=opener)
+        if ok:
+            return True, note
+        log(f"compte rendu essai {essai}/{ESSAIS_RAPPORT} : {note}")
+        if essai < ESSAIS_RAPPORT:
+            dormir(ATTENTE_RAPPORT)
+    return False, note
+
+
+# --------------------------------------------------------------- marqueur
+def ecrire_marqueur(order_id, resultat, detail, redemarrer):
+    """Garde ce qui reste a dire au serveur, pour la prochaine synchro."""
+    try:
+        os.makedirs(os.path.dirname(MARQUEUR), exist_ok=True)
+        tmp = MARQUEUR + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump({"order_id": order_id, "result": resultat,
+                       "detail": detail[:255], "reboot": bool(redemarrer),
+                       "written_at": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                                   time.gmtime())}, fh)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, MARQUEUR)
+    except OSError as exc:
+        log(f"marqueur non ecrit ({exc}) : le compte rendu est perdu")
+
+
+def lire_marqueur():
+    try:
+        with open(MARQUEUR) as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and data.get("order_id") else None
+
+
+def retirer_marqueur():
+    try:
+        os.unlink(MARQUEUR)
+    except OSError:
+        pass
+
+
+# ------------------------------------------------------------------ gestes
+def couper_les_sessions(run=subprocess.run):
+    """Verrouille les sessions ouvertes, tout de suite.
+
+    Pose entre l'effacement et le redemarrage : le volume reste ouvert tant que
+    la machine tourne, et il n'y a aucune raison de laisser la session en cours
+    continuer pendant qu'on essaie de rendre compte.
+    """
+    code, _ = _run(["loginctl", "lock-sessions"], run=run)
+    return code == 0
+
+
+def redemarrer(run=subprocess.run):
+    log("redemarrage")
+    _run(["systemctl", "reboot"], run=run)
+
+
+# -------------------------------------------------------------------- main
+def executer(ordre, machine, run=subprocess.run, opener=None,
+             dormir=time.sleep):
+    """Execute un ordre valide. Rend le code de sortie du programme."""
+    mode, refus = valider_ordre(ordre, machine)
+    if not mode:
+        log(f"ordre refuse : {refus}")
+        return 2
+    order_id = ordre["order_id"]
+    seat = bool(ordre.get("seat"))
+    login = str(ordre.get("login") or "")
+
+    if mode == "lock":
+        ok, detail = purger_cache(seat=seat, login=login, run=run)
+        log(f"verrouillage : {detail}")
+        envoye, note = rendre_compte_avec_essais(
+            machine, order_id, "done" if ok else "failed", detail,
+            opener=opener, dormir=dormir)
+        if not envoye:
+            # Le geste est idempotent : la synchro suivante reessaiera.
+            ecrire_marqueur(order_id, "done" if ok else "failed", detail, False)
+            log(f"compte rendu remis a plus tard ({note})")
+            return 1
+        retirer_marqueur()
+        return 0 if ok else 1
+
+    # mode == "wipe"
+    ok, detail = effacer_volumes(run=run)
+    log(f"effacement : {detail}")
+    if not ok:
+        # Rien d'irreversible n'a abouti : on le dit, et on ne redemarre pas.
+        envoye, note = rendre_compte_avec_essais(
+            machine, order_id, "failed", detail, opener=opener, dormir=dormir)
+        if not envoye:
+            ecrire_marqueur(order_id, "failed", detail, False)
+            log(f"compte rendu remis a plus tard ({note})")
+        return 1
+
+    # A partir d'ici le disque est deja illisible au prochain demarrage.
+    purge_ok, purge_detail = purger_cache(seat=False, login=login, run=run)
+    log(f"cache : {purge_detail}")
+    couper_les_sessions(run=run)
+    detail = f"{detail} ; cache : {'purge' if purge_ok else 'partiel'}"
+    envoye, note = rendre_compte_avec_essais(
+        machine, order_id, "done", detail, opener=opener, dormir=dormir)
+    if not envoye:
+        # ⚠️ PAS DE REDEMARRAGE : un poste redemarre ne reparlera plus, et la
+        # fiche resterait sur « ordre remis » sans jamais savoir. Les sessions
+        # sont coupees, le disque est condamne : attendre coute peu.
+        ecrire_marqueur(order_id, "done", detail, True)
+        log(f"efface, compte rendu remis a plus tard ({note}) : pas de "
+            "redemarrage avant d'avoir rendu compte")
+        return 1
+    retirer_marqueur()
+    redemarrer(run=run)
+    return 0
+
+
+def rejouer(machine, run=subprocess.run, opener=None, dormir=time.sleep):
+    """Reessaie un compte rendu en attente. Rend le code de sortie."""
+    marqueur = lire_marqueur()
+    if not marqueur:
+        return 0
+    envoye, note = rendre_compte_avec_essais(
+        machine, marqueur["order_id"], marqueur.get("result", "done"),
+        marqueur.get("detail", ""), opener=opener, dormir=dormir)
+    if not envoye:
+        log(f"compte rendu toujours en attente ({note})")
+        return 1
+    retirer_marqueur()
+    log("compte rendu en attente enfin remis")
+    if marqueur.get("reboot"):
+        redemarrer(run=run)
+    return 0
+
+
+def main(argv=None):
+    argv = list(argv or sys.argv[1:])
+    if os.geteuid() != 0:
+        log("doit tourner en root")
+        return 1
+    # Le chemin se relit a l'appel, pas a la definition : une valeur par
+    # defaut figee ne se laisse ni configurer ni mettre sous essai.
+    machine = lire_machine(MACHINE_JSON)
+    if machine is None:
+        log("poste non enrole : aucun ordre executable")
+        return 1
+    if argv and argv[0] == "--rejouer-le-compte-rendu":
+        return rejouer(machine)
+    if argv:
+        log(f"argument inconnu : {argv[0]}")
+        return 2
+    try:
+        ordre = json.load(sys.stdin)
+    except ValueError as exc:
+        log(f"ordre illisible sur l'entree standard ({exc})")
+        return 2
+    return executer(ordre, machine)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
