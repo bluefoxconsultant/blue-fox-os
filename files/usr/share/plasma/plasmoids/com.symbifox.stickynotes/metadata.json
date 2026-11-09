@@ -1,0 +1,22 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Email": "info@bluefoxconsultant.com",
+                "Name": "Blue Fox Inc."
+            }
+        ],
+        "Category": "Utilities",
+        "Description": "Your Symbifox notes on the desktop",
+        "Description[fr]": "Vos notes Symbifox sur le bureau",
+        "Icon": "symbifox-stickynotes",
+        "Id": "com.symbifox.stickynotes",
+        "License": "LGPL-3.0-or-later",
+        "Name": "Symbifox Sticky Notes",
+        "Name[fr]": "Pense-bêtes Symbifox",
+        "Version": "2.2.2",
+        "Website": "https://symbifox.com"
+    },
+    "X-Plasma-API-Minimum-Version": "6.0"
+}
