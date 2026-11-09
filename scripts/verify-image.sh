@@ -49,8 +49,24 @@ for tool in cosign skopeo python3; do
 done
 [ -f "$PUBKEY" ] || { bad "cle publique introuvable : ${PUBKEY} (COSIGN_PUB, cosign.pub par defaut)"; exit 1; }
 
-# `cosign verify` ecrit son rapport sur stdout et ses avertissements sur stderr :
-# on ne garde ni l'un ni l'autre, seul le code de sortie nous interesse.
+# `cosign verify` ecrit son rapport sur stdout et ses avertissements sur stderr.
+# En succes, on ne garde ni l'un ni l'autre. En ECHEC, on recopie les lignes
+# d'erreur de stderr sous le ❌ (bf.note #289, 2026-11-09) : « ABSENTE » couvre
+# aussi une lecture ratee (registre, Rekor, reseau). Le 2026-11-09, bf-surface
+# est sortie 5/5 puis « attestation ABSENTE » a deux minutes d'ecart, sur le
+# meme digest, sans aucune trace de la cause puisque stderr partait a la poubelle.
+ERREURS="$(mktemp)"
+trap 'rm -f "$ERREURS"' EXIT
+# Pas de ❌ sur ces lignes : bfos_verify_daily.sh compte les ❌ pour l'alerte.
+cause() {
+    local lignes
+    lignes="$(grep -i -E 'error|erreur|status|timeout|refused|denied|EOF|no such|not found|MANIFEST_UNKNOWN|429|5[0-9][0-9]' "$ERREURS" \
+        | grep -v '^error during command execution' | sort -u | head -n 3)"
+    [ -n "$lignes" ] || lignes="$(grep -v '^[[:space:]]*$' "$ERREURS" | tail -n 2)"
+    [ -n "$lignes" ] || lignes="(cosign n'a rien ecrit sur stderr)"
+    printf '%s\n' "$lignes" | cut -c1-300 | sed 's/^/[verify]        cause : /' >&2
+}
+
 verify_one() {
     local slug="$1"
     local image="${REGISTRY}/blue-fox-os-${slug}:${TAG}"
@@ -59,10 +75,11 @@ verify_one() {
     log "── ${image}"
 
     # 1. signature -----------------------------------------------------------
-    if cosign verify --key "$PUBKEY" "$image" >/dev/null 2>&1; then
+    if cosign verify --key "$PUBKEY" "$image" >/dev/null 2>"$ERREURS"; then
         ok "1/5 signature cosign valide"
     else
         bad "1/5 signature cosign INVALIDE ou absente"
+        cause
         failures=$((failures + 1))
     fi
 
@@ -70,10 +87,11 @@ verify_one() {
     # ⚠️ C'est le controle qui manquait : les 3 images ont passe deux mois
     # signees et jamais attestees, sans qu'aucune commande ne le dise.
     local att=""
-    if att="$(cosign verify-attestation --key "$PUBKEY" --type spdxjson "$image" 2>/dev/null)"; then
+    if att="$(cosign verify-attestation --key "$PUBKEY" --type spdxjson "$image" 2>"$ERREURS")"; then
         ok "2/5 attestation SBOM SPDX presente et signee"
     else
         bad "2/5 attestation SBOM SPDX ABSENTE (blocage B1 de l'audit P5.2)"
+        cause
         failures=$((failures + 1))
     fi
 
