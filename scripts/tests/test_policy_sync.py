@@ -89,6 +89,43 @@ class _Runs(list):
         self.append(argv)
 
 
+# Les chemins que le fixture `_poste_de_papier` redirige, et ou.
+_REDIRIGES = (
+    ("MACHINE_JSON", "machine.json"),
+    ("PROVISIONING_JSON", "provisioning.json"),
+    ("PUBLIC_JSON", "policy-public.json"),
+    ("STATE_JSON", "policy-sync.json"),
+    ("FLATPAK_DIR", "flatpaks"),
+    ("SSSD_CONF", "sssd.conf"),
+    ("LOCK_PATH", "etc/xdg/kscreenlockerrc"),
+    ("LOCK_BASE", "usr/etc/xdg/kscreenlockerrc"),
+    ("WIPE_HELPER", "usr/libexec/bluefox-wipe"),
+    ("DEPARTURE_MARKER", "departure-pending.json"),
+    ("DEPARTURE_TRACE", "departure-sans-suite.json"),
+    ("APPLY_MODULE", "usr/lib/bluefox/bfos_apply.py"),
+)
+# Les chemins REELS de l'image, captures AVANT toute redirection : un essai qui
+# compare une unite systemd du depot a la constante du module doit lire le vrai
+# chemin, pas le tmp_path du jour.
+CHEMINS_REELS = {nom: getattr(sync_mod, nom) for nom, _ in _REDIRIGES}
+
+
+@pytest.fixture(autouse=True)
+def _poste_de_papier(tmp_path, monkeypatch):
+    """Aucun essai ne touche les fichiers du poste de developpement.
+
+    ⚠️ F13 : `_paths` redirigeait neuf chemins mais PAS `sssd_conf`, qui
+    retombait sur le vrai /etc/sssd/sssd.conf. Aucun essai n'y touchait, mais
+    la securite etait ACCIDENTELLE : il suffisait d'un essai de poste partage
+    qui oublie le parametre. Elle est ici structurelle — les constantes du
+    module sont redirigees, donc un essai qui oublie un chemin ecrit quand
+    meme dans son tmp_path, comme le fait depuis le debut
+    test_departure_wipe.py. Les deux garde-fous se cumulent a dessein.
+    """
+    for nom, cible in _REDIRIGES:
+        monkeypatch.setattr(sync_mod, nom, str(tmp_path / cible))
+
+
 @pytest.fixture()
 def machine(tmp_path):
     """Un poste enrole, avec ses fichiers la ou le service les attend."""
@@ -117,6 +154,11 @@ def _paths(tmp_path):
         # /usr/libexec/bluefox-wipe.
         "wipe_helper": str(tmp_path / "usr" / "libexec" / "bluefox-wipe"),
         "marker_path": str(tmp_path / "departure-pending.json"),
+        "trace_path": str(tmp_path / "departure-sans-suite.json"),
+        # ⚠️ F13 : celui-la MANQUAIT, et retombait sur le vrai
+        # /etc/sssd/sssd.conf. Le fixture `_poste_de_papier` le redirige aussi,
+        # en ceinture.
+        "sssd_conf": str(tmp_path / "sssd.conf"),
     }
 
 
@@ -687,7 +729,7 @@ def test_les_recettes_activent_le_rechargement(recette):
 
 def test_l_unite_path_surveille_le_fichier_ecrit():
     texte = (UNITES_USAGER / "bluefox-lock-reload.path").read_text()
-    assert f"PathChanged={sync_mod.LOCK_PATH}\n" in texte
+    assert f"PathChanged={CHEMINS_REELS['LOCK_PATH']}\n" in texte
     assert "Unit=bluefox-lock-reload.service\n" in texte
     assert "WantedBy=" in texte, "sans [Install], systemctl --global enable echoue"
 
@@ -716,8 +758,7 @@ SEAT_POLICY = {
 
 def _seat_sync(tmp_path, machine, policy, runs):
     return sync_mod.sync(machine_path=str(machine), opener=_opener(json.dumps(policy)),
-                         run=runs, trigger=False, sssd_conf=str(tmp_path / "sssd.conf"),
-                         **_paths(tmp_path))
+                         run=runs, trigger=False, **_paths(tmp_path))
 
 
 def test_loan_borrower_reaches_sssd(tmp_path, machine):
@@ -744,8 +785,8 @@ def test_same_access_restarts_nothing(tmp_path, machine):
 
 
 def test_personal_machine_sssd_untouched(tmp_path, machine):
-    sync_mod.sync(machine_path=str(machine), opener=_opener(), run=_Runs(), trigger=False,
-                  sssd_conf=str(tmp_path / "sssd.conf"), **_paths(tmp_path))
+    sync_mod.sync(machine_path=str(machine), opener=_opener(), run=_Runs(),
+                  trigger=False, **_paths(tmp_path))
     assert not (tmp_path / "sssd.conf").exists()
 
 
@@ -803,21 +844,31 @@ def test_seat_without_any_bind_password_keeps_its_file(tmp_path, machine):
 # Le detail de l'effacement est garde dans test_departure_wipe.py. Ici, on
 # garde le CHAINAGE : ce que la synchro passe a l'assistant, dans quel ordre,
 # et ce qu'elle fait quand il manque.
-ORDRE = {"mode": "wipe", "machine_uuid": "uuid-1", "order_id": "ord-1"}
+# L'ordre tel qu'Odoo le sert : il porte SA cible (contrat 2 de #23941),
+# la politique ne la porte plus.
+ORDRE = {"mode": "wipe", "machine_uuid": "uuid-1", "order_id": "ord-1",
+         "seat_only": False, "target_login": "personne@exemple.test"}
 
 
 class _RunsProc(list):
     """Comme _Runs, mais rend un CompletedProcess : l'assistant est lance avec
-    `input=`, et la synchro lit son code de retour."""
+    `input=`, et la synchro lit son code de retour.
 
-    def __init__(self, code=0):
+    `marker_a_retirer` imite ce que fait le vrai assistant quand il a enfin
+    rendu compte : il retire le marqueur, puis demande le redemarrage.
+    """
+
+    def __init__(self, code=0, marker_a_retirer=None):
         super().__init__()
         self.code = code
         self.entrees = []
+        self.marker_a_retirer = marker_a_retirer
 
     def __call__(self, argv, **kwargs):
         self.append(list(argv))
         self.entrees.append(kwargs.get("input"))
+        if self.marker_a_retirer and "bluefox-wipe" in " ".join(argv):
+            Path(self.marker_a_retirer).unlink(missing_ok=True)
 
         class _P:
             returncode = self.code
@@ -827,12 +878,30 @@ class _RunsProc(list):
 
 
 def _avec_ordre(ordre=None, **extra):
+    """Une politique COMPLETE v2 qui porte quand meme un ordre.
+
+    ⚠️ Cette forme n'existe PLUS dans le contrat (contrat 9 : Odoo sert
+    `order-v1` des qu'un ordre attend). Elle reste ici pour l'essai qui
+    verifie qu'un serveur qui la servirait se fait REFUSER son ordre, fort.
+    """
     policy = json.loads(json.dumps(POLICY))
     policy["departure"] = {"on_revoke": "wipe", "offline_max_days": 7}
     if ordre is not None:
         policy["departure"]["order"] = ordre
     policy.update(extra)
     return policy
+
+
+def _reduite(ordre=None, mode=None):
+    """La charge d'ordre telle que bf_policy 18.0.2.11.6 la sert : SON PROPRE
+    schema (contrat 1), aucune cle `install`, et QUE l'ordre.
+
+    C'est le SEUL chemin d'un ordre de depart (contrat 9), que l'usager du
+    poste soit encore autorise ou non."""
+    ordre = ordre or (dict(ORDRE, mode=mode) if mode else ORDRE)
+    return {"schema": sync_mod.SCHEMA_ORDRE, "order_only": True,
+            "departure": {"on_revoke": ordre["mode"], "offline_max_days": 7,
+                          "order": ordre}}
 
 
 def _helper(tmp_path):
@@ -842,12 +911,21 @@ def _helper(tmp_path):
     return chemin
 
 
-def test_l_ordre_part_sur_l_entree_standard_et_pas_en_argument(tmp_path, machine):
+def _sync_ordre(tmp_path, machine, runs, ordre=None, charge=None):
+    """Une synchro qui recoit une charge d'ordre (le seul chemin, contrat 9)."""
+    paths = _paths(tmp_path)
+    reduite = charge if charge is not None else _reduite(ordre)
+    rc = sync_mod.sync(machine_path=str(machine),
+                       opener=_opener(json.dumps(reduite)), run=runs, **paths)
+    etat = json.loads(Path(paths["state_path"]).read_text())
+    return rc, etat
+
+
+def test_l_ordre_part_sur_l_entree_standard_et_pas_en_argument(tmp_path,
+                                                               machine):
     _helper(tmp_path)
     runs = _RunsProc()
-    rc = sync_mod.sync(machine_path=str(machine),
-                       opener=_opener(json.dumps(_avec_ordre(ORDRE))),
-                       run=runs, **_paths(tmp_path))
+    rc, _etat = _sync_ordre(tmp_path, machine, runs)
     assert rc == 0
     lances = [a for a in runs if "bluefox-wipe" in " ".join(a)]
     assert len(lances) == 1
@@ -855,21 +933,36 @@ def test_l_ordre_part_sur_l_entree_standard_et_pas_en_argument(tmp_path, machine
     assert lances[0][1:] == []
     assert "ord-1" not in " ".join(lances[0])
     charge = json.loads([e for e in runs.entrees if e][0])
-    assert charge["order_id"] == "ord-1"
-    assert charge["machine_uuid"] == "uuid-1"
-    assert charge["login"] == "olivier@bluefoxconsultant.com"
-    assert charge["seat"] is False
+    assert charge == ORDRE
 
 
-def test_un_poste_partage_le_dit_a_l_assistant(tmp_path, machine):
+def test_l_ordre_part_tel_qu_il_arrive_et_la_politique_n_y_ajoute_rien(
+        tmp_path, machine):
+    """W2, W3 et contrat 2 : la cible de la purge vient de l'ORDRE.
+
+    ⚠️ La version precedente fabriquait `seat` et `login` depuis la POLITIQUE.
+    Un poste partage porte `"user": {"login": ""}` : la portee tombait a
+    « poste personnel » et la branche qui vide TOUT le cache de sssd se prenait
+    la ou elle ne devait jamais se prendre.
+    """
     _helper(tmp_path)
     runs = _RunsProc()
-    policy = _avec_ordre(dict(ORDRE, mode="lock"),
-                         seat={"profile": "labo", "borrowers": []})
-    sync_mod.sync(machine_path=str(machine), opener=_opener(json.dumps(policy)),
-                  run=runs, **_paths(tmp_path))
+    ordre = dict(ORDRE, mode="lock", seat_only=True,
+                 target_login="eleve@ecole.test")
+    _sync_ordre(tmp_path, machine, runs, ordre)
     charge = json.loads([e for e in runs.entrees if e][0])
-    assert charge["seat"] is True
+    assert charge == ordre
+    assert "seat" not in charge and "login" not in charge
+
+
+def test_un_ordre_sans_cible_est_signale_dans_l_etat(tmp_path, machine):
+    """Code defensif : un serveur qui ne sert pas encore `seat_only` /
+    `target_login` ne permet aucune purge ciblee. On le dit, plutot que de
+    laisser la fiche croire a une purge d'emprunteur."""
+    _helper(tmp_path)
+    nu = {"mode": "lock", "machine_uuid": "uuid-1", "order_id": "ord-1"}
+    _rc, etat = _sync_ordre(tmp_path, machine, _RunsProc(), nu)
+    assert "ordre sans cible" in etat["departure"]
 
 
 def test_sans_ordre_l_assistant_n_est_jamais_lance(tmp_path, machine):
@@ -893,55 +986,246 @@ def test_une_politique_sans_bloc_de_depart_ne_change_rien(tmp_path, machine):
     assert etat["departure"] == "politique sans bloc de depart"
 
 
-def test_un_assistant_absent_de_l_image_se_dit_fort(tmp_path, machine):
-    """Une image d'avant cet assistant ne doit pas laisser croire a un
-    effacement."""
+# ------------------------------------------- contrat 9 : un seul canal d'ordre
+def test_un_ordre_servi_dans_une_charge_v2_n_est_pas_execute(tmp_path,
+                                                             machine):
+    """🔴 Contrat 9, cote lecture. `departure.order` ne voyage plus JAMAIS dans
+    une charge `bf-policy/v2` : Odoo sert `order-v1` des qu'un ordre attend,
+    que l'usager soit encore autorise ou non.
+
+    Pourquoi la branche v2 ne doit plus CHERCHER d'ordre : c'est ce chemin qui
+    portait l'ordre complet — login de la personne visee et mode — jusque dans
+    `policy-public.json` (0644), a chaque passage, tant que l'ordre echouait
+    (E2, C4). La source est fermee cote Odoo ; ici la branche ne le lit plus.
+
+    Et on ne se tait PAS : taire un ordre non execute rejouerait P2, ou la
+    fiche affiche « Ordre remis au poste » pour toujours sans qu'aucun des deux
+    bouts puisse le savoir. L'unite sort en echec, ce qui amene quelqu'un dans
+    l'heure.
+    """
+    _helper(tmp_path)
+    paths = _paths(tmp_path)
     runs = _RunsProc()
     rc = sync_mod.sync(machine_path=str(machine),
                        opener=_opener(json.dumps(_avec_ordre(ORDRE))),
-                       run=runs, **_paths(tmp_path))
+                       run=runs, **paths)
     assert rc == 1
-    etat = json.loads((tmp_path / "policy-sync.json").read_text())
+    assert [a for a in runs if "bluefox-wipe" in " ".join(a)] == []
+    etat = json.loads(Path(paths["state_path"]).read_text())
+    assert "NON EXECUTE" in etat["departure"]
+    assert sync_mod.SCHEMA_ORDRE in etat["departure"]
+    assert etat["status"] == "partial"
+    assert "ordre de depart" not in etat["changes"]
+    # La politique, elle, est legitime : elle s'applique. Seul le canal de
+    # l'ordre est faux.
+    assert Path(paths["provisioning_path"]).exists()
+
+
+def test_rien_de_l_ordre_n_entre_dans_la_copie_de_session(tmp_path, machine):
+    """🔴 E2 + contrat 9, la CEINTURE cote poste. `write_public` recopiait le
+    bloc `departure` tel quel dans policy-public.json, en 0644 : la personne
+    VISEE y lisait son propre login et le mode de l'ordre, donc qu'un
+    effacement l'attend. Elle a alors tout interet a ne plus rebrancher le
+    poste — ce qui desarme la fonction, puisqu'un poste qui ne se rebranche
+    jamais ne s'efface jamais — ou a sortir la cle maitresse du noyau pendant
+    que le volume est encore ouvert (W10).
+
+    Aucun essai ne regardait ce qui entre dans ce fichier sur le chemin de
+    depart. La ceinture n'est pas redondante avec la fermeture cote Odoo :
+    `load_apply` charge la copie de bfos_apply.py posee DANS L'IMAGE, qui peut
+    etre anterieure a ce lot.
+    """
+    _helper(tmp_path)
+    paths = _paths(tmp_path)
+    sync_mod.sync(machine_path=str(machine),
+                  opener=_opener(json.dumps(_avec_ordre(ORDRE))),
+                  run=_RunsProc(), **paths)
+    public = Path(paths["public_path"]).read_text()
+    assert oct(Path(paths["public_path"]).stat().st_mode)[-3:] == "644"
+    assert "departure" not in json.loads(public)
+    for secret in ("ord-1", "personne@exemple.test", "on_revoke", "wipe"):
+        assert secret not in public
+    # La politique complete, elle, est en 0600 : elle peut tout porter.
+    assert oct(Path(paths["provisioning_path"]).stat().st_mode)[-3:] == "600"
+
+
+def test_la_ceinture_tient_meme_avec_un_bfos_apply_d_avant_ce_lot(tmp_path):
+    """🔴 E2, la raison d'etre de la ceinture cote poste — et ce qu'un essai qui
+    passe par le vrai bfos_apply.py NE MESURE PAS.
+
+    `load_apply` charge la copie de bfos_apply.py posee DANS L'IMAGE, qui peut
+    etre anterieure a ce lot et donc ne rien expurger : le service tourne alors
+    avec un rendu qui recopie le bloc `departure` tel quel. La ceinture est au
+    point d'ECRITURE, pour que la protection ne depende ni du serveur ni de
+    l'age de l'image. Ici, le module est double par une copie « d'avant ».
+    """
+    class _ApplyDAvant:
+        """Le rendu d'avant #23941 : il n'expurge que le mot de passe."""
+
+        @staticmethod
+        def render_public_policy(policy):
+            public = json.loads(json.dumps(policy))
+            (public.get("install", {}).get("login") or {}).pop(
+                "bind_password", None)
+            return json.dumps(public, indent=2) + "\n"
+
+    cible = tmp_path / "policy-public.json"
+    policy = _avec_ordre(ORDRE)
+    assert sync_mod.write_public(str(cible), policy, _ApplyDAvant) is True
+    rendu = cible.read_text()
+    assert "departure" not in json.loads(rendu)
+    for trace in ("ord-1", "personne@exemple.test", "on_revoke"):
+        assert trace not in rendu
+    # Et la politique passee reste entiere : le service l'ecrit en 0600 juste
+    # avant, il ne faut pas la lui amputer.
+    assert policy["departure"]["order"]["order_id"] == "ord-1"
+
+
+def test_la_synchro_annonce_sa_capacite_de_depart(tmp_path, machine):
+    """🔴 Contrat 10. « Remis » ne doit plus se confondre avec « remis a un
+    agent qui sait le lire » (P2) : un poste du parc dont l'usager est encore
+    autorise recevait l'ordre, l'agent de production l'ignorait en sortant 0
+    unite verte, et la fiche disait « Ordre remis au poste » pour toujours —
+    parce que le poste n'annoncait AUCUNE version. Odoo inscrit la capacite sur
+    la fiche et refuse de poser un ordre sur un poste qui ne l'a pas annoncee.
+    """
+    vu = []
+
+    def ouvrir(req, timeout=None):
+        vu.append(req)
+        return _Resp(json.dumps(POLICY))
+
+    sync_mod.sync(machine_path=str(machine), opener=ouvrir, run=_RunsProc(),
+                  **_paths(tmp_path))
+    (req,) = vu
+    assert req.get_header("X-bfos-capabilities") == "departure"
+    assert sync_mod.EN_TETE_CAPACITES == "X-BFOS-Capabilities"
+    assert sync_mod.CAPACITES == ("departure",)
+
+
+def test_le_chemin_de_la_copie_de_session_est_le_meme_des_deux_cotes():
+    """La constante du service et celle de bfos_apply.py ne peuvent pas
+    diverger : le service ecrit, l'agent d'accueil lit. Meme forme d'essai que
+    pour `secours_voulu`, duplique entre deux scripts du kickstart."""
+    apply_mod = _load(APPLY_PATH, "bfos_apply_pour_essai")
+    assert CHEMINS_REELS["PUBLIC_JSON"] == apply_mod.PUBLIC_JSON
+
+
+def test_un_assistant_absent_de_l_image_se_dit_fort(tmp_path, machine):
+    """Une image d'avant cet assistant ne doit pas laisser croire a un
+    effacement."""
+    rc, etat = _sync_ordre(tmp_path, machine, _RunsProc())
+    assert rc == 1
     assert "ORDRE NON EXECUTE" in etat["departure"]
     assert "ordre de depart" not in etat["changes"]
 
 
-def test_un_ordre_refuse_par_l_assistant_fait_sortir_en_echec(tmp_path, machine):
+def test_un_ordre_refuse_par_l_assistant_fait_sortir_en_echec(tmp_path,
+                                                              machine):
     _helper(tmp_path)
-    runs = _RunsProc(code=2)
-    rc = sync_mod.sync(machine_path=str(machine),
-                       opener=_opener(json.dumps(_avec_ordre(ORDRE))),
-                       run=runs, **_paths(tmp_path))
+    rc, etat = _sync_ordre(tmp_path, machine, _RunsProc(code=2))
     assert rc == 1
-    etat = json.loads((tmp_path / "policy-sync.json").read_text())
     assert "REFUSE" in etat["departure"]
 
 
-def test_un_ordre_incomplet_reste_un_ordre_agi(tmp_path, machine):
-    """Code 1 : l'assistant a travaille mais n'a pas pu finir (compte rendu
-    remis a plus tard). Ce n'est pas un refus."""
+def test_un_ordre_incomplet_est_agi_mais_fait_sortir_en_echec(tmp_path,
+                                                              machine):
+    """W14. Code 1 : l'assistant a travaille mais n'a pas pu finir — efface,
+    compte rendu en attente, pas de redemarrage. C'est un ordre agi, et c'est
+    exactement l'etat qui exige un humain : l'unite ne doit pas rester VERTE.
+    """
     _helper(tmp_path)
-    runs = _RunsProc(code=1)
-    sync_mod.sync(machine_path=str(machine),
-                  opener=_opener(json.dumps(_avec_ordre(ORDRE))),
-                  run=runs, **_paths(tmp_path))
-    etat = json.loads((tmp_path / "policy-sync.json").read_text())
+    rc, etat = _sync_ordre(tmp_path, machine, _RunsProc(code=1))
+    assert rc == 1
     assert "incomplet" in etat["departure"]
+    assert "ordre de depart" in etat["changes"]
+    assert etat["status"] == "partial"
+
+
+@pytest.mark.parametrize("code", [127, 126, 3, 255])
+def test_un_code_inattendu_n_est_pas_un_ordre_agi(tmp_path, machine, code):
+    """W14. 127 (assistant present mais pas executable, interpreteur absent)
+    ecrivait « status: ok » et « ordre de depart » dans les changements, sur un
+    poste ou rien ne s'etait passe."""
+    _helper(tmp_path)
+    rc, etat = _sync_ordre(tmp_path, machine, _RunsProc(code=code))
+    assert rc == 1
+    assert "ORDRE NON EXECUTE" in etat["departure"]
+    assert "ordre de depart" not in etat["changes"]
+    assert etat["status"] == "partial"
+
+
+@pytest.mark.parametrize("signal", [15, 9])
+def test_un_assistant_tue_par_un_signal_est_peut_etre_agi(tmp_path, machine,
+                                                          signal):
+    """🔴 M6. `subprocess.run` rend un code NEGATIF quand l'enfant est tue par
+    un signal : -15 pour le SIGTERM du `TimeoutStartSec=5min` de l'unite, -9
+    pour le tueur de memoire. Il tombait dans « code inattendu », et l'etat
+    local affirmait « ORDRE NON EXECUTE » sur un poste dont la racine peut tres
+    bien etre deja effacee — le marqueur d'intention est ecrit avant le premier
+    luksErase, justement pour ce cas."""
+    _helper(tmp_path)
+    rc, etat = _sync_ordre(tmp_path, machine, _RunsProc(code=-signal))
+    assert rc == 1
+    assert "ORDRE NON EXECUTE" not in etat["departure"]
+    assert f"signal {signal}" in etat["departure"]
+    assert "PEUT-ETRE AGI" in etat["departure"]
+    # Un ordre peut-etre agi EST un changement : le passer sous silence, c'est
+    # ce qui faisait croire qu'il ne s'etait rien passe.
     assert "ordre de depart" in etat["changes"]
 
 
-def test_l_ordre_passe_avant_les_applications(tmp_path, machine):
-    """Un poste a effacer n'attend pas la convergence Flatpak."""
+def test_un_assistant_qui_ne_se_lance_pas_n_est_pas_un_ordre_agi(tmp_path,
+                                                                 machine):
+    """Present mais pas executable : `run` leve, et ce n'est pas un ordre."""
     _helper(tmp_path)
+
+    def run_qui_leve(argv, **kwargs):
+        if "bluefox-wipe" in " ".join(argv):
+            raise PermissionError("Permission denied")
+        return _RunsProc()(argv, **kwargs)
+
+    rc, etat = _sync_ordre(tmp_path, machine, run_qui_leve)
+    assert rc == 1
+    assert "ORDRE NON EXECUTE" in etat["departure"]
+    assert "ordre de depart" not in etat["changes"]
+
+
+def test_une_charge_d_ordre_ne_touche_a_rien_d_autre(tmp_path, machine):
+    """Contrat 9 : une charge d'ordre ne porte pas de politique, donc un poste
+    a effacer n'attend aucune convergence Flatpak — il n'y en a plus a faire.
+    Et le verrou, sssd et la copie de session restent intacts."""
+    _helper(tmp_path)
+    paths = _paths(tmp_path)
     runs = _RunsProc()
-    sync_mod.sync(machine_path=str(machine),
-                  opener=_opener(json.dumps(_avec_ordre(ORDRE))),
-                  run=runs, **_paths(tmp_path))
-    lignes = [" ".join(a) for a in runs]
-    rang_wipe = next(i for i, l in enumerate(lignes) if "bluefox-wipe" in l)
-    rang_flatpak = next(i for i, l in enumerate(lignes)
-                        if "system-flatpak-setup" in l)
-    assert rang_wipe < rang_flatpak
+    rc = sync_mod.sync(machine_path=str(machine),
+                       opener=_opener(json.dumps(_reduite(mode="lock"))),
+                       run=runs, **paths)
+    assert rc == 0
+    assert [a for a in runs if "system-flatpak-setup" in " ".join(a)] == []
+    assert not (tmp_path / "flatpaks" / "install").exists()
+    assert not Path(paths["public_path"]).exists()
+    assert not Path(paths["lock_path"]).exists()
+    assert not Path(paths["sssd_conf"]).exists()
+    assert not Path(paths["provisioning_path"]).exists()
+
+
+def test_un_wipe_reussi_arrete_la_synchronisation_sur_place(tmp_path, machine):
+    """W15. `systemctl reboot` REND LA MAIN TOUT DE SUITE : la synchro
+    continuait et pouvait reecrire les listes Flatpak, sssd.conf et le verrou
+    d'ecran pendant l'extinction d'un poste dont le disque vient d'etre
+    condamne."""
+    _helper(tmp_path)
+    paths = _paths(tmp_path)
+    runs = _RunsProc()
+    rc, etat = _sync_ordre(tmp_path, machine, runs)
+    assert rc == 0
+    assert [a for a in runs if "system-flatpak-setup" in " ".join(a)] == []
+    assert not (tmp_path / "flatpaks" / "install").exists()
+    assert not Path(paths["public_path"]).exists()
+    assert not Path(paths["lock_path"]).exists()
+    assert etat["status"] == "ok"
+    assert "ordre de depart" in etat["changes"]
 
 
 def test_un_compte_rendu_en_attente_se_rejoue_avant_tout(tmp_path, machine):
@@ -958,12 +1242,127 @@ def test_un_compte_rendu_en_attente_se_rejoue_avant_tout(tmp_path, machine):
     assert runs[0] == lances[0]
 
 
+def test_un_rejeu_qui_redemarre_arrete_la_synchronisation(tmp_path, machine):
+    """W15, au rejeu : l'assistant a enfin rendu compte et demande le
+    redemarrage. Rien ne se reecrit pendant l'extinction."""
+    _helper(tmp_path)
+    paths = _paths(tmp_path)
+    Path(paths["marker_path"]).write_text(json.dumps(
+        {"order_id": "ord-1", "result": "done", "reboot": True,
+         "machine_uuid": "uuid-1"}))
+    runs = _RunsProc(marker_a_retirer=paths["marker_path"])
+    rc = sync_mod.sync(machine_path=str(machine), opener=_opener(), run=runs,
+                       **paths)
+    assert rc == 0
+    # Le rejeu, et RIEN d'autre : pas meme la politique.
+    assert [a for a in runs if "system-flatpak-setup" in " ".join(a)] == []
+    assert not Path(paths["provisioning_path"]).exists()
+    assert not Path(paths["public_path"]).exists()
+    etat = json.loads(Path(paths["state_path"]).read_text())
+    assert etat["status"] == "reboot"
+
+
+def test_un_rejeu_de_verrouillage_laisse_la_synchro_continuer(tmp_path,
+                                                              machine):
+    """Un marqueur de « lock » ne demande aucun redemarrage : la synchro suit
+    son cours."""
+    _helper(tmp_path)
+    paths = _paths(tmp_path)
+    Path(paths["marker_path"]).write_text(json.dumps(
+        {"order_id": "ord-1", "result": "done", "reboot": False,
+         "machine_uuid": "uuid-1"}))
+    runs = _RunsProc(marker_a_retirer=paths["marker_path"])
+    rc = sync_mod.sync(machine_path=str(machine), opener=_opener(), run=runs,
+                       **paths)
+    assert rc == 0
+    assert Path(paths["provisioning_path"]).exists()
+
+
 def test_sans_marqueur_rien_ne_se_rejoue(tmp_path, machine):
     _helper(tmp_path)
     runs = _RunsProc()
     sync_mod.sync(machine_path=str(machine), opener=_opener(), run=runs,
                   **_paths(tmp_path))
     assert [a for a in runs if "rejouer" in " ".join(a)] == []
+
+
+def test_un_rejeu_qui_ne_passe_pas_ne_laisse_pas_l_unite_verte(tmp_path,
+                                                               machine):
+    """🔴 M5. Le code de l'assistant partait a la poubelle : un marqueur qu'il
+    REFUSE (resultat inutilisable, UUID d'un autre poste) le faisait rendre 0
+    sans rien faire, et l'etat ecrivait « compte rendu en attente rejoue
+    (code 0) » avec `status: ok`, toutes les heures, indefiniment, sur l'unite
+    la plus verte du poste. C'est le cas que W12 visait."""
+    _helper(tmp_path)
+    paths = _paths(tmp_path)
+    Path(paths["marker_path"]).write_text(json.dumps(
+        {"order_id": "ord-1", "result": "done", "reboot": False,
+         "machine_uuid": "uuid-1"}))
+    rc = sync_mod.sync(machine_path=str(machine), opener=_opener(),
+                       run=_RunsProc(code=1), **paths)
+    assert rc == 1
+    etat = json.loads(Path(paths["state_path"]).read_text())
+    assert etat["status"] == "partial"
+
+
+def test_une_trace_sans_suite_tient_l_unite_en_echec_et_entre_dans_l_etat(
+        tmp_path, machine):
+    """🔴 M9. La trace locale laissee par un compte rendu REFUSE par le serveur
+    (409, 400) — un ordre execute dont la fiche ne garde rien — n'etait relue
+    par rien, n'entrait pas dans policy-sync.json, et l'unite redevenait verte
+    au passage suivant. Cet etat exige un humain, et c'est l'humain qui retire
+    le fichier apres avoir reporte l'ordre sur la fiche."""
+    _helper(tmp_path)
+    paths = _paths(tmp_path)
+    Path(paths["trace_path"]).write_text(json.dumps(
+        {"order_id": "ord-1", "result": "done", "serveur": "HTTP 409"}))
+    rc = sync_mod.sync(machine_path=str(machine), opener=_opener(),
+                       run=_RunsProc(), **paths)
+    assert rc == 1
+    etat = json.loads(Path(paths["state_path"]).read_text())
+    assert paths["trace_path"] in etat["departure_sans_suite"]
+    assert etat["status"] == "partial"
+    # Et elle tient aussi quand la politique n'a meme pas pu etre tiree.
+    rc = sync_mod.sync(machine_path=str(machine),
+                       opener=_opener(exc=urllib.error.URLError("hors ligne")),
+                       run=_RunsProc(), **paths)
+    assert rc == 1
+    # Retiree, l'unite redevient verte : c'est bien le fichier qui la tenait.
+    Path(paths["trace_path"]).unlink()
+    assert sync_mod.sync(machine_path=str(machine), opener=_opener(),
+                         run=_RunsProc(), **paths) == 0
+
+
+# ------------------------------------------------------------- garde root
+def _main_avec_euid(tmp_path, machine, monkeypatch, euid):
+    """Le MEME appel, a l'euid pres. Rend (code, lancements)."""
+    _helper(tmp_path)
+    monkeypatch.setattr(sync_mod.os, "geteuid", lambda: euid)
+    runs = _RunsProc()
+    code = sync_mod.main(machine_path=str(machine), opener=_opener(),
+                         run=runs, **_paths(tmp_path))
+    return code, runs
+
+
+def test_sous_root_la_synchro_fait_bien_quelque_chose(tmp_path, machine,
+                                                      monkeypatch):
+    """Le temoin de l'essai suivant : sans ce temoin, « rien ne s'est passe »
+    serait vrai par construction. Meme famille que E3 — de ce cote-ci, la garde
+    root n'etait pas mesuree DU TOUT, parce que `main()` n'avait aucun
+    parametre et qu'un essai ne pouvait pas l'appeler sans toucher aux vrais
+    fichiers du poste."""
+    code, runs = _main_avec_euid(tmp_path, machine, monkeypatch, 0)
+    assert code == 0
+    assert runs != []
+    assert (tmp_path / "provisioning.json").exists()
+
+
+def test_hors_root_la_synchro_ne_fait_rien(tmp_path, machine, monkeypatch):
+    code, runs = _main_avec_euid(tmp_path, machine, monkeypatch, 1000)
+    assert code == 1
+    assert list(runs) == []
+    assert not (tmp_path / "provisioning.json").exists()
+    assert not (tmp_path / "policy-sync.json").exists()
 
 
 def test_une_charge_reduite_n_ecrase_pas_la_politique(tmp_path, machine):
@@ -979,10 +1378,7 @@ def test_une_charge_reduite_n_ecrase_pas_la_politique(tmp_path, machine):
                   **paths)
     avant = Path(paths["provisioning_path"]).read_text()
 
-    reduite = {"schema": "bf-policy/v2", "order_only": True, "install": {},
-               "user": {"login": "olivier@bluefoxconsultant.com"},
-               "departure": {"on_revoke": "wipe", "offline_max_days": 7,
-                             "order": ORDRE}}
+    reduite = _reduite()
     runs = _RunsProc()
     rc = sync_mod.sync(machine_path=str(machine),
                        opener=_opener(json.dumps(reduite)), run=runs, **paths)
@@ -996,13 +1392,65 @@ def test_une_charge_reduite_n_ecrase_pas_la_politique(tmp_path, machine):
     assert etat["changes"] == ["ordre de depart"]
 
 
+def test_la_charge_reduite_porte_son_propre_schema(tmp_path, machine):
+    """Contrat 1. ⚠️ Annoncee « bf-policy/v2 » avec un `install: {}` vide, la
+    charge reduite PASSAIT le controle de forme de l'agent en production : un
+    poste du parc ecrivait ce moignon dans son provisioning.json, perdait sa
+    configuration de session, et la charge lui revenait a chaque heure. Avec
+    son propre schema, l'agent d'avant tombe sur « reponse hors schema
+    bf-policy/v2 », n'ecrit RIEN et garde sa politique. Le nouveau la
+    reconnait et n'en tire QUE l'ordre."""
+    _helper(tmp_path)
+    paths = _paths(tmp_path)
+    reduite = _reduite()
+    assert reduite["schema"] == sync_mod.SCHEMA_ORDRE
+    assert "install" not in reduite
+    runs = _RunsProc()
+    rc = sync_mod.sync(machine_path=str(machine),
+                       opener=_opener(json.dumps(reduite)), run=runs, **paths)
+    assert rc == 0
+    assert not Path(paths["provisioning_path"]).exists()
+    assert not Path(paths["public_path"]).exists()
+    charge = json.loads([e for e in runs.entrees if e][0])
+    assert charge == ORDRE
+
+
+def test_la_charge_reduite_sans_order_only_est_reconnue_au_schema(tmp_path,
+                                                                 machine):
+    """`order_only` reste en ceinture : le schema suffit."""
+    _helper(tmp_path)
+    paths = _paths(tmp_path)
+    reduite = _reduite()
+    del reduite["order_only"]
+    runs = _RunsProc()
+    rc = sync_mod.sync(machine_path=str(machine),
+                       opener=_opener(json.dumps(reduite)), run=runs, **paths)
+    assert rc == 0
+    assert not Path(paths["provisioning_path"]).exists()
+    assert [a for a in runs if "bluefox-wipe" in " ".join(a)]
+
+
+def test_une_charge_reduite_a_l_ancien_schema_reste_traitee(tmp_path, machine):
+    """Ceinture : un serveur qui sert encore l'ancienne forme (v2 +
+    `order_only`) ne doit pas se retrouver sans chemin."""
+    _helper(tmp_path)
+    paths = _paths(tmp_path)
+    ancienne = {"schema": "bf-policy/v2", "order_only": True, "install": {},
+                "user": {"login": "olivier@bluefoxconsultant.com"},
+                "departure": {"on_revoke": "wipe", "offline_max_days": 7,
+                              "order": ORDRE}}
+    runs = _RunsProc()
+    rc = sync_mod.sync(machine_path=str(machine),
+                       opener=_opener(json.dumps(ancienne)), run=runs, **paths)
+    assert rc == 0
+    assert not Path(paths["provisioning_path"]).exists()
+    assert [a for a in runs if "bluefox-wipe" in " ".join(a)]
+
+
 def test_une_charge_reduite_ne_touche_a_rien_d_autre(tmp_path, machine):
     _helper(tmp_path)
     paths = _paths(tmp_path)
-    reduite = {"schema": "bf-policy/v2", "order_only": True, "install": {},
-               "user": {"login": "x"},
-               "departure": {"on_revoke": "lock", "offline_max_days": 7,
-                             "order": dict(ORDRE, mode="lock")}}
+    reduite = _reduite(mode="lock")
     runs = _RunsProc()
     sync_mod.sync(machine_path=str(machine), opener=_opener(json.dumps(reduite)),
                   run=runs, **paths)
@@ -1015,10 +1463,7 @@ def test_une_charge_reduite_ne_touche_a_rien_d_autre(tmp_path, machine):
 
 def test_une_charge_reduite_sans_assistant_sort_en_echec(tmp_path, machine):
     paths = _paths(tmp_path)
-    reduite = {"schema": "bf-policy/v2", "order_only": True, "install": {},
-               "user": {"login": "x"},
-               "departure": {"on_revoke": "wipe", "offline_max_days": 7,
-                             "order": ORDRE}}
+    reduite = _reduite()
     rc = sync_mod.sync(machine_path=str(machine),
                        opener=_opener(json.dumps(reduite)), run=_RunsProc(),
                        **paths)

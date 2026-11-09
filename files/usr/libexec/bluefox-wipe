@@ -2,13 +2,17 @@
 """Execute un ordre de depart recu par la politique (#23941, #27365).
 
 DEUX ORDRES, DEUX PORTEES
-« lock »  : purge le cache d'identifiants de sssd. La session hors ligne cesse
-            tout de suite au lieu de durer encore `offline_max_days`. Le disque
-            n'est pas touche, et un retour en ligne de la personne, si ses
-            acces lui sont rendus, remarche comme avant.
-« wipe »  : detruit les emplacements de cles LUKS des volumes chiffres du
-            poste. Le volume devient definitivement illisible, en une fraction
-            de seconde et sans reecrire un seul secteur. Il n'y a pas de retour.
+« lock »  : purge le cache d'identifiants de sssd et verrouille les sessions
+            ouvertes. La fenetre hors ligne se referme : au prochain ecran de
+            verrouillage, la personne ne peut plus ouvrir de session sur ce
+            poste sans que l'annuaire reponde, au lieu de pouvoir encore
+            pendant `offline_max_days`. Le disque n'est pas touche, et un
+            retour en ligne de la personne, si ses acces lui sont rendus,
+            remarche comme avant.
+« wipe »  : detruit les emplacements de cles LUKS des volumes chiffres DE CE
+            POSTE. Au prochain demarrage, le volume est illisible, sans avoir
+            reecrit un seul secteur. ⚠️ AU PROCHAIN DEMARRAGE SEULEMENT : voir
+            « LA FENETRE OU L'EFFACEMENT EST ENCORE REVERSIBLE ».
 
 POURQUOI UN FICHIER A PART
 Le chemin qui detruit des donnees se relit d'un seul morceau, sans avoir a
@@ -20,18 +24,52 @@ Les arguments d'un processus se lisent dans /proc par n'importe qui. L'ordre
 lui-meme n'est pas un secret, mais le compte rendu voyage avec le jeton de la
 machine, qui en est un : rien de tout cela ne passe par la ligne de commande.
 
-LA GARDE QUI COMPTE
-L'ordre nomme SA machine. On le compare a /etc/bluefox/machine.json AVANT de
-toucher a quoi que ce soit : une politique recopiee d'un autre poste, ou un
-fichier bricole a la main, n'efface pas celui-ci.
+LES GARDES QUI COMPTENT, TOUTES AVANT LE PREMIER GESTE
+  1. L'ordre nomme SA machine, comparee a /etc/bluefox/machine.json : une
+     politique recopiee d'un autre poste n'efface pas celui-ci.
+  2. L'adresse du compte rendu est verifiee AVANT d'effacer. Rien ne se
+     detruit avant d'avoir verifie qu'on pourra le dire : un endpoint dont on
+     ne sait pas deriver l'adresse de compte rendu donnait un disque efface,
+     un compte rendu impossible et une fiche « ordre remis » pour toujours.
+  3. Un marqueur d'INTENTION est ecrit avant le premier `luksErase`, et il est
+     RELU : s'il n'est pas la, l'ordre est refuse sans rien toucher. Coupe en
+     vol (SIGTERM du delai de l'unite, batterie retiree), le poste garde de
+     quoi dire « un effacement a commence, resultat inconnu » plutot que rien.
+  4. Les volumes effaces sont ceux de CE POSTE : voir `volumes_luks`.
+  5. Ce qui N'A PAS ete efface est toujours nomme dans le compte rendu, et un
+     volume de ce poste laisse intact fait commencer le detail par
+     « INCOMPLET » : voir `effacer_volumes`.
+
+HYPOTHESE NON LEVEE (#23941 M10, a mesurer en VM avant toute pose)
+Rien ne prouve encore que `cryptsetup luksErase --batch-mode` ABOUTIT sur le
+volume de la racine, actif et monte. luksErase ne reecrit pas les donnees, il
+ecrase les emplacements de cles de l'en-tete — ce qui demande un acces
+exclusif au peripherique que le device-mapper tient peut-etre deja. S'il
+refuse (« device busy »), la racine echoue SYSTEMATIQUEMENT et la fonction est
+morte sur tout le parc. C'est la troisieme garde de cette classe dans ce
+chantier (apres la ceinture des amovibles et le defaut de `seat_only`) : une
+mesure, pas une deduction. Essai dedie dans ops/bfos/essais-vm-23941.sh,
+presente comme la levee de cette hypothese et non comme une preuve
+d'effacement.
 
 LE REBOOT N'EST PAS LE DERNIER GESTE, LE COMPTE RENDU L'EST
 Apres l'effacement, le poste tourne encore : son volume est ouvert, et il le
 restera jusqu'au redemarrage. On s'en sert pour rendre compte au serveur, parce
 qu'un poste redemarre ne reparlera plus jamais, et que « efface » et « jamais
 rallume » ne doivent pas se confondre sur la fiche. Si le compte rendu ne passe
-pas, le poste NE redemarre PAS : il coupe les sessions, garde un marqueur, et
-la synchronisation suivante reessaiera de rendre compte avant de redemarrer.
+pas, le poste NE redemarre PAS : il verrouille les sessions, garde un marqueur,
+et la synchronisation suivante reessaiera de rendre compte avant de redemarrer.
+
+LA FENETRE OU L'EFFACEMENT EST ENCORE REVERSIBLE (limite assumee, #23941 W10)
+Tant que le poste tourne, le volume est OUVERT et sa cle maitresse est dans le
+noyau : `dmsetup table --showkeys` la rend, et `cryptsetup luksAddKey
+--master-key-file` reconstitue un emplacement de cle. L'effacement n'est donc
+irreversible qu'au redemarrage — et la fenetre d'attente du compte rendu, qui
+peut durer des heures, est precisement une fenetre ou un root local peut
+defaire ce que l'ordre vient de faire. On l'accepte : l'alternative serait de
+redemarrer sans rendre compte, donc de perdre la difference entre « efface » et
+« jamais rallume » sur la fiche, ce qui coute plus cher. A dire ainsi, et a ne
+jamais presenter comme « il n'y a pas de retour ».
 """
 from __future__ import annotations
 
@@ -45,6 +83,17 @@ import urllib.request
 
 MACHINE_JSON = "/etc/bluefox/machine.json"
 MARQUEUR = "/var/lib/bluefox-welcome/departure-pending.json"
+# Trace d'un ordre execute dont le serveur ne veut plus (409) ou qu'il refuse
+# definitivement (400...). Le marqueur, lui, est retire : il ferait rejouer le
+# meme refus toutes les heures.
+TRACE = "/var/lib/bluefox-welcome/departure-sans-suite.json"
+# Un marqueur que `lire_marqueur` REFUSE (resultat inutilisable, UUID d'un
+# autre poste, JSON abime) est range ici. Le laisser en place le faisait
+# rejouer a chaque heure, pour rien, et la synchro ecrivait « compte rendu en
+# attente rejoue (code 0) » avec un `status: ok` : une boucle muette,
+# indefinie, sur l'unite la plus verte du poste.
+MARQUEUR_REFUSE = "/var/lib/bluefox-welcome/departure-marqueur-refuse.json"
+CRYPTTAB = "/etc/crypttab"
 SSSD_DB = "/var/lib/sss/db"
 AUTH_PREFIX = "bfos-machine "
 TIMEOUT = 30
@@ -52,16 +101,83 @@ TIMEOUT = 30
 # une heure, et une coupure longue ne doit pas tenir le poste en l'air.
 ESSAIS_RAPPORT = 3
 ATTENTE_RAPPORT = 5
+# Les points de montage qui designent le volume du systeme. /sysroot : sur une
+# image ostree, c'est la que le volume de la racine est monte.
+MONTAGES_RACINE = ("/", "/sysroot")
+# Les options de /etc/crypttab (4e champ) qui disent « ce volume n'est pas
+# monte au demarrage de ce poste » : c'est la signature d'un disque chiffre
+# EXTERNE — un disque de sauvegarde, typiquement. C'est LE discriminant de la
+# ceinture, et c'est un signal que le poste POSSEDE, ecrit par qui a installe
+# le poste. Voir `volumes_luks` pour ce qu'il remplace et pourquoi.
+OPTIONS_EXTERNES = ("noauto", "nofail")
+# Les colonnes de lsblk dont `volumes_luks` a besoin. PARTUUID est la parce
+# qu'une entree de crypttab peut nommer sa source en PARTUUID= : sans la
+# colonne, l'entree ne se raccroche a aucun volume et le volume est pris pour
+# « hors de ce poste ».
+# ⚠️ DEUX JEUX, DU PLUS RICHE AU PLUS VIEUX. lsblk REFUSE TOUTE la commande sur
+# une colonne qu'il ne connait pas : MOUNTPOINTS demande util-linux 2.37
+# (2021), PARTUUID 2.22. Un seul jeu faisait donc de `volumes_luks` une
+# fonction MORTE sur un hote plus ancien — « aucun volume retenu », donc echec
+# sur tous les postes de ce genre, la troisieme fois que ce chantier aurait
+# pose une garde qui tombe partout. Le repli explique aussi le `MOUNTPOINT`
+# singulier de `_montages`, qui ne pouvait jamais servir sans lui.
+JEUX_COLONNES_LSBLK = ("NAME,FSTYPE,UUID,PARTUUID,MOUNTPOINTS,RM,HOTPLUG",
+                       "NAME,FSTYPE,UUID,MOUNTPOINT,RM,HOTPLUG")
+# Ce qu'un compte rendu peut dire. Un marqueur qui porte autre chose est
+# refuse : on ne devine pas a la place du poste.
+RESULTATS = ("done", "failed", "refused")
+
+# Les quatre suites possibles d'un compte rendu. Elles ne se traitent pas
+# pareil, et les confondre a coute deux defauts : un 409 pris pour un succes
+# (marqueur jete, poste redemarre, aucune trace nulle part) et un 400 reessaye
+# a l'infini : 10 s brulees a chaque passage, et le redemarrage empeche
+# pour toujours.
+RAPPORT_OK = "ok"
+RAPPORT_CONFLIT = "conflit"
+RAPPORT_PERMANENT = "permanent"
+RAPPORT_PASSAGER = "passager"
+# 4xx qui ne se reparent pas en attendant. 429 et 408 n'en sont pas.
+CODES_PERMANENTS = (400, 401, 403, 404, 405, 410, 413, 414, 422)
+
+# Ce qu'un effacement peut avoir fait. « condamne » existe parce qu'un
+# effacement partiel qui a emporte la racine n'est PAS un echec : l'operateur
+# qui lit « echec » sur un poste dont la racine est morte prend la mauvaise
+# decision.
+EFFACE = "efface"
+CONDAMNE = "condamne"
+ECHEC = "echec"
 
 
 def log(msg):
     print(f"[bluefox-wipe] {msg}", file=sys.stderr, flush=True)
 
 
-def _run(cmd, run=subprocess.run):
-    """Lance une commande et rend (code, sortie). Ne leve pas."""
+def alerte(msg):
+    """Un etat qui exige un humain. Prefixe cherchable dans le journal."""
+    log(f"ALERTE — {msg}")
+
+
+def _run(cmd, run=None, entree=None):
+    """Lance une commande et rend (code, sortie). Ne leve pas.
+
+    ⚠️ `run` SE RESOUT A L'APPEL, jamais a la definition. Avec
+    `run=subprocess.run` en valeur par defaut, la reference etait liee a
+    l'import : un double installe par `monkeypatch.setattr(wipe.subprocess,
+    "run", ...)` n'etait JAMAIS consulte, et l'essai de la garde root
+    « aucune commande lancee » etait vrai par construction — il ne pouvait pas
+    echouer, et le mutant qui retire la garde survivait (E3 du tour 2).
+    """
+    # ⚠️ `run if run is not None`, JAMAIS `run or subprocess.run`. Les doubles
+    # de la suite d'essais sont des sous-classes de `list` : un double qui n'a
+    # encore rien enregistre est FAUX, et `or` repartait alors sur le vrai
+    # `subprocess.run`. Mesure a l'appui : avec `or`, la suite lancait pour de
+    # vrai `systemctl stop sssd`, `loginctl lock-sessions` et `sss_cache` sur
+    # la machine de developpement — polkit les a refuses, c'est tout ce qui a
+    # tenu. Le meme piege vaut pour `opener` et `dormir`.
+    run = run if run is not None else subprocess.run
     try:
-        proc = run(cmd, check=False, capture_output=True, text=True)
+        proc = run(cmd, check=False, capture_output=True, text=True,
+                   input=entree)
     except (OSError, ValueError) as exc:
         return 127, str(exc)
     sortie = ((proc.stdout or "") + (proc.stderr or "")).strip()
@@ -88,14 +204,28 @@ def lire_machine(path=MACHINE_JSON):
 
 
 def valider_ordre(ordre, machine):
-    """Rend (mode, raison_du_refus). `mode` est None si l'ordre est refuse."""
+    """Rend (mode, raison_du_refus). `mode` est None si l'ordre est refuse.
+
+    ⚠️ L'ADRESSE DU COMPTE RENDU SE VERIFIE ICI, donc avant le premier geste.
+    Rien ne se detruit avant d'avoir verifie qu'on pourra le dire : un endpoint
+    dont `url_rapport` ne sait rien tirer laissait un disque efface, un compte
+    rendu impossible, un poste jamais redemarre et une fiche « ordre remis »
+    pour toujours. Le refus, lui, ne coute rien.
+    """
     if not isinstance(ordre, dict):
         return None, "ordre illisible"
     mode = ordre.get("mode")
     if mode not in ("lock", "wipe"):
         return None, f"mode inconnu : {mode!r}"
-    if not ordre.get("order_id"):
+    order_id = ordre.get("order_id")
+    if order_id is None or order_id == "":
         return None, "ordre sans identifiant"
+    if not isinstance(order_id, str) or not order_id.strip():
+        # L'identifiant repart tel quel dans le compte rendu : un nombre, une
+        # liste ou un dict y deviendrait autre chose, et le serveur ne
+        # reconnaitrait pas son propre ordre.
+        return None, (f"identifiant d'ordre inattendu "
+                      f"({type(order_id).__name__})")
     vise = ordre.get("machine_uuid")
     if not vise:
         return None, "ordre sans machine_uuid"
@@ -104,112 +234,543 @@ def valider_ordre(ordre, machine):
         # d'autre parce qu'un fichier de politique s'est promene.
         return None, (f"ordre adresse a {vise!r}, ce poste est "
                       f"{machine.get('machine_uuid')!r}")
+    url = url_rapport(machine.get("endpoint"))
+    if not url:
+        return None, (f"endpoint inattendu : {machine.get('endpoint')!r} — "
+                      "aucune adresse de compte rendu, rien ne sera touche")
+    if not url.startswith("https://"):
+        return None, ("compte rendu impossible hors https — rien ne sera "
+                      "touche")
     return mode, ""
 
 
 # ------------------------------------------------------- cache sssd (lock)
-def purger_cache(seat=False, login="", run=subprocess.run):
+def nom_court(login):
+    """Forme courte d'un login, celle que sssd connait.
+
+    Odoo sert une adresse ; le compte d'annuaire porte ce qui precede
+    l'arobase. Meme regle que `_seat_username` de install/bfos_apply.py, et
+    pour la meme raison : `sss_cache -u personne@exemple.test` ne designe
+    personne, rend 0, et le cache reste en place — une purge qui dit « fait »
+    sans avoir rien purge.
+
+    ⚠️ UN NOM QUI COMMENCE PAR UN TIRET EST ECARTE (F14). La cible vient d'un
+    champ libre cote Odoo. Ce n'est pas une injection — l'ordre ne passe par
+    aucun interpreteur, et `_run` prend une LISTE d'arguments — mais
+    `sss_cache -u -E` ferait lire « -E » comme une option a `sss_cache`, donc
+    purger TOUT le cache sur un poste partage. Exactement le geste que le mode
+    cible existe pour ne pas faire.
+    """
+    nom = str(login or "").split("@")[0].strip()
+    return "" if nom.startswith("-") else nom
+
+
+# Retrait du mot de passe hache d'un seul usager du cache de sssd. L'attribut
+# `cachedPassword` vit dans l'entree de l'usager de
+# /var/lib/sss/db/cache_<domaine>.ldb ; `ldbmodify` (paquet ldb-tools) sait le
+# retirer, et aucun outil de sssd ne le fait. `replace:` sans valeur retire
+# l'attribut et ne se plaint pas s'il est deja absent — `delete:` echouerait.
+LDIF_RETRAIT_HACHE = ("dn: name={cible},cn=users,cn={domaine},cn=sysdb\n"
+                      "changetype: modify\n"
+                      "replace: cachedPassword\n"
+                      "-\n"
+                      "replace: cachedPasswordType\n")
+
+
+def _domaine_de_base(nom_fichier):
+    """« cache_bluefox.ldb » → « bluefox ». Rend "" hors d'un cache."""
+    if not (nom_fichier.startswith("cache_") and nom_fichier.endswith(".ldb")):
+        return ""
+    return nom_fichier[len("cache_"):-len(".ldb")]
+
+
+def _retirer_hache(cible, run=None):
+    """Retire le mot de passe hache de la SEULE cible. Rend (retire, note).
+
+    ⚠️ POURQUOI CE GESTE EXISTE (E1 du tour 2)
+    `sss_cache -u` invalide l'entree du cache, il ne retire PAS le mot de passe
+    hache — le commentaire du chemin complet le dit depuis le debut. Donc la
+    fenetre de `offline_max_days` restait OUVERTE apres un `lock` de poste
+    partage, et `couper_les_sessions` ne faisait que verrouiller un ecran que
+    la personne visee deverrouille avec son mot de passe intact. La branche
+    rendait pourtant « done », et la fiche affichait « Execute et confirme ».
+
+    ⚠️ SSSD EST ARRETE LE TEMPS DU GESTE. Il garde la base ouverte et sert sa
+    copie en memoire : modifier l'ldb sous lui ne garantit rien. L'arret ne
+    coute rien aux autres emprunteurs d'un poste partage — on ne retire QUE
+    l'attribut de la cible, aucune base n'est supprimee, et sssd revient dans
+    la seconde. C'est la difference avec le chemin complet, qui retire les
+    bases elles-memes.
+
+    L'outil peut manquer de l'image : on le dit alors, en clair, plutot que de
+    laisser la fiche croire la fenetre fermee.
+    """
+    try:
+        noms = sorted(os.listdir(SSSD_DB))
+    except FileNotFoundError:
+        return True, "aucune base de cache : aucun hache a retirer"
+    except OSError as exc:
+        return False, f"{SSSD_DB} illisible ({exc}) : hache non retire"
+    bases = [n for n in noms if _domaine_de_base(n)
+             and os.path.isfile(os.path.join(SSSD_DB, n))]
+    if not bases:
+        return True, "aucune base de cache : aucun hache a retirer"
+
+    code_stop, sortie_stop = _run(["systemctl", "stop", "sssd.service"],
+                                  run=run)
+    if code_stop != 0:
+        log(f"stop sssd avant le retrait du hache : {code_stop} {sortie_stop}")
+    faits, rates = 0, []
+    for nom in bases:
+        chemin = os.path.join(SSSD_DB, nom)
+        ldif = LDIF_RETRAIT_HACHE.format(cible=cible,
+                                         domaine=_domaine_de_base(nom))
+        code, sortie = _run(["ldbmodify", "-H", chemin], run=run, entree=ldif)
+        if code == 0:
+            faits += 1
+        else:
+            rates.append(f"{nom} ({code} {sortie[:60]})")
+    _run(["systemctl", "start", "sssd.service"], run=run)
+    if rates:
+        return False, (f"hache NON retire de {len(rates)} base(s) : "
+                       + ", ".join(rates))
+    if code_stop != 0:
+        # L'ldb a ete modifie, mais sssd tournait encore et sert sa copie en
+        # memoire : on ne peut pas affirmer la fenetre fermee.
+        return False, ("hache modifie mais sssd n'a pas pu etre arrete "
+                       f"(code {code_stop}) : retrait non demontrable")
+    return True, f"hache retire de {faits} base(s) de cache"
+
+
+def purger_cache(seat_only=False, target_login=None, run=None):
     """Ferme la fenetre hors ligne. Rend (ok, detail).
 
-    Sur un poste personnel, on invalide TOUT (`sss_cache -E`) et on retire les
-    bases : c'est le poste d'une personne qui part. Sur un poste partage, on
-    s'en tient a l'usager vise (`sss_cache -u`) : purger tout le cache
-    fermerait aussi la porte aux autres emprunteurs, qui n'ont rien demande.
+    LA CIBLE VIENT DE L'ORDRE, PAS DE LA POLITIQUE (contrat 2 de #23941)
+    ⚠️ La version precedente deduisait la portee de la politique locale
+    (`seat` present + `user.login` non vide). Or un poste partage porte
+    `"user": {"login": ""}` : la condition tombait a faux et la branche
+    « purger TOUT le cache » se prenait sur un poste partage. Tous les
+    emprunteurs perdaient leur cache, et avec un avant-poste LDAP injoignable
+    plus aucun compte d'annuaire n'ouvrait de session. L'inverse exact de la
+    garantie annoncee. La portee est donc dans l'ORDRE, jamais deduite ici.
+
+    Sur un poste partage (`seat_only`), on s'en tient a l'usager vise
+    (`sss_cache -u`, puis le retrait de son seul hache). Sans usager vise, on
+    ne purge RIEN : la branche destructrice ne doit jamais etre le defaut.
+    Sur un poste personnel, on invalide tout et on retire les bases.
+
+    ⚠️ LE VERDICT DU MODE CIBLE NE TIENT PLUS AU SEUL CODE DE `sss_cache -u`
+    (E1 du tour 2). Il rend 0 meme quand la cible ne designe personne, et il
+    n'enleve pas le hache : la branche rendait « done » sans avoir rien ferme.
+    On verifie donc que la cible EXISTE (un ordre qui ne designe personne n'est
+    pas un succes), on tente le retrait du hache, et si le hache reste, le
+    detail le DIT pour que la fiche l'affiche.
     """
     gestes = []
-    if seat and login:
-        code, sortie = _run(["sss_cache", "-u", login], run=run)
-        gestes.append(f"sss_cache -u {login} → {code}")
+    if seat_only:
+        cible = nom_court(target_login)
+        if not cible:
+            return False, ("ordre de poste partage sans usager vise : AUCUNE "
+                           "purge (le cache des autres emprunteurs reste en "
+                           "place)")
+        # (a) La cible existe-t-elle ? `sss_cache -u inconnu` rend 0 : son code
+        # ne distingue pas « cache invalide » de « personne de ce nom ».
+        code_getent, _sortie_getent = _run(["getent", "passwd", cible],
+                                           run=run)
+        if code_getent != 0:
+            log(f"getent passwd {cible} → {code_getent}")
+            return False, ("usager vise inconnu de ce poste (getent passwd → "
+                           f"{code_getent}) : AUCUNE purge, cet ordre ne "
+                           "designe personne")
+        code, sortie = _run(["sss_cache", "-u", cible], run=run)
+        # ⚠️ Le login ne voyage pas dans le detail : il part sur le reseau et
+        # s'inscrit sur la fiche (Loi 25). Le journal local, lui, le nomme.
+        gestes.append(f"sss_cache -u (usager vise) → {code}")
         if code != 0 and sortie:
-            log(sortie)
-    else:
-        code, sortie = _run(["sss_cache", "-E"], run=run)
-        gestes.append(f"sss_cache -E → {code}")
-        if code != 0 and sortie:
-            log(sortie)
-        # `sss_cache` invalide ; il ne retire pas le mot de passe hache du
-        # cache. Sans ce retrait, une session hors ligne reste possible.
-        code_stop, _ = _run(["systemctl", "stop", "sssd.service"], run=run)
-        gestes.append(f"stop sssd → {code_stop}")
-        retires, echecs = 0, 0
+            log(f"sss_cache -u {cible} : {sortie}")
+        # (b) Le hache, sans quoi la fenetre de offline_max_days reste ouverte.
+        retire, note = _retirer_hache(cible, run=run)
+        gestes.append(note)
+        if not retire:
+            # (c) Dit en clair, et au premier plan : la fiche l'affiche, et
+            # l'operateur doit savoir que le verrouillage est incomplet.
+            alerte("fenetre hors ligne NON fermee pour la cible : le mot de "
+                   "passe hache reste en cache (voir « Limites connues » du "
+                   "CHANGELOG)")
+            gestes.insert(0, "fenetre hors ligne NON fermee pour la cible : "
+                             "le mot de passe hache reste en cache")
+        return code == 0, "; ".join(gestes)
+
+    if target_login is None:
+        # Ordre d'un serveur qui ne sert pas encore la cible : pas de purge
+        # ciblee possible, donc purge complete — et on le DIT, pour que la
+        # fiche ne laisse pas croire a une purge d'emprunteur.
+        gestes.append("ordre sans cible : purge complete")
+    code, sortie = _run(["sss_cache", "-E"], run=run)
+    gestes.append(f"sss_cache -E → {code}")
+    if code != 0 and sortie:
+        log(sortie)
+    # `sss_cache` invalide ; il ne retire pas le mot de passe hache du
+    # cache. Sans ce retrait, une session hors ligne reste possible.
+    code_stop, sortie_stop = _run(["systemctl", "stop", "sssd.service"],
+                                  run=run)
+    gestes.append(f"stop sssd → {code_stop}")
+    if code_stop != 0 and sortie_stop:
+        log(sortie_stop)
+    retires, candidats, echecs = 0, 0, 0
+    try:
+        noms = sorted(os.listdir(SSSD_DB))
+    except FileNotFoundError:
+        noms = []
+        gestes.append(f"{SSSD_DB} absent : aucune base de cache en place")
+    except OSError as exc:
+        noms = []
+        log(f"{SSSD_DB} illisible ({exc})")
+        echecs += 1
+        gestes.append(f"{SSSD_DB} illisible")
+    for nom in noms:
+        chemin = os.path.join(SSSD_DB, nom)
+        if not os.path.isfile(chemin):
+            continue
+        candidats += 1
         try:
-            for nom in sorted(os.listdir(SSSD_DB)):
-                chemin = os.path.join(SSSD_DB, nom)
-                if not os.path.isfile(chemin):
-                    continue
-                try:
-                    os.unlink(chemin)
-                    retires += 1
-                except OSError as exc:
-                    echecs += 1
-                    log(f"{chemin} non retire ({exc})")
+            os.unlink(chemin)
+            retires += 1
         except OSError as exc:
-            log(f"{SSSD_DB} illisible ({exc})")
             echecs += 1
-        gestes.append(f"{retires} fichier(s) de cache retire(s)")
-        code_start, _ = _run(["systemctl", "start", "sssd.service"], run=run)
-        gestes.append(f"start sssd → {code_start}")
-        if echecs:
-            return False, "; ".join(gestes)
-    return code == 0, "; ".join(gestes)
+            log(f"{chemin} non retire ({exc})")
+    if candidats:
+        gestes.append(f"{retires}/{candidats} base(s) de cache retiree(s)")
+    code_start, _ = _run(["systemctl", "start", "sssd.service"], run=run)
+    gestes.append(f"start sssd → {code_start}")
+    # ⚠️ LE VERDICT NE TIENT PAS AU SEUL CODE DE `sss_cache`. Un `stop sssd` en
+    # echec laisse le demon reecrire ses bases derriere nous, et un repertoire
+    # de bases dont rien n'a ete retire ne demontre aucune fermeture de la
+    # fenetre hors ligne. Dire « fait » dans ces cas-la archivait la fiche sur
+    # une garantie non tenue. `start sssd` n'entre pas dans le verdict : son
+    # echec est genant, mais il ne rouvre pas la fenetre.
+    ok = (code == 0 and code_stop == 0 and echecs == 0
+          and (candidats == 0 or retires == candidats))
+    return ok, "; ".join(gestes)
 
 
 # --------------------------------------------------------- volumes (wipe)
-def volumes_luks(run=subprocess.run):
-    """Les volumes chiffres du poste, par leur chemin de peripherique.
+def _cle_de_source(source):
+    """Normalise une source de /etc/crypttab en cle comparable a lsblk.
 
-    Passe par `lsblk` plutot que par /etc/crypttab : crypttab nomme des UUID et
-    peut mentionner un volume absent, alors que lsblk dit ce qui est la.
+    ⚠️ CRYPTTAB NE NOMME PAS QUE DES « UUID= » (B1 du tour 2). La version
+    precedente ne reconnaissait que cette forme et JETAIT les autres : un poste
+    dont crypttab nomme son volume en /dev/..., en /dev/disk/by-uuid/... ou en
+    PARTUUID= voyait son propre volume classe « hors de ce poste », donc
+    ecarte, et le compte rendu disait « done, 1/1 » sur un poste dont un volume
+    chiffre gardait tous ses emplacements de cles. Le depot traite deja les
+    deux formes ailleurs (bluefox-tpm-enroll : `UUID=*` ET `/dev/*`).
     """
-    code, sortie = _run(
-        ["lsblk", "--json", "--paths", "--output", "NAME,FSTYPE"], run=run)
-    if code != 0:
-        log(f"lsblk a rendu {code} : {sortie}")
-        return []
+    source = (source or "").strip().strip('"')
+    if not source:
+        return None
+    haut = source.upper()
+    for prefixe, genre in (("UUID=", "uuid"), ("PARTUUID=", "partuuid")):
+        if haut.startswith(prefixe):
+            valeur = source[len(prefixe):].strip().lower()
+            return (genre, valeur) if valeur else None
+    if source.startswith("/dev/disk/by-uuid/"):
+        return "uuid", source.rsplit("/", 1)[1].lower()
+    if source.startswith("/dev/disk/by-partuuid/"):
+        return "partuuid", source.rsplit("/", 1)[1].lower()
+    if source.startswith("/dev/"):
+        # Un lien de /dev/disk/by-id ou by-path pointe sur le vrai noeud :
+        # `realpath` le ramene a ce que lsblk --paths affiche. Sur un chemin
+        # qui n'existe pas (essais), il rend le chemin tel quel.
+        return "dev", os.path.realpath(source)
+    return None
+
+
+def entrees_crypttab(path=None):
+    """Les volumes chiffres que CE poste declare. Rend {cle: options}.
+
+    `cle` est ce que rend `_cle_de_source` ; `options` est l'ensemble des
+    options du 4e champ, en minuscules.
+
+    POURQUOI crypttab EN PLUS DE lsblk
+    lsblk dit ce qui est branche, pas ce qui appartient au poste : un SSD
+    personnel chiffre, un disque client en recuperation ou le disque de
+    sauvegarde du labo branche au moment du passage horaire y figurent
+    exactement comme le disque du systeme. crypttab, lui, est la liste que le
+    poste tient de SES volumes : c'est elle qui donne le mandat.
+
+    POURQUOI LES OPTIONS, ET PAS SEULEMENT LES SOURCES
+    Le 4e champ est ce qui distingue un volume que le poste OUVRE au demarrage
+    d'un disque externe qu'il sait seulement ouvrir a la demande (`noauto`,
+    `nofail`). C'est le discriminant de la ceinture : voir `volumes_luks`.
+
+    Le chemin se relit A L'APPEL : fige a la definition, il ne se laisserait
+    ni configurer ni mettre sous essai.
+    """
+    path = path or CRYPTTAB
+    entrees = {}
+    try:
+        with open(path) as fh:
+            lignes = fh.readlines()
+    except OSError as exc:
+        # Pas de crypttab : il reste le volume qui porte la racine. On ne
+        # retient rien d'autre, et `effacer_volumes` le dira.
+        log(f"{path} illisible ({exc})")
+        return entrees
+    for ligne in lignes:
+        ligne = ligne.strip()
+        if not ligne or ligne.startswith("#"):
+            continue
+        champs = ligne.split()
+        if len(champs) < 2:
+            continue
+        cle = _cle_de_source(champs[1])
+        if cle is None:
+            log(f"{path} : source non reconnue ({champs[1]!r}) — ce volume "
+                "n'aura pas de mandat")
+            continue
+        options = set()
+        if len(champs) >= 4:
+            options = {o.strip().lower().split("=", 1)[0]
+                       for o in champs[3].split(",") if o.strip()}
+        # Deux lignes pour la meme source : les options se cumulent.
+        entrees.setdefault(cle, set()).update(options)
+    return entrees
+
+
+def _amovible(noeud):
+    """RM / HOTPLUG, en booleen (lsblk --json) comme en « 0 »/« 1 »."""
+    for cle in ("rm", "hotplug"):
+        valeur = noeud.get(cle)
+        if isinstance(valeur, str):
+            if valeur.strip() not in ("", "0", "false", "False"):
+                return True
+        elif valeur:
+            return True
+    return False
+
+
+def _montages(noeud):
+    """Points de montage d'un noeud : lsblk recent rend une liste
+    (MOUNTPOINTS), l'ancien une chaine (MOUNTPOINT)."""
+    points = noeud.get("mountpoints")
+    if not isinstance(points, list):
+        points = [noeud.get("mountpoint")]
+    return [p for p in points if p]
+
+
+def _porte_la_racine(noeud):
+    """Vrai si ce volume, ou l'un de ses descendants, porte la racine."""
+    if any(p in MONTAGES_RACINE for p in _montages(noeud)):
+        return True
+    return any(_porte_la_racine(enfant)
+               for enfant in (noeud.get("children") or [])
+               if isinstance(enfant, dict))
+
+
+def _options_du_volume(noeud, entrees):
+    """Les options crypttab de ce volume, ou None s'il n'y est pas declare.
+
+    Les trois formes de source se rencontrent sur un meme parc : UUID de
+    l'en-tete LUKS, PARTUUID de la partition, chemin de peripherique.
+    """
+    cles = [("uuid", str(noeud.get("uuid") or "").lower()),
+            ("partuuid", str(noeud.get("partuuid") or "").lower()),
+            ("dev", str(noeud.get("name") or ""))]
+    options = None
+    for cle in cles:
+        if not cle[1]:
+            continue
+        vues = entrees.get(cle)
+        if vues is not None:
+            options = set(vues) if options is None else options | vues
+    return options
+
+
+def volumes_luks(run=None, crypttab=None):
+    """Les volumes chiffres DE CE POSTE. Rend (retenus, ecartes).
+
+    Chaque entree est un dict : `dev` (chemin), `racine` (ce volume porte la
+    racine), `crypttab` (ce volume est declare dans /etc/crypttab, donc il
+    appartient a ce poste) et `motif` (ce qui l'a fait retenir, ou ecarter).
+
+    ⚠️ POURQUOI UN FILTRE, ET NON « tout volume LUKS que lsblk voit »
+    La premiere version effacait tout ce que lsblk montrait. Un SSD personnel
+    chiffre, un disque client en recuperation ou le disque de sauvegarde du
+    labo branche au moment du passage horaire etait donc detruit hors de tout
+    mandat — et le compte rendu disait « done, 2/2 ». On retient donc
+    l'intersection de lsblk avec ce qui appartient au poste :
+      - les volumes declares dans /etc/crypttab, quelle que soit la forme de
+        leur source (UUID=, PARTUUID=, /dev/..., /dev/disk/by-uuid/...) ;
+      - le volume qui porte la racine (il peut etre absent de crypttab : cle
+        TPM, deverrouillage par l'initramfs, racine sur un volume logique).
+
+    ⚠️ LE DISCRIMINANT DE LA CEINTURE EST `noauto`/`nofail`, PAS RM/HOTPLUG
+    (B1 du tour 2). Ce que la ceinture vise est nomme dans la conception : « un
+    disque de sauvegarde chiffre externe, souvent en `noauto` ». Ces options
+    sont dans le 4e champ de crypttab — un signal que le poste POSSEDE, ecrit
+    par qui l'a installe, qui dit exactement la bonne chose et qui ne depend
+    d'aucun bus. RM et HOTPLUG, eux, portent sur une entree non-racine le MEME
+    signal faux que sur la racine : un NVMe interne se declare tres souvent
+    HOTPLUG=1 parce que le bus PCIe NVMe l'est, le noyau dit vrai sur le BUS et
+    pas sur la propriete du disque. C'est deja le motif de la reprise du tour 1
+    pour la racine ; la garder sur les autres volumes laissait le meme defaut
+    en place pour le second NVMe d'un poste bi-disque, et faisait rapporter
+    « done, 1/1 » sur un poste dont un volume chiffre etait INTACT.
+    RM/HOTPLUG restent LUS, et seulement journalises : c'est un indice utile au
+    diagnostic, ce n'est pas un verdict.
+
+    ⚠️ LE VERDICT SE PREND APRES LE PARCOURS (M8 du tour 2). Un meme volume
+    remonte deux fois quand LUKS est sur un RAID (md0 apparait sous chaque
+    disque membre) ou en multipath. Decider en descendant le faisait atterrir
+    dans les DEUX tables — efface ET liste comme ecarte — selon l'ordre des
+    chemins. Les indices de tous les chemins se fusionnent d'abord, et chaque
+    volume n'a qu'un verdict.
+    """
+    crypttab = crypttab or CRYPTTAB
+    sortie = ""
+    for rang, colonnes in enumerate(JEUX_COLONNES_LSBLK):
+        code, sortie = _run(
+            ["lsblk", "--json", "--paths", "--output", colonnes], run=run)
+        if code == 0:
+            break
+        log(f"lsblk a rendu {code} sur « {colonnes} » : {sortie}")
+        if rang + 1 < len(JEUX_COLONNES_LSBLK):
+            log("nouvel essai avec un jeu de colonnes plus ancien")
+    else:
+        return [], []
     try:
         arbre = json.loads(sortie)
     except ValueError as exc:
         log(f"sortie de lsblk illisible ({exc})")
-        return []
+        return [], []
 
-    trouves = []
+    entrees = entrees_crypttab(crypttab)
+    vus = {}
 
-    def descendre(noeuds):
+    def descendre(noeuds, amovible=False):
         for noeud in noeuds or []:
             if not isinstance(noeud, dict):
                 continue
-            if noeud.get("fstype") == "crypto_LUKS" and noeud.get("name"):
-                trouves.append(noeud["name"])
-            descendre(noeud.get("children"))
+            # L'amovibilite se herite : lsblk la porte sur le disque, et la
+            # partition chiffree est son enfant.
+            mobile = amovible or _amovible(noeud)
+            nom = noeud.get("name")
+            if noeud.get("fstype") == "crypto_LUKS" and nom:
+                vu = vus.setdefault(nom, {"dev": nom, "racine": False,
+                                          "crypttab": False, "externe": False,
+                                          "amovible": False, "motif": ""})
+                vu["racine"] = vu["racine"] or _porte_la_racine(noeud)
+                vu["amovible"] = vu["amovible"] or mobile
+                options = _options_du_volume(noeud, entrees)
+                if options is not None:
+                    vu["crypttab"] = True
+                    vu["externe"] = (vu["externe"]
+                                     or bool(options & set(OPTIONS_EXTERNES)))
+            descendre(noeud.get("children"), mobile)
 
     descendre(arbre.get("blockdevices"))
-    # dict.fromkeys : un meme volume peut remonter deux fois (multipath).
-    return list(dict.fromkeys(trouves))
+
+    retenus, ecartes = [], []
+    for vu in vus.values():
+        if vu["amovible"]:
+            # Journalise, jamais decisif : voir la docstring.
+            log(f"{vu['dev']} est marque amovible (RM/HOTPLUG) — indice du "
+                "BUS, pas de la propriete du disque : sans effet sur le "
+                "verdict")
+        if vu["racine"]:
+            vu["motif"] = "racine"
+            retenus.append(vu)
+        elif vu["crypttab"] and vu["externe"]:
+            vu["motif"] = f"externe ({'/'.join(OPTIONS_EXTERNES)} dans "\
+                          f"{crypttab})"
+            log(f"{vu['dev']} ecarte : declare {'/'.join(OPTIONS_EXTERNES)} "
+                f"dans {crypttab} — disque externe, hors du mandat de depart")
+            ecartes.append(vu)
+        elif vu["crypttab"]:
+            vu["motif"] = "crypttab"
+            retenus.append(vu)
+        else:
+            vu["motif"] = "hors de ce poste"
+            log(f"{vu['dev']} ecarte : absent de {crypttab} et ne porte pas "
+                "la racine")
+            ecartes.append(vu)
+    return retenus, ecartes
 
 
-def effacer_volumes(run=subprocess.run):
-    """Detruit les emplacements de cles de chaque volume. Rend (ok, detail).
+def effacer_volumes(run=None, crypttab=None):
+    """Detruit les emplacements de cles des volumes de CE poste.
 
-    ⚠️ AUCUN VOLUME TROUVE N'EST PAS UN SUCCES. Rendre « fait » sans avoir rien
+    Rend (etat, detail), etat parmi EFFACE, CONDAMNE et ECHEC.
+
+    ⚠️ AUCUN VOLUME RETENU N'EST PAS UN SUCCES. Rendre « fait » sans avoir rien
     efface ferait basculer la fiche en « efface » sur un poste intact : c'est
     le mensonge le plus couteux que ce chemin pourrait raconter.
+
+    ⚠️ UN EFFACEMENT PARTIEL QUI A EMPORTE LA RACINE N'EST PAS UN ECHEC. Le
+    poste ne redemarrera plus ; dire « echec » envoie l'operateur chercher un
+    probleme de reseau sur un disque mort, et le reste du depart (purge du
+    cache, sessions coupees, compte rendu) n'avait pas lieu. On le nomme
+    « disque condamne », et le detail dit lequel des deux cas on est.
+
+    ⚠️ LA FRACTION SE COMPTE SUR LES VOLUMES CHIFFRES VUS, PAS SUR LES RETENUS
+    (B1 du tour 2). Avec `len(retenus)` au denominateur, un volume ECARTE
+    disparaissait des DEUX cotes de la fraction : le poste rapportait
+    « done, 1/1 volume(s) efface(s) » alors qu'un second volume chiffre gardait
+    tous ses emplacements de cles, dont celui de la personne qui part, qui en a
+    la phrase. Odoo archivait, affichait « Efface », levait le marqueur de
+    sequestre, et un gardien retirait la phrase de secours du seul volume
+    encore lisible. Les ecartes et leur motif sont donc dans le detail sur
+    TOUTES les branches, jamais seulement sur « aucun volume retenu ».
+
+    ⚠️ UN VOLUME DE CE POSTE NON TRAITE NE SE RAPPORTE PAS EN « done » NU. Un
+    volume ecarte qui est une entree de crypttab appartient au poste : le
+    detail commence alors par « INCOMPLET : n volume(s) non traite(s) », en
+    tete pour survivre a la troncature a 255 caracteres du compte rendu. On ne
+    rapporte pas `failed` pour autant : ecarter un disque de sauvegarde externe
+    est le comportement VOULU de la ceinture, et un echec sur tout poste qui en
+    porte un serait une fonction morte, pas une garde.
     """
-    volumes = volumes_luks(run=run)
-    if not volumes:
-        return False, ("aucun volume LUKS trouve : rien n'a ete efface "
-                       "(poste non chiffre, ou lsblk indisponible)")
-    faits, rates = [], []
-    for dev in volumes:
+    retenus, ecartes = volumes_luks(run=run, crypttab=crypttab)
+    vus = len(retenus) + len(ecartes)
+    resume = ""
+    if ecartes:
+        resume = " ; ecartes : " + ", ".join(
+            f"{e['dev']} ({e['motif']})" for e in ecartes)
+    # Un ecarte declare dans crypttab appartient a ce poste : il manque.
+    non_traites = [e for e in ecartes if e["crypttab"]]
+    prefixe = ""
+    if non_traites:
+        prefixe = (f"INCOMPLET : {len(non_traites)} volume(s) non traite(s) "
+                   f"({', '.join(e['dev'] for e in non_traites)}) ; ")
+
+    if not retenus:
+        return ECHEC, ("aucun volume LUKS de ce poste retenu : rien n'a ete "
+                       "efface (poste non chiffre, crypttab muet, ou lsblk "
+                       "indisponible)" + resume)
+
+    faits, rates, racine_faite = [], [], False
+    for volume in retenus:
         code, sortie = _run(
-            ["cryptsetup", "luksErase", "--batch-mode", dev], run=run)
+            ["cryptsetup", "luksErase", "--batch-mode", volume["dev"]],
+            run=run)
         if code == 0:
-            faits.append(dev)
+            faits.append(volume["dev"])
+            racine_faite = racine_faite or volume["racine"]
         else:
-            rates.append(f"{dev} ({code} {sortie[:60]})")
-    detail = f"{len(faits)}/{len(volumes)} volume(s) efface(s)"
+            rates.append(f"{volume['dev']} ({code} {sortie[:60]})")
+    detail = f"{len(faits)}/{vus} volume(s) chiffre(s) efface(s)"
+    if faits:
+        detail += " : " + ", ".join(faits)
     if rates:
-        return False, detail + " ; echecs : " + ", ".join(rates)
-    return True, detail + " : " + ", ".join(faits)
+        detail += " ; echecs : " + ", ".join(rates)
+    detail += resume
+    if rates and not racine_faite:
+        return ECHEC, detail
+    if rates:
+        return CONDAMNE, prefixe + ("disque condamne : le volume de la racine "
+                                    "est efface, " + detail)
+    return EFFACE, prefixe + detail
 
 
 # ------------------------------------------------------------ compte rendu
@@ -227,71 +788,201 @@ def url_rapport(endpoint):
 
 
 def rendre_compte(machine, order_id, resultat, detail="", opener=None):
-    """POST du compte rendu. Rend (ok, note)."""
+    """POST du compte rendu. Rend (etat, note), etat parmi les RAPPORT_*.
+
+    POURQUOI QUATRE ETATS ET NON « ok / pas ok »
+    Un 409 (le serveur ne reconnait plus cet ordre) etait pris pour un succes :
+    marqueur jete, poste redemarre, et un disque reellement detruit dont il ne
+    restait AUCUNE trace nulle part. Un 400, lui, etait reessaye a l'infini :
+    10 s brulees a chaque passage horaire, et le redemarrage empeche pour
+    toujours. Les deux cas exigent un humain, aucun ne se repare en dormant.
+    """
     url = url_rapport(machine.get("endpoint"))
     if not url:
-        return False, f"endpoint inattendu : {machine.get('endpoint')!r}"
+        return RAPPORT_PERMANENT, (f"endpoint inattendu : "
+                                   f"{machine.get('endpoint')!r}")
     if not url.startswith("https://"):
-        return False, "compte rendu refuse hors https"
+        return RAPPORT_PERMANENT, "compte rendu refuse hors https"
     corps = json.dumps({
         "order_id": order_id,
         "result": resultat,
         "detail": detail[:255],
     }).encode()
-    req = urllib.request.Request(url, data=corps, method="POST")
-    req.add_header("Authorization", f"Bearer {AUTH_PREFIX}{machine['token']}")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("Accept", "application/json")
-    ouvrir = opener or urllib.request.urlopen
+    try:
+        req = urllib.request.Request(url, data=corps, method="POST")
+        req.add_header("Authorization",
+                       f"Bearer {AUTH_PREFIX}{machine.get('token') or ''}")
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Accept", "application/json")
+    except (ValueError, UnicodeEncodeError) as exc:
+        # `add_header` leve sur un jeton non latin-1 ou porteur d'un saut de
+        # ligne. Attrapee ICI, ou elle nait : plus haut, elle sortait du chemin
+        # destructeur sans marqueur, sans compte rendu et sans trace.
+        return RAPPORT_PERMANENT, f"en-tete impossible ({exc})"
+    # Meme regle que pour `run` dans `_run` : un double faux n'est pas une
+    # absence de double.
+    ouvrir = opener if opener is not None else urllib.request.urlopen
     try:
         with ouvrir(req, timeout=TIMEOUT) as resp:
             resp.read()
-            return True, f"HTTP {resp.status}"
+            return RAPPORT_OK, f"HTTP {resp.status}"
     except urllib.error.HTTPError as exc:
-        # 409 : le serveur ne reconnait plus cet ordre (annule, ou deja
-        # remplace). Inutile de reessayer, et inutile de garder le marqueur.
-        return (exc.code == 409), f"HTTP {exc.code}"
+        if exc.code == 409:
+            return RAPPORT_CONFLIT, "HTTP 409"
+        if exc.code in CODES_PERMANENTS:
+            return RAPPORT_PERMANENT, f"HTTP {exc.code}"
+        return RAPPORT_PASSAGER, f"HTTP {exc.code}"
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return False, f"serveur injoignable ({exc})"
+        return RAPPORT_PASSAGER, f"serveur injoignable ({exc})"
+    except ValueError as exc:
+        # urlopen leve ValueError sur une adresse qu'il ne sait pas ouvrir.
+        return RAPPORT_PERMANENT, f"adresse inutilisable ({exc})"
 
 
 def rendre_compte_avec_essais(machine, order_id, resultat, detail="",
-                              opener=None, dormir=time.sleep):
+                              opener=None, dormir=None):
+    """Reessaie, mais SEULEMENT ce qui vaut d'etre reessaye.
+
+    ⚠️ Un 400, un 409 ou une adresse inutilisable ne se reparent pas en
+    dormant. Les reessayer brulait 10 s a chaque passage et, dans le chemin
+    destructeur, empechait le redemarrage pour toujours.
+    """
+    dormir = dormir if dormir is not None else time.sleep
+    etat, note = RAPPORT_PASSAGER, "aucun essai"
     for essai in range(1, ESSAIS_RAPPORT + 1):
-        ok, note = rendre_compte(machine, order_id, resultat, detail,
-                                 opener=opener)
-        if ok:
-            return True, note
+        etat, note = rendre_compte(machine, order_id, resultat, detail,
+                                   opener=opener)
+        if etat != RAPPORT_PASSAGER:
+            return etat, note
         log(f"compte rendu essai {essai}/{ESSAIS_RAPPORT} : {note}")
         if essai < ESSAIS_RAPPORT:
             dormir(ATTENTE_RAPPORT)
-    return False, note
+    return etat, note
+
+
+def rapporter_refus(ordre, machine, raison, opener=None):
+    """Dit au serveur qu'un ordre a ete REFUSE par la garde.
+
+    POURQUOI LE DIRE PLUTOT QUE DE SE TAIRE
+    Sans ce compte rendu, un poste reenrole (nouvel UUID) laisse la fiche sur
+    « ordre remis » indefiniment : personne ne sait que l'ordre ne s'executera
+    jamais, et personne ne vient voir.
+
+    ⚠️ L'ADRESSE SE VERIFIE SANS ORDRE VALIDE : on rend compte avec
+    l'`order_id` RECU, tel quel, sans rien en deduire. Un identifiant que
+    le serveur ne reconnait plus rend 409, et il en garde la trace.
+    Un seul essai : un ordre non confirme revient a la synchro suivante.
+    """
+    if not isinstance(ordre, dict):
+        return
+    order_id = ordre.get("order_id")
+    if not isinstance(order_id, str) or not order_id.strip():
+        log("refus non rapporte : l'ordre ne porte pas d'identifiant lisible")
+        return
+    etat, note = rendre_compte(machine, order_id, "refused", raison,
+                               opener=opener)
+    log(f"refus rapporte au serveur : {etat} ({note})")
 
 
 # --------------------------------------------------------------- marqueur
-def ecrire_marqueur(order_id, resultat, detail, redemarrer):
-    """Garde ce qui reste a dire au serveur, pour la prochaine synchro."""
+def _ecrire_json(chemin, donnees, mode=0o600):
+    """Ecriture atomique, mode pose A LA CREATION du temporaire.
+
+    Meme forme que `atomic_write` de bluefox-policy-sync, et pour la meme
+    raison : avec un chmod posterieur, le fichier existe d'abord en 0644 sous
+    un nom previsible, dans le repertoire de destination. Le `replace` n'y
+    change rien, il arrive apres.
+    """
+    repertoire = os.path.dirname(chemin)
+    os.makedirs(repertoire, exist_ok=True)
+    tmp = os.path.join(repertoire, f".{os.path.basename(chemin)}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
     try:
-        os.makedirs(os.path.dirname(MARQUEUR), exist_ok=True)
-        tmp = MARQUEUR + ".tmp"
-        with open(tmp, "w") as fh:
-            json.dump({"order_id": order_id, "result": resultat,
-                       "detail": detail[:255], "reboot": bool(redemarrer),
-                       "written_at": time.strftime("%Y-%m-%dT%H:%M:%SZ",
-                                                   time.gmtime())}, fh)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, MARQUEUR)
+        os.fchmod(fd, mode)  # temporaire deja present : O_CREAT ignore le mode
+        fh = os.fdopen(fd, "w")
+    except BaseException:
+        os.close(fd)
+        raise
+    with fh:
+        json.dump(donnees, fh)
+    os.replace(tmp, chemin)
+
+
+def ecrire_marqueur(order_id, resultat, detail, redemarrer, machine=None):
+    """Garde ce qui reste a dire au serveur. Rend True s'il est bien en place.
+
+    ⚠️ LE MARQUEUR SE RELIT APRES ECRITURE, ET L'APPELANT EN TIENT COMPTE
+    (M7 du tour 2). L'`OSError` etait avalee et l'effacement continuait quand
+    meme : sur un /var plein ou remonte en lecture seule, on detruisait sans
+    avoir pu ecrire l'intention, et le contrat 6 — rien ne se detruit avant
+    d'avoir verifie qu'on pourra le dire — n'etait plus tenu. Le refus ne coute
+    rien, c'est le meme raisonnement que pour `url_rapport`.
+
+    POURQUOI IL S'ECRIT AUSSI AVANT DE DETRUIRE (marqueur d'intention)
+    Coupe en vol — SIGTERM du delai de l'unite, batterie retiree, exception
+    non attrapee — le poste restait « efface, sans marqueur, sans compte
+    rendu » : exactement la confusion que ce chemin pretend fermer. Le
+    marqueur d'intention porte donc `failed` et un detail qui dit ou on en
+    etait (« intention posee avant le premier luksErase, resultat non encore
+    connu ») : le serveur garde l'ordre ouvert et quelqu'un va voir, au lieu
+    d'archiver une fiche sur une fiction.
+
+    POURQUOI IL PORTE LE machine_uuid
+    Un /var recopie, une image clonee : un marqueur venu d'ailleurs ferait
+    rendre compte a la place d'un autre poste.
+    """
+    try:
+        _ecrire_json(MARQUEUR, {
+            "order_id": order_id,
+            "result": resultat,
+            "detail": detail[:255],
+            "reboot": bool(redemarrer),
+            "machine_uuid": (machine or {}).get("machine_uuid", ""),
+            "written_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        })
     except OSError as exc:
         log(f"marqueur non ecrit ({exc}) : le compte rendu est perdu")
+        return False
+    if lire_marqueur() is None:
+        # Ecriture « reussie » mais rien de relisable : /var plein (le replace
+        # a laisse un fichier tronque), systeme de fichiers en lecture seule
+        # qui ne leve qu'a la fermeture, montage disparu sous nos pieds.
+        log("marqueur relu absent ou illisible : le compte rendu est perdu")
+        return False
+    return True
 
 
-def lire_marqueur():
+def lire_marqueur(machine=None):
+    """Le compte rendu en attente, ou None.
+
+    REFUSE PLUTOT QUE DE DEVINER
+    - sans `result` utilisable, on ne sait pas quoi dire : la version
+      precedente mettait « done » par defaut, donc un marqueur bricole ou
+      tronque faisait archiver la fiche d'un poste dont on ne sait rien ;
+    - avec un `machine_uuid` qui ne colle pas, le marqueur vient d'ailleurs.
+    `machine` absent, l'uuid n'est pas verifie : cette forme-la ne sert qu'a
+    relire le fichier (diagnostic, essais), jamais a rendre compte.
+    """
     try:
         with open(MARQUEUR) as fh:
             data = json.load(fh)
     except (OSError, ValueError):
         return None
-    return data if isinstance(data, dict) and data.get("order_id") else None
+    if not isinstance(data, dict):
+        return None
+    order_id = data.get("order_id")
+    if not isinstance(order_id, str) or not order_id.strip():
+        return None
+    if data.get("result") not in RESULTATS:
+        log(f"marqueur sans resultat utilisable ({data.get('result')!r}) : "
+            "refuse")
+        return None
+    if machine is not None and data.get("machine_uuid") != machine.get(
+            "machine_uuid"):
+        log(f"marqueur adresse a {data.get('machine_uuid')!r}, ce poste est "
+            f"{machine.get('machine_uuid')!r} : refuse")
+        return None
+    return data
 
 
 def retirer_marqueur():
@@ -301,101 +992,254 @@ def retirer_marqueur():
         pass
 
 
-# ------------------------------------------------------------------ gestes
-def couper_les_sessions(run=subprocess.run):
-    """Verrouille les sessions ouvertes, tout de suite.
+def ecarter_marqueur():
+    """Range un marqueur REFUSE en trace, et alerte UNE fois.
 
-    Pose entre l'effacement et le redemarrage : le volume reste ouvert tant que
-    la machine tourne, et il n'y a aucune raison de laisser la session en cours
-    continuer pendant qu'on essaie de rendre compte.
+    POURQUOI IL NE SUFFIT PAS DE LE REFUSER (M5 du tour 2)
+    `lire_marqueur` refuse un marqueur dont le resultat est inutilisable ou qui
+    nomme un autre poste — c'est bien ce que W12 demandait. Mais le fichier
+    restait en place : `rejouer` rendait 0 sans rien faire, la synchro ecrivait
+    « compte rendu en attente rejoue (code 0) » avec `status: ok`, et l'unite
+    restait VERTE, toutes les heures, indefiniment. Le renommer ferme la
+    boucle : au passage suivant il n'y a plus de marqueur, et la trace reste
+    pour l'humain.
     """
-    code, _ = _run(["loginctl", "lock-sessions"], run=run)
+    try:
+        os.replace(MARQUEUR, MARQUEUR_REFUSE)
+    except OSError as exc:
+        log(f"marqueur refuse non range ({exc})")
+        return False
+    alerte(f"marqueur de compte rendu REFUSE (resultat inutilisable ou UUID "
+           f"d'un autre poste) : range dans {MARQUEUR_REFUSE}. Rien n'a ete "
+           "rapporte au serveur ; un humain doit regarder ce poste.")
+    return True
+
+
+def ecrire_trace(order_id, resultat, detail, note, machine=None):
+    """Garde sur place un compte rendu que le serveur ne prendra jamais.
+
+    Un 409 (ordre annule ou remplace pendant l'execution) ou un refus
+    definitif laissait le poste jeter son marqueur en silence : un disque
+    detruit, une fiche qui n'en garde rien, et personne pour le savoir. La
+    trace ne remplace pas la fiche — elle donne de quoi reconstituer l'ordre
+    quand un humain vient voir.
+    """
+    try:
+        _ecrire_json(TRACE, {
+            "order_id": order_id,
+            "result": resultat,
+            "detail": detail[:255],
+            "serveur": note,
+            "machine_uuid": (machine or {}).get("machine_uuid", ""),
+            "written_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        })
+        log(f"trace locale gardee dans {TRACE}")
+    except OSError as exc:
+        log(f"trace locale non ecrite ({exc})")
+
+
+# ------------------------------------------------------------------ gestes
+def couper_les_sessions(run=None):
+    """Verrouille les sessions ouvertes, tout de suite. Rend True si c'est
+    passe.
+
+    La purge du cache ne touche PAS une session deja ouverte : sans ce geste,
+    un `lock` laissait la personne continuer sa session jusqu'a son prochain
+    verrouillage d'ecran. Le chemin « wipe » le faisait deja : le volume reste
+    ouvert tant que la machine tourne, et il n'y a aucune raison de laisser la
+    session continuer pendant qu'on essaie de rendre compte.
+
+    ⚠️ `lock-sessions` verrouille TOUTES les sessions ouvertes, y compris sur
+    un poste partage. Ce n'est pas une expulsion : les autres emprunteurs
+    deverrouillent avec leur mot de passe, leur cache etant intact. Seule la
+    personne visee ne peut plus, puisque le sien vient d'etre purge.
+    """
+    code, sortie = _run(["loginctl", "lock-sessions"], run=run)
+    if code != 0 and sortie:
+        log(f"loginctl lock-sessions : {sortie}")
     return code == 0
 
 
-def redemarrer(run=subprocess.run):
+def redemarrer_le_poste(run=None):
+    """Demande le redemarrage. Rend True s'il a ete accepte.
+
+    ⚠️ LE CODE DE `systemctl reboot` SE LIT (M4 du tour 2). Il partait a la
+    poubelle. S'il echoue — bus systemd injoignable, inhibiteur pose par une
+    application, unite de redemarrage en panne — la fiche est deja `done` et
+    archivee, le marqueur est parti, et le poste TOURNE avec son volume ouvert
+    et sa cle maitresse dans le noyau : la fenetre reversible de W10, cette
+    fois SANS borne de temps, alors que le CHANGELOG la borne a l'attente du
+    compte rendu. On alerte, on reessaie en forcant (`systemctl --force
+    reboot`, qui court-circuite l'arret ordonne des unites), et l'appelant fait
+    sortir le programme en echec si rien n'a pris.
+    """
     log("redemarrage")
-    _run(["systemctl", "reboot"], run=run)
+    code, sortie = _run(["systemctl", "reboot"], run=run)
+    if code == 0:
+        return True
+    alerte(f"« systemctl reboot » a rendu {code} ({sortie[:120]}) : le poste "
+           "tourne encore, son volume est OUVERT et sa cle maitresse est dans "
+           "le noyau — l'effacement reste reversible tant qu'il n'a pas "
+           "redemarre. Nouvel essai en forcant.")
+    code, sortie = _run(["systemctl", "--force", "reboot"], run=run)
+    if code == 0:
+        return True
+    alerte(f"« systemctl --force reboot » a rendu {code} ({sortie[:120]}) : "
+           "REDEMARRAGE IMPOSSIBLE. Un humain doit eteindre ce poste, et "
+           "jusque-la l'effacement n'est pas irreversible.")
+    return False
 
 
 # -------------------------------------------------------------------- main
-def executer(ordre, machine, run=subprocess.run, opener=None,
-             dormir=time.sleep):
+def _conclure(machine, order_id, resultat, detail, redemarrer,
+              run=None, opener=None, dormir=None):
+    """Rend compte, puis en tire les consequences. Rend le code de sortie.
+
+    Un seul endroit decide de ce qu'on fait d'un compte rendu : garder le
+    marqueur pour la synchro suivante (panne passagere), le remplacer par une
+    trace qui exige un humain (409, refus definitif), ou le retirer et
+    redemarrer (accepte).
+    """
+    etat, note = rendre_compte_avec_essais(machine, order_id, resultat, detail,
+                                           opener=opener, dormir=dormir)
+    if etat == RAPPORT_OK:
+        retirer_marqueur()
+        log(f"compte rendu « {resultat} » accepte ({note})")
+        if redemarrer and not redemarrer_le_poste(run=run):
+            # M4 : la fiche dit deja « efface » et le marqueur est parti ; un
+            # poste qui ne redemarre pas est un etat qui exige un humain.
+            return 1
+        return 0 if resultat == "done" else 1
+    if etat == RAPPORT_PASSAGER:
+        # ⚠️ PAS DE REDEMARRAGE : un poste redemarre ne reparlera plus, et la
+        # fiche resterait sur « ordre remis » sans jamais savoir. Les sessions
+        # sont coupees et, s'il y a eu effacement, le disque est condamne :
+        # attendre coute peu.
+        if not ecrire_marqueur(order_id, resultat, detail, redemarrer,
+                               machine):
+            alerte(f"compte rendu « {resultat} » de l'ordre « {order_id} » ni "
+                   "remis au serveur ni gardable sur place : il est PERDU. Un "
+                   "humain doit regarder ce poste.")
+        log(f"compte rendu remis a plus tard ({note})")
+        return 1
+    # 409 ou refus definitif. Insister ne sert a rien, et garder le marqueur
+    # ferait rejouer le meme refus toutes les heures sans jamais redemarrer.
+    ecrire_trace(order_id, resultat, detail, note, machine)
+    retirer_marqueur()
+    alerte(f"compte rendu « {resultat} » de l'ordre « {order_id} » NON PRIS "
+           f"par le serveur ({note}) : la fiche ne l'a pas. L'ordre, lui, a "
+           "ete execute. Pas de redemarrage, un humain doit voir ce poste.")
+    return 1
+
+
+def executer(ordre, machine, run=None, opener=None, dormir=None):
     """Execute un ordre valide. Rend le code de sortie du programme."""
     mode, refus = valider_ordre(ordre, machine)
     if not mode:
         log(f"ordre refuse : {refus}")
+        rapporter_refus(ordre, machine, refus, opener=opener)
         return 2
     order_id = ordre["order_id"]
-    seat = bool(ordre.get("seat"))
-    login = str(ordre.get("login") or "")
+    # La portee vient de l'ORDRE (contrat 2). `target_login` absent de l'ordre
+    # n'est pas la meme chose qu'un login vide : absent, il n'y a pas de purge
+    # ciblee possible et on le dit ; vide avec `seat_only`, on ne purge RIEN.
+    seat_only = bool(ordre.get("seat_only"))
+    cible = ordre["target_login"] if "target_login" in ordre else None
 
     if mode == "lock":
-        ok, detail = purger_cache(seat=seat, login=login, run=run)
+        ok, detail = purger_cache(seat_only=seat_only, target_login=cible,
+                                  run=run)
         log(f"verrouillage : {detail}")
-        envoye, note = rendre_compte_avec_essais(
-            machine, order_id, "done" if ok else "failed", detail,
-            opener=opener, dormir=dormir)
-        if not envoye:
-            # Le geste est idempotent : la synchro suivante reessaiera.
-            ecrire_marqueur(order_id, "done" if ok else "failed", detail, False)
-            log(f"compte rendu remis a plus tard ({note})")
-            return 1
-        retirer_marqueur()
-        return 0 if ok else 1
+        sessions = couper_les_sessions(run=run)
+        detail = (f"{detail} ; sessions : "
+                  f"{'verrouillees' if sessions else 'NON verrouillees'}")
+        return _conclure(machine, order_id, "done" if ok else "failed", detail,
+                         False, run=run, opener=opener, dormir=dormir)
 
     # mode == "wipe"
-    ok, detail = effacer_volumes(run=run)
-    log(f"effacement : {detail}")
-    if not ok:
-        # Rien d'irreversible n'a abouti : on le dit, et on ne redemarre pas.
-        envoye, note = rendre_compte_avec_essais(
-            machine, order_id, "failed", detail, opener=opener, dormir=dormir)
-        if not envoye:
-            ecrire_marqueur(order_id, "failed", detail, False)
-            log(f"compte rendu remis a plus tard ({note})")
+    # ⚠️ LE MARQUEUR D'INTENTION S'ECRIT AVANT LE PREMIER `luksErase`. Coupe en
+    # vol, le poste a alors de quoi dire « un effacement a commence, resultat
+    # inconnu » plutot que de laisser la fiche croire qu'il ne s'est rien
+    # passe. Il est remplace par le vrai resultat des que celui-ci est connu.
+    # ⚠️ ET SI LE MARQUEUR NE S'ECRIT PAS, ON NE DETRUIT RIEN (M7). /var plein,
+    # remonte en lecture seule : detruire sans avoir pu ecrire l'intention,
+    # c'est exactement ce que le contrat 6 interdit. Le refus ne coute rien.
+    if not ecrire_marqueur(order_id, "failed",
+                           "intention posee avant le premier luksErase, "
+                           "resultat non encore connu", False, machine):
+        raison = ("marqueur d'intention impossible a ecrire (/var plein ou en "
+                  "lecture seule) : rien n'a ete touche")
+        alerte(f"ordre « wipe » REFUSE — {raison}")
+        rapporter_refus(ordre, machine, raison, opener=opener)
+        return 2
+    try:
+        etat, detail = effacer_volumes(run=run)
+        log(f"effacement : {detail}")
+        if etat == ECHEC:
+            # Rien d'irreversible n'a abouti sur la racine : on le dit, et on
+            # ne redemarre pas.
+            return _conclure(machine, order_id, "failed", detail, False,
+                             run=run, opener=opener, dormir=dormir)
+        # A partir d'ici, le disque est illisible au prochain demarrage — mais
+        # PAS avant : sa cle maitresse est encore dans le noyau tant que le
+        # poste tourne (voir la limite en tete de fichier). Le marqueur porte
+        # desormais le vrai resultat.
+        if not ecrire_marqueur(order_id, "done", detail, True, machine):
+            alerte("le marqueur ne porte plus le vrai resultat : si le compte "
+                   "rendu ne passe pas, la synchro suivante n'aura rien a "
+                   "rejouer")
+        # Purge complete : le disque est condamne, la portee de l'ordre ne
+        # change plus rien pour les autres emprunteurs d'un poste partage.
+        purge_ok, purge_detail = purger_cache(seat_only=False, target_login="",
+                                              run=run)
+        log(f"cache : {purge_detail}")
+        sessions = couper_les_sessions(run=run)
+        detail = (f"{detail} ; cache : {'purge' if purge_ok else 'partiel'}"
+                  f" ; sessions : "
+                  f"{'verrouillees' if sessions else 'NON verrouillees'}")
+        return _conclure(machine, order_id, "done", detail, True, run=run,
+                         opener=opener, dormir=dormir)
+    except Exception as exc:  # noqa: BLE001 — rien n'en sort
+        # Large a dessein : une exception qui s'echappe d'ici laissait le poste
+        # « efface, sans marqueur, sans compte rendu ». Le marqueur, lui, est
+        # deja ecrit, et il reste.
+        alerte(f"chemin destructeur interrompu ({exc!r}) : le marqueur reste, "
+               "le poste ne redemarre pas")
         return 1
-
-    # A partir d'ici le disque est deja illisible au prochain demarrage.
-    purge_ok, purge_detail = purger_cache(seat=False, login=login, run=run)
-    log(f"cache : {purge_detail}")
-    couper_les_sessions(run=run)
-    detail = f"{detail} ; cache : {'purge' if purge_ok else 'partiel'}"
-    envoye, note = rendre_compte_avec_essais(
-        machine, order_id, "done", detail, opener=opener, dormir=dormir)
-    if not envoye:
-        # ⚠️ PAS DE REDEMARRAGE : un poste redemarre ne reparlera plus, et la
-        # fiche resterait sur « ordre remis » sans jamais savoir. Les sessions
-        # sont coupees, le disque est condamne : attendre coute peu.
-        ecrire_marqueur(order_id, "done", detail, True)
-        log(f"efface, compte rendu remis a plus tard ({note}) : pas de "
-            "redemarrage avant d'avoir rendu compte")
-        return 1
-    retirer_marqueur()
-    redemarrer(run=run)
-    return 0
+    finally:
+        log("sortie du chemin destructeur")
 
 
-def rejouer(machine, run=subprocess.run, opener=None, dormir=time.sleep):
+def rejouer(machine, run=None, opener=None, dormir=None):
     """Reessaie un compte rendu en attente. Rend le code de sortie."""
-    marqueur = lire_marqueur()
+    marqueur = lire_marqueur(machine)
     if not marqueur:
+        if os.path.exists(MARQUEUR):
+            # M5 : un marqueur present mais REFUSE se rejouait a vide toutes
+            # les heures, et l'unite restait verte. On le range, on alerte, et
+            # on sort en echec : cette fois, et une seule.
+            ecarter_marqueur()
+            return 1
         return 0
-    envoye, note = rendre_compte_avec_essais(
-        machine, marqueur["order_id"], marqueur.get("result", "done"),
-        marqueur.get("detail", ""), opener=opener, dormir=dormir)
-    if not envoye:
-        log(f"compte rendu toujours en attente ({note})")
-        return 1
-    retirer_marqueur()
-    log("compte rendu en attente enfin remis")
-    if marqueur.get("reboot"):
-        redemarrer(run=run)
-    return 0
+    return _conclure(machine, marqueur["order_id"], marqueur["result"],
+                     marqueur.get("detail", ""), bool(marqueur.get("reboot")),
+                     run=run, opener=opener, dormir=dormir)
 
 
-def main(argv=None):
-    argv = list(argv or sys.argv[1:])
+def main(argv=None, run=None, opener=None, dormir=None):
+    """⚠️ `run`, `opener` et `dormir` SONT DES PARAMETRES, et ils descendent
+    jusqu'au bout (E3 du tour 2). Sans eux, `main()` n'avait aucun moyen de se
+    faire donner un double : l'essai de la garde root installait le sien par
+    `monkeypatch.setattr(wipe.subprocess, "run", ...)`, que les valeurs par
+    defaut liees a l'import ne consultaient jamais. « Aucune commande lancee »
+    etait vrai par construction, et le mutant qui retire la garde survivait.
+    """
+    # ⚠️ `is not None` : avec `argv or sys.argv[1:]`, un `main([])` — « aucun
+    # argument », ce que tout appelant lit — repartait sur les arguments du
+    # PROCESSUS. Sous pytest, l'assistant recevait donc « -q » et refusait sur
+    # « argument inconnu » : meme famille de piege que `run or subprocess.run`,
+    # une liste vide est fausse.
+    argv = list(argv if argv is not None else sys.argv[1:])
     if os.geteuid() != 0:
         log("doit tourner en root")
         return 1
@@ -406,7 +1250,7 @@ def main(argv=None):
         log("poste non enrole : aucun ordre executable")
         return 1
     if argv and argv[0] == "--rejouer-le-compte-rendu":
-        return rejouer(machine)
+        return rejouer(machine, run=run, opener=opener, dormir=dormir)
     if argv:
         log(f"argument inconnu : {argv[0]}")
         return 2
@@ -415,7 +1259,7 @@ def main(argv=None):
     except ValueError as exc:
         log(f"ordre illisible sur l'entree standard ({exc})")
         return 2
-    return executer(ordre, machine)
+    return executer(ordre, machine, run=run, opener=opener, dormir=dormir)
 
 
 if __name__ == "__main__":
