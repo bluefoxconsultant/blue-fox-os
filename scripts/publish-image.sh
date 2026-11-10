@@ -93,6 +93,19 @@ die() {
     exit 1
 }
 
+# Relectures des verifications cosign de l'etape 7 (voir relire_cosign).
+# ⚠️ Un reglage non numerique ferait boucler SANS FIN (`[ x -ge y ]` sort en
+# erreur, donc la condition de sortie serait toujours fausse) : on refuse ici,
+# avant les treize minutes de build, pas a la derniere etape.
+LECTURES="${BFOS_LECTURES:-5}"
+PAUSE_LECTURE="${BFOS_PAUSE_LECTURE:-5}"
+for _v in "$LECTURES" "$PAUSE_LECTURE"; do
+    case "$_v" in
+        ''|*[!0-9]*) die "BFOS_LECTURES et BFOS_PAUSE_LECTURE doivent etre des entiers (recu : ${LECTURES} et ${PAUSE_LECTURE})." ;;
+    esac
+done
+[ "$LECTURES" -ge 1 ] || LECTURES=1
+
 # ⚠️ Defaut structurel releve par l'audit P5.2 : les etapes 5 a 7 operent sur
 # une image DEJA en ligne. Un echec de syft, de cosign attest ou du controle de
 # provenance laisse donc une image publiee et signee, sans SBOM — l'etat exact
@@ -747,6 +760,37 @@ cosign attest --yes \
     --key env://COSIGN_PRIVATE_KEY \
     "${IMAGE_REPO}@${IMAGE_INDEX_DIGEST}"
 
+# ⚠️ RELIRE AVANT DE CONCLURE (#27320, mesure du 2026-11-09). Sur la machine de
+# build, cosign 3.1.3 refuse par intermittence une signature ou une attestation
+# POURTANT PRESENTE : 4 echecs sur 9 lectures de la signature de bf, 2 sur 9 de
+# son attestation, sur des entrees identiques, alors que le registre sert l'index
+# des referents 10 fois sur 10 et que primetime1 (cosign 3.0.6) ne rate aucune
+# lecture. Une seule lecture ici faisait echouer une publication saine a la
+# DERNIERE etape, image en ligne, signee et attestee — et la reprise automatique
+# de maj-images.sh reconstruirait alors 13 minutes pour rien.
+# Le compte des lectures est dit : on ne remplace pas un faux echec par un
+# silence qui cache que le lecteur est malade.
+relire_cosign() {  # relire_cosign <commande...> : jusqu'a $LECTURES lectures
+    local n=0 err
+    err="$(mktemp)"
+    while :; do
+        n=$((n + 1))
+        if "$@" > /dev/null 2>"$err"; then
+            if [ "$n" -gt 1 ]; then
+                log "    verifiee a la ${n}e lecture (lecteur intermittent, #27320)"
+            fi
+            rm -f "$err"
+            return 0
+        fi
+        if [ "$n" -ge "$LECTURES" ]; then
+            head -n 3 "$err" | sed 's/^/[publish]     cause : /' >&2
+            rm -f "$err"
+            return 1
+        fi
+        sleep "$PAUSE_LECTURE"
+    done
+}
+
 # --- 7. verification -------------------------------------------------------
 log "7/7 verification signature + attestation + provenance"
 # COSIGN_PUB : la cle publique qui verifie (cosign.pub par defaut). Une image
@@ -754,8 +798,10 @@ log "7/7 verification signature + attestation + provenance"
 # COSIGN_PUB=files/usr/share/bluefox/keys/cosign-images-secours.pub (README).
 COSIGN_PUB="${COSIGN_PUB:-cosign.pub}"
 [ -s "$COSIGN_PUB" ] || die "cle publique de verification introuvable : ${COSIGN_PUB} (COSIGN_PUB)."
-cosign verify --key "$COSIGN_PUB" "$IMAGE" > /dev/null
-cosign verify-attestation --key "$COSIGN_PUB" --type spdxjson "$IMAGE" > /dev/null
+relire_cosign cosign verify --key "$COSIGN_PUB" "$IMAGE" \
+    || die "signature cosign absente ou invalide apres ${LECTURES} lectures."
+relire_cosign cosign verify-attestation --key "$COSIGN_PUB" --type spdxjson "$IMAGE" \
+    || die "attestation SBOM SPDX absente ou invalide apres ${LECTURES} lectures."
 
 # Provenance : relire l'etiquette telle que PUBLIEE, pas telle qu'on croit
 # l'avoir passee. Une variable non exportee, une recipe ou le bloc `labels:`
