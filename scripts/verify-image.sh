@@ -26,6 +26,9 @@
 #   SLUG=factice ./scripts/verify-image.sh
 #   COSIGN_PUB=<cle.pub> ./scripts/verify-image.sh   # autre cle que cosign.pub
 #   ./scripts/verify-image.sh --all           # les 3 tenants
+#   BFOS_LECTURES=1 ./scripts/verify-image.sh --all  # une seule lecture par
+#                                             # controle, pour mesurer le
+#                                             # flottement du lecteur (defaut 3)
 #
 # Sortie non nulle des qu'un controle echoue. Les controles s'enchainent tous :
 # on veut le tableau complet, pas le premier echec.
@@ -56,7 +59,8 @@ done
 # est sortie 5/5 puis « attestation ABSENTE » a deux minutes d'ecart, sur le
 # meme digest, sans aucune trace de la cause puisque stderr partait a la poubelle.
 ERREURS="$(mktemp)"
-trap 'rm -f "$ERREURS"' EXIT
+SORTIE="$(mktemp)"
+trap 'rm -f "$ERREURS" "$SORTIE"' EXIT
 # Pas de ❌ sur ces lignes : bfos_verify_daily.sh compte les ❌ pour l'alerte.
 cause() {
     local lignes
@@ -67,6 +71,65 @@ cause() {
     printf '%s\n' "$lignes" | cut -c1-300 | sed 's/^/[verify]        cause : /' >&2
 }
 
+# ⚠️ UNE SEULE LECTURE REND UN VERDICT TIRE AU SORT (#27320, mesure du 2026-11-09).
+# Sur la machine de build, cosign 3.1.3 refuse par intermittence une signature ou
+# une attestation POURTANT PRESENTE : 4 echecs sur 9 lectures de la signature de
+# bf, 2 sur 9 de son attestation, sur des entrees identiques, avec deux messages
+# qui alternent (« no valid bundles exist in registry », « no matching
+# attestations »). Ce n'est pas le registre (il sert l'index des referents 10 fois
+# sur 10 depuis deux hotes), ni le reseau, ni le journal de transparence (l'echec
+# survient avec ET sans --insecure-ignore-tlog), et de primetime1 (cosign 3.0.6)
+# aucune lecture ne rate. L'alerte du 2026-11-09 au matin etait donc fausse : elle
+# annoncait l'attestation de bf-surface absente deux minutes apres que la
+# publication l'ait verifiee 5/5 sur le meme digest.
+# On relit donc avant de crier. ⚠️ Mais la relecture ne CACHE pas le flottement :
+# le nombre de lectures qu'il a fallu est imprime, sinon on remplace une fausse
+# alerte par un silence qui ne dit plus que l'outil de lecture est malade.
+# BFOS_LECTURES=1 retrouve l'ancien comportement (utile pour mesurer le flottement).
+#
+# Pourquoi CINQ lectures et une pause de 5 s : 40 lectures d'affilee de la meme
+# attestation, le 2026-11-10, ont donne 12 echecs (30 %), en rafales de
+# 1, 1, 1, 1, 1, 1, 2 et 4 echecs CONSECUTIFS. A ce taux, lire une fois fait crier
+# faux presque chaque passage, trois lectures en laissent ~14 % (6 controles par
+# passage), cinq ~1 %. Les 4 pauses de 5 s etalent les cinq lectures sur ~65 s,
+# de quoi survivre a la rafale de 4 mesuree. Le cout n'est paye que quand ca va
+# mal : une attestation vraiment absente prend 5 lectures par controle, ~7 min
+# pour les 3 images, sous le delai de bfos_verify_daily.sh (900 s).
+# ⚠️ Le taux est EPISODIQUE (six passages verts du 2 au 7 novembre, 30 % le 10) et
+# les echecs arrivent en rafale : cinq lectures reduisent le faux cri, elles ne le
+# guerissent pas. Une rafale plus longue que la fenetre passera encore.
+LECTURES="${BFOS_LECTURES:-5}"
+PAUSE_LECTURE="${BFOS_PAUSE_LECTURE:-5}"
+ESSAIS=1
+# ⚠️ Un reglage non numerique ferait boucler `relire` SANS FIN : `[ x -ge y ]` sort
+# en erreur, donc la condition de sortie serait toujours fausse. On refuse net.
+for _v in "$LECTURES" "$PAUSE_LECTURE"; do
+    case "$_v" in
+        ''|*[!0-9]*) bad "BFOS_LECTURES et BFOS_PAUSE_LECTURE doivent etre des entiers (recu : ${LECTURES} et ${PAUSE_LECTURE})"; exit 1 ;;
+    esac
+done
+[ "$LECTURES" -ge 1 ] || LECTURES=1
+
+# relire <fichier de sortie> <commande...> : rejoue jusqu'a $LECTURES fois,
+# s'arrete au premier succes. La sortie standard du dernier essai va dans
+# <fichier de sortie>, son stderr dans $ERREURS (que cause() recopie), et le
+# nombre d'essais dans $ESSAIS.
+relire() {
+    local sortie="$1"; shift
+    local n=0
+    while :; do
+        n=$((n + 1))
+        if "$@" >"$sortie" 2>"$ERREURS"; then ESSAIS="$n"; return 0; fi
+        [ "$n" -ge "$LECTURES" ] && break
+        sleep "$PAUSE_LECTURE"
+    done
+    ESSAIS="$n"
+    return 1
+}
+
+# « (2e lecture) » quand il a fallu relire, rien quand la premiere a suffi.
+mention() { [ "${ESSAIS:-1}" -gt 1 ] && printf ' (%se lecture)' "$ESSAIS"; return 0; }
+
 verify_one() {
     local slug="$1"
     local image="${REGISTRY}/blue-fox-os-${slug}:${TAG}"
@@ -75,10 +138,10 @@ verify_one() {
     log "── ${image}"
 
     # 1. signature -----------------------------------------------------------
-    if cosign verify --key "$PUBKEY" "$image" >/dev/null 2>"$ERREURS"; then
-        ok "1/5 signature cosign valide"
+    if relire /dev/null cosign verify --key "$PUBKEY" "$image"; then
+        ok "1/5 signature cosign valide$(mention)"
     else
-        bad "1/5 signature cosign INVALIDE ou absente"
+        bad "1/5 signature cosign INVALIDE ou absente (${ESSAIS} lecture(s))"
         cause
         failures=$((failures + 1))
     fi
@@ -87,10 +150,11 @@ verify_one() {
     # ⚠️ C'est le controle qui manquait : les 3 images ont passe deux mois
     # signees et jamais attestees, sans qu'aucune commande ne le dise.
     local att=""
-    if att="$(cosign verify-attestation --key "$PUBKEY" --type spdxjson "$image" 2>"$ERREURS")"; then
-        ok "2/5 attestation SBOM SPDX presente et signee"
+    if relire "$SORTIE" cosign verify-attestation --key "$PUBKEY" --type spdxjson "$image"; then
+        att="$(cat "$SORTIE")"
+        ok "2/5 attestation SBOM SPDX presente et signee$(mention)"
     else
-        bad "2/5 attestation SBOM SPDX ABSENTE (blocage B1 de l'audit P5.2)"
+        bad "2/5 attestation SBOM SPDX ABSENTE (blocage B1 de l'audit P5.2) (${ESSAIS} lecture(s))"
         cause
         failures=$((failures + 1))
     fi
@@ -195,7 +259,10 @@ sys.exit(3 if bad_docs else 0)
     # Etiquette lue sur le REGISTRE, puis confrontee au depot : une revision
     # qu'on ne peut pas relire ne prouve rien de plus que pas de revision.
     local labels revision source
-    labels="$(skopeo inspect "docker://${image}" 2>/dev/null)"
+    # Meme relecture que pour cosign : un skopeo tombe une seule fois rendrait une
+    # etiquette vide, donc un ❌ « revision ABSENTE » sur une image bien etiquetee.
+    labels=""
+    relire "$SORTIE" skopeo inspect "docker://${image}" && labels="$(cat "$SORTIE")"
     revision="$(printf '%s' "$labels" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("Labels",{}).get("org.opencontainers.image.revision",""))' 2>/dev/null || true)"
     source="$(printf '%s' "$labels" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("Labels",{}).get("org.opencontainers.image.source",""))' 2>/dev/null || true)"
 
