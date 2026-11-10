@@ -1255,7 +1255,11 @@ def test_verify_image_relit_avant_de_conclure(tmp_path):
     bin_.mkdir()
     compteur = tmp_path / "compteur"
     compteur.mkdir()
-    image = "ghcr.io/bluefoxconsultant/blue-fox-os-factice"
+    # ⚠️ Le nom attendu du document SPDX se derive de REGISTRY, et la CI exporte
+    # REGISTRY=ghcr.io : on le fixe ici plutot que de coder le nom en dur, sinon
+    # l'essai passe au banc et rougit dans la CI.
+    registre = "ghcr.io/bluefoxconsultant"
+    image = f"{registre}/blue-fox-os-factice"
     charge = base64.b64encode(json.dumps({
         "subject": [{"name": image, "digest": {"sha256": "0" * 64}}],
         "predicateType": "https://spdx.dev/Document",
@@ -1278,7 +1282,7 @@ def test_verify_image_relit_avant_de_conclure(tmp_path):
         (bin_ / f).chmod(0o755)
     env = {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}",
            "COMPTEUR": str(compteur), "ENVELOPPE": str(enveloppe),
-           "BFOS_PAUSE_LECTURE": "0"}
+           "REGISTRY": registre, "BFOS_PAUSE_LECTURE": "0"}
     env.pop("COSIGN_PUB", None)
     r = subprocess.run(["bash", str(REPO_ROOT / "scripts" / "verify-image.sh"), "factice"],
                        env=env, capture_output=True, text=True, timeout=60)
