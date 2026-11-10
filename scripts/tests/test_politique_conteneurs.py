@@ -20,6 +20,7 @@ Ce qui est garde ici, sans image ni reseau :
      un faux skopeo ; son juge, scripts/proxy-openimage.py, contre un faux proxy.
 """
 
+import base64
 import importlib.machinery
 import importlib.util
 import json
@@ -782,7 +783,9 @@ def test_la_porte_suit_la_poussee_et_precede_sbom_et_attestation():
              t.index("# --- 4b. porte canari"),
              t.index("# --- 5. SBOM"),
              t.index("\ncosign attest --yes"),
-             t.index('\ncosign verify --key "$COSIGN_PUB"')]
+             # relire_cosign depuis #27320 : cosign refuse par intermittence une
+             # signature presente, l'etape 7 relit avant de conclure.
+             t.index('\nrelire_cosign cosign verify --key "$COSIGN_PUB"')]
     assert ordre == sorted(ordre)
     assert "7b" not in t.replace("#  7b.", "")
     # m9 : le commentaire du script de politique citait encore « etape 7b ».
@@ -1200,7 +1203,7 @@ def test_la_cle_de_l_etape_7_est_configurable():
     verifie avec COSIGN_PUB ; cosign.pub reste le defaut."""
     t = PUBLISH.read_text()
     assert 'COSIGN_PUB="${COSIGN_PUB:-cosign.pub}"' in t
-    assert '\ncosign verify --key "$COSIGN_PUB" "$IMAGE"' in t
+    assert '\nrelire_cosign cosign verify --key "$COSIGN_PUB" "$IMAGE"' in t
     assert 'cosign verify-attestation --key "$COSIGN_PUB" --type spdxjson' in t
     assert "--key cosign.pub" not in t
     v = (REPO_ROOT / "scripts" / "verify-image.sh").read_text()
@@ -1217,7 +1220,11 @@ def test_verify_image_verifie_avec_la_cle_demandee(tmp_path, cle):
     for f in ("cosign", "skopeo"):
         (bin_ / f).chmod(0o755)
     journal = tmp_path / "cosign.log"
-    env = {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}", "JOURNAL": str(journal)}
+    # BFOS_LECTURES=1 : cet essai mesure la CLE, pas la relecture de #27320.
+    # Avec le defaut (5 lectures, 4 pauses de 5 s par controle), le faux cosign
+    # qui echoue toujours ferait depasser le delai de 60 s ci-dessous.
+    env = {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}", "JOURNAL": str(journal),
+           "BFOS_LECTURES": "1"}
     env.pop("COSIGN_PUB", None)
     attendue = str(REPO_ROOT / "cosign.pub")
     if cle == "secours":
@@ -1232,6 +1239,74 @@ def test_verify_image_verifie_avec_la_cle_demandee(tmp_path, cle):
         return
     appels = journal.read_text().splitlines()
     assert appels and all(f"--key {attendue} " in a for a in appels), appels
+
+
+def test_verify_image_relit_avant_de_conclure(tmp_path):
+    """#27320 : une seule lecture rend un verdict tire au sort.
+
+    Sur la machine de build, cosign refuse par intermittence une signature ou
+    une attestation POURTANT PRESENTE : 12 echecs sur 40 lectures le 2026-11-10,
+    en rafales de 1 a 4, alors que le registre sert l'index des referents 10 fois
+    sur 10. L'alerte du matin du 2026-11-09 a crie faux pour ca. Le verdict doit
+    donc survivre a une lecture perdue, et DIRE qu'il a fallu relire : cacher le
+    flottement serait remplacer une fausse alerte par un silence.
+    """
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    compteur = tmp_path / "compteur"
+    compteur.mkdir()
+    image = "ghcr.io/bluefoxconsultant/blue-fox-os-factice"
+    charge = base64.b64encode(json.dumps({
+        "subject": [{"name": image, "digest": {"sha256": "0" * 64}}],
+        "predicateType": "https://spdx.dev/Document",
+        "predicate": {"name": image, "packages": [{"name": "p1"}]},
+    }).encode()).decode()
+    enveloppe = tmp_path / "attestation.jsonl"
+    enveloppe.write_text(json.dumps({"payload": charge}) + "\n")
+    # Faux cosign : la PREMIERE lecture de chaque sous-commande echoue comme le
+    # vrai le fait en rafale, la seconde rend le bon document.
+    (bin_ / "cosign").write_text(
+        "#!/bin/sh\n"
+        'c="$COMPTEUR/$1"\n'
+        'n=$(cat "$c" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$c"\n'
+        'if [ "$n" = 1 ]; then echo "Error: no valid bundles exist in registry" >&2; exit 1; fi\n'
+        'if [ "$1" = verify-attestation ]; then cat "$ENVELOPPE"; fi\n'
+        "exit 0\n")
+    # skopeo tombe : le controle 4/5 echoue, ce n'est pas le sujet ici.
+    (bin_ / "skopeo").write_text("#!/bin/sh\nexit 1\n")
+    for f in ("cosign", "skopeo"):
+        (bin_ / f).chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}",
+           "COMPTEUR": str(compteur), "ENVELOPPE": str(enveloppe),
+           "BFOS_PAUSE_LECTURE": "0"}
+    env.pop("COSIGN_PUB", None)
+    r = subprocess.run(["bash", str(REPO_ROOT / "scripts" / "verify-image.sh"), "factice"],
+                       env=env, capture_output=True, text=True, timeout=60)
+    assert "✅ 1/5 signature cosign valide (2e lecture)" in r.stdout, r.stdout + r.stderr
+    assert "✅ 2/5 attestation SBOM SPDX presente et signee (2e lecture)" in r.stdout, r.stdout
+    assert "✅ 3/5 SBOM non vide" in r.stdout, r.stdout
+    assert (compteur / "verify").read_text().strip() == "2"
+    assert (compteur / "verify-attestation").read_text().strip() == "2"
+
+
+def test_verify_image_refuse_un_nombre_de_lectures_non_numerique(tmp_path):
+    """Un reglage non numerique ferait boucler la relecture SANS FIN :
+    `[ x -ge y ]` sort en erreur, donc la condition de sortie serait toujours
+    fausse. Le script doit refuser avant de lire quoi que ce soit."""
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    journal = tmp_path / "cosign.log"
+    (bin_ / "cosign").write_text('#!/bin/sh\necho "cosign $*" >> "$JOURNAL"\nexit 0\n')
+    (bin_ / "skopeo").write_text("#!/bin/sh\nexit 1\n")
+    for f in ("cosign", "skopeo"):
+        (bin_ / f).chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}", "JOURNAL": str(journal),
+           "BFOS_LECTURES": "beaucoup"}
+    r = subprocess.run(["bash", str(REPO_ROOT / "scripts" / "verify-image.sh"), "factice"],
+                       env=env, capture_output=True, text=True, timeout=30)
+    assert r.returncode == 1
+    assert "doivent etre des entiers" in r.stderr
+    assert not journal.exists(), "aucune lecture ne doit avoir eu lieu"
 
 
 # ---------------------------------------------------------------------------
