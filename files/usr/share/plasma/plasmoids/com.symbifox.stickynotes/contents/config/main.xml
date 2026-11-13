@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0
+                          http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
+
+    <kcfgfile name=""/>
+
+    <group name="General">
+        <!--
+          The tenant's address. Pre-seeded from the image on Blue Fox OS
+          (services.odoo.url of the tenant, written straight into this applet's
+          configuration), so that a widget added from the panel is already
+          pointed at the right Symbifox.
+
+          🔴 The default is EMPTY on purpose. It used to be
+          https://bluefoxconsultant.com, which is one tenant among many: every
+          widget installed outside Blue Fox OS pointed at Blue Fox, and the
+          pairing screen never asked where to go. The person clicked « pair »
+          and watched nothing happen, because the address they never gave was
+          wrong. An empty address means the widget asks.
+        -->
+        <entry name="server" type="String">
+            <label>Symbifox address</label>
+            <default></default>
+        </entry>
+
+        <!--
+          ⚠️ The bearer token. It sits in the widget's Plasma configuration,
+          a plain file inside the person's own profile. Moving it to KWallet
+          is a listed follow-up of BF #27250; what bounds the risk in the
+          meantime is the token's scope (the notepad, nothing else), the fact
+          that it is listed and revocable in « Mes appareils », and the 90-day
+          idle expiry. A profile that gets backed up or synced carries it, and
+          that is the case the follow-up closes.
+        -->
+        <entry name="token" type="Password">
+            <label>Device token</label>
+            <default></default>
+        </entry>
+
+        <!--
+          Les notes tapées pendant que le serveur était injoignable, en attente
+          d'envoi. Rangées ici et pas seulement en mémoire : sans cela, une
+          note tapée hors ligne disparaissait à la fermeture de la session ou
+          au redémarrage de plasmashell, sans un mot.
+        -->
+        <entry name="outbox" type="String">
+            <label>Notes waiting to be sent</label>
+            <default>[]</default>
+        </entry>
+
+        <entry name="showShared" type="Bool">
+            <label>Also show notes colleagues shared with me</label>
+            <default>true</default>
+        </entry>
+
+        <!--
+          « Un carré, une note » : l'identifiant de la note que CETTE instance
+          du widget affiche, seule. 0 = la liste.
+
+          C'est ce qui permet de poser des pense-bêtes sur le bureau comme
+          l'application de Windows, un par note, puisque chaque instance a sa
+          propre configuration. Et c'est précisément pour cela que le jeton a
+          dû partir dans KWallet d'abord : sans coffre partagé, chaque carré
+          aurait exigé son propre appairage.
+
+          Choisi depuis le widget lui-même, pas ici : la liste des notes vit
+          sur le serveur, et la page de réglages n'a pas de quoi la demander.
+        -->
+        <entry name="noteId" type="Int">
+            <label>Show only this note</label>
+            <default>0</default>
+        </entry>
+        <!--
+          A-t-on déjà semé les carrés sur le bureau ?
+
+          🔴 Une fois, et pas à chaque démarrage. Windows repose les notes qui
+          étaient ouvertes ; chez nous c'est Plasma qui restaure les applets
+          lui-même, donc il n'y a qu'à semer après l'appairage. Semer à chaque
+          démarrage ferait revenir les carrés que la personne a fermés, et
+          « fermer un carré » ne voudrait plus rien dire.
+        -->
+        <entry name="autoPoseFait" type="Bool">
+            <label>The desktop squares have been seeded once</label>
+            <default>false</default>
+        </entry>
+
+        <!--
+          L'identifiant d'envoi que ce carré NEUF attend pour adopter sa note.
+
+          Rangé ici et pas en mémoire : la file d'envoi, elle, survit à un
+          redémarrage de plasmashell (elle est dans cette même configuration).
+          Si l'intention d'adopter ne survivait pas avec elle, la note serait
+          créée et le carré resterait vide pour toujours, à côté d'elle.
+        -->
+        <entry name="adopteUuid" type="String">
+            <label>Client id this new square is waiting for</label>
+            <default></default>
+        </entry>
+    </group>
+</kcfg>
