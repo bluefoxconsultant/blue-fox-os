@@ -7,8 +7,18 @@
 #
 # Requiert : rpmbuild + les macros RPM Fedora (pyproject-rpm-macros,
 # systemd-rpm-macros). Sur un hote qui ne les a pas — Garuda/Arch, Debian,
-# macOS... — le script rebondit tout seul dans un container fedora:43 via
+# macOS... — le script rebondit tout seul dans un container `fedora:<N>` via
 # podman et s'y rejoue. Mettre BLUEFOX_RPM_NO_CONTAINER=1 pour l'interdire.
+#
+# ⚠️ <N> EST DERIVE DE L'IMAGE DE BASE, JAMAIS CODE EN DUR (change le 2026-11-15).
+# Le RPM que rpmbuild produit porte `Requires: python(abi) = <version du python
+# du container>`. L'image de base le resout a l'install. Si les deux Fedora
+# divergent, rpm-ostree refuse la transaction avec « nothing provides
+# python(abi) = X », et c'est la SEULE chose qui le dit : rien en amont ne
+# compare les deux. C'est arrive : `image-version: latest` a fait passer
+# kinoite-main a Fedora 45 (Python 3.15) le 2026-10-28 pendant que ce rebond
+# restait sur fedora:43 (Python 3.14), et les 10 republications suivantes de bf,
+# bf-surface et factice ont echoue — en silence, pendant 18 jours.
 #
 # SIGNATURE (#23811). Si BLUEFOX_RPM_GPG_NAME est definie, le RPM est signe a la
 # fin — TOUJOURS sur l'hote, jamais dans le container : la cle privee ne franchit
@@ -45,6 +55,82 @@ sign_or_warn() {
     fi
 }
 
+# --- version de Fedora du rebond, DERIVEE de l'image de base ----------------
+# Source de verite : recipes/_base.yml, que toutes les recettes partagent.
+# L'image declare sa version a DEUX endroits independants ; on exige qu'ils
+# s'accordent, et on REFUSE plutot que de retomber sur un defaut. Un numero par
+# defaut est precisement ce qui a peri ici : il reste vert et faux.
+fedora_du_socle() {
+    if [ -n "${BLUEFOX_RPM_FEDORA_TAG:-}" ]; then
+        echo "==> ⚠️  rebond FORCE sur fedora:${BLUEFOX_RPM_FEDORA_TAG} par" >&2
+        echo "==>     BLUEFOX_RPM_FEDORA_TAG : la derivation est contournee." >&2
+        printf '%s' "$BLUEFOX_RPM_FEDORA_TAG"
+        return 0
+    fi
+
+    local socle_yml="$REPO_ROOT/recipes/_base.yml"
+    [ -f "$socle_yml" ] || {
+        echo "build-welcome-rpm: $socle_yml introuvable : impossible de savoir" >&2
+        echo "  quelle Fedora doit batir le RPM. Refus." >&2
+        return 1
+    }
+    local img ver
+    img=$(awk '/^base-image:/ {print $2; exit}' "$socle_yml")
+    ver=$(awk '/^image-version:/ {print $2; exit}' "$socle_yml")
+    [ -n "$img" ] && [ -n "$ver" ] || {
+        echo "build-welcome-rpm: base-image/image-version absents de $socle_yml." >&2
+        return 1
+    }
+
+    local brut=""
+    if command -v skopeo >/dev/null 2>&1; then
+        brut=$(skopeo inspect "docker://${img}:${ver}" 2>/dev/null) || brut=""
+    fi
+    if [ -z "$brut" ] && command -v podman >/dev/null 2>&1; then
+        # Repli : l'image a peut-etre deja ete tiree localement.
+        brut=$(podman image inspect "${img}:${ver}" 2>/dev/null \
+               | python3 -c 'import json,sys; d=json.load(sys.stdin)[0]; print(json.dumps({"Labels": d.get("Labels") or {}}))' 2>/dev/null) || brut=""
+    fi
+    [ -n "$brut" ] || {
+        echo "build-welcome-rpm: ni skopeo ni une copie locale ne permettent de" >&2
+        echo "  lire ${img}:${ver}. Installer skopeo, ou tirer l'image, ou" >&2
+        echo "  forcer explicitement BLUEFOX_RPM_FEDORA_TAG=<N>. Refus." >&2
+        return 1
+    }
+
+    # Deux temoins independants : l'etiquette de version et le noyau ostree.
+    local n_version n_noyau
+    n_version=$(printf '%s' "$brut" | python3 -c '
+import json, re, sys
+labels = (json.load(sys.stdin).get("Labels") or {})
+v = labels.get("org.opencontainers.image.version") or ""
+m = re.match(r"^(\d+)\b", v)
+print(m.group(1) if m else "")
+' 2>/dev/null)
+    n_noyau=$(printf '%s' "$brut" | python3 -c '
+import json, re, sys
+labels = (json.load(sys.stdin).get("Labels") or {})
+m = re.search(r"\.fc(\d+)\b", labels.get("ostree.linux") or "")
+print(m.group(1) if m else "")
+' 2>/dev/null)
+
+    if [ -n "$n_version" ] && [ -n "$n_noyau" ] && [ "$n_version" != "$n_noyau" ]; then
+        echo "build-welcome-rpm: ${img}:${ver} se contredit — etiquette de" >&2
+        echo "  version = Fedora ${n_version}, noyau ostree = Fedora ${n_noyau}." >&2
+        echo "  Batir le RPM sur une supposition produirait un paquet que" >&2
+        echo "  l'image refuse d'installer. Refus." >&2
+        return 1
+    fi
+    local n="${n_version:-$n_noyau}"
+    [ -n "$n" ] || {
+        echo "build-welcome-rpm: ${img}:${ver} ne declare ni" >&2
+        echo "  org.opencontainers.image.version ni ostree.linux exploitables." >&2
+        echo "  Refus plutot qu'un numero par defaut." >&2
+        return 1
+    }
+    printf '%s' "$n"
+}
+
 # --- bascule container ------------------------------------------------------
 # Le .spec s'appuie sur %pyproject_wheel & co, fournis par pyproject-rpm-macros.
 # Arch a bien un paquet `rpm-tools` qui fournit rpmbuild, mais PAS ces macros :
@@ -66,10 +152,13 @@ if [ "${BLUEFOX_RPM_IN_CONTAINER:-0}" != "1" ] && ! native_rpm_stack; then
         echo "  sudo pacman -S --needed podman" >&2
         exit 1
     }
-    echo "==> macros RPM Fedora absentes ; rebond dans fedora:43 via podman"
-    # fedora:43 = ce que faisait le job build-rpm de la CI. La liste de paquets
-    # est la meme, volontairement : c'est la seule chose qui garantit que le RPM
-    # local est bit-pour-bit celui que la CI produisait.
+    FEDORA_N=$(fedora_du_socle) || exit 1
+    echo "==> macros RPM Fedora absentes ; rebond dans fedora:${FEDORA_N} via podman"
+    echo "==> (version derivee de l'image de base, pas codee en dur)"
+    # La liste de paquets reste celle du job build-rpm de la CI, volontairement.
+    # Ce qui a change le 2026-11-15, c'est la BALISE : elle suit l'image de base,
+    # parce que c'est le python de l'image qui doit resoudre le python(abi) du
+    # RPM — et rien d'autre dans la chaine ne compare les deux.
     #
     # ⚠️ Plus de `exec` ici (change le 2026-07-24, #23811) : le script doit
     # reprendre la main apres le container pour signer le RPM sur l'HOTE. La cle
@@ -78,7 +167,7 @@ if [ "${BLUEFOX_RPM_IN_CONTAINER:-0}" != "1" ] && ! native_rpm_stack; then
         -v "${REPO_ROOT}:/src:z" \
         -w /src \
         -e BLUEFOX_RPM_IN_CONTAINER=1 \
-        fedora:43 \
+        "fedora:${FEDORA_N}" \
         bash -c '
             set -euo pipefail
             dnf -y -q install rpm-build python3-devel pyproject-rpm-macros \
