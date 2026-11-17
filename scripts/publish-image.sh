@@ -256,7 +256,11 @@ cd "$WORKDIR"
 
 # --- 1. RPM du welcome agent ----------------------------------------------
 log "1/7 build du RPM bluefox-welcome"
-./scripts/build-welcome-rpm.sh
+# ⚠️ SLUG passe EXPLICITEMENT : build-welcome-rpm.sh derive de recipes/<slug>.yml
+# la Fedora de son rebond, et SLUG n'est exporte ici que quand l'appelant l'a
+# lui-meme mis dans l'environnement. Invoque en positionnel
+# (`publish-image.sh bf-surface`), le RPM serait bati sur le socle partage.
+SLUG="$SLUG" ./scripts/build-welcome-rpm.sh
 
 # --- 2. stage du RPM -------------------------------------------------------
 # Le module `files` de BlueBuild copie files/usr/* vers /usr/* dans l'image ;
