@@ -56,10 +56,62 @@ sign_or_warn() {
 }
 
 # --- version de Fedora du rebond, DERIVEE de l'image de base ----------------
-# Source de verite : recipes/_base.yml, que toutes les recettes partagent.
+# Source de verite : la recette QU'ON BATIT, recipes/<slug>.yml — et NON
+# recipes/_base.yml, qui ne documente que la base partagee et que BlueBuild
+# n'herite jamais (le fichier dit lui-meme qu'il est « a dupliquer dans chaque
+# recipe »).
+#
+# 🔴 La difference n'est pas cosmetique (relecture du 2026-11-17). bf-surface est
+# epinglee `image-version: "43"` tant que pkg.surfacelinux.com n'a pas suivi,
+# pendant que bf et factice sont en `latest`, soit Fedora 45 aujourd'hui. Deriver
+# du socle partage aurait bati le RPM en fc45 pour bf-surface AUSSI, et son image
+# F43 l'aurait refuse sur « nothing provides python(abi) = 3.15 » : la panne
+# n'aurait pas ete corrigee, elle aurait change d'image — et bf-surface est
+# justement la seule des trois qui publiait encore (mesure du 2026-11-15).
+#
 # L'image declare sa version a DEUX endroits independants ; on exige qu'ils
 # s'accordent, et on REFUSE plutot que de retomber sur un defaut. Un numero par
 # defaut est precisement ce qui a peri ici : il reste vert et faux.
+#
+# ⚠️ Chemin NATIF (hote portant deja les macros Fedora) : rpmbuild y batit contre
+# le python de l'HOTE, que cette derivation ne touche pas. Sans effet sur la
+# publication, qui tourne sur Garuda et rebondit donc toujours — mais une
+# publication depuis un hote Fedora reposerait le meme desaccord ailleurs.
+
+champ_du_yml() {  # <fichier> <cle> -> valeur, guillemets YAML retires
+    # ⚠️ Les guillemets font partie du champ : bf-surface porte
+    # `image-version: "43"`, et une balise `"43"` ne designe aucune image.
+    awk -v k="^$2:" '$0 ~ k {print $2; exit}' "$1" | tr -d "\"'"
+}
+
+recette_du_rebond() {  # chemin du .yml qui fait foi, ou code 1
+    if [ -n "${BLUEFOX_RPM_RECETTE:-}" ]; then
+        [ -f "$BLUEFOX_RPM_RECETTE" ] || {
+            echo "build-welcome-rpm: BLUEFOX_RPM_RECETTE=${BLUEFOX_RPM_RECETTE} introuvable. Refus." >&2
+            return 1
+        }
+        printf '%s' "$BLUEFOX_RPM_RECETTE"
+        return 0
+    fi
+    if [ -n "${SLUG:-}" ]; then
+        # Un slug donne sans recette est une faute de frappe, pas un cas a
+        # rattraper en douce sur le socle partage.
+        [ -f "$REPO_ROOT/recipes/${SLUG}.yml" ] || {
+            echo "build-welcome-rpm: SLUG=${SLUG} mais recipes/${SLUG}.yml introuvable. Refus." >&2
+            return 1
+        }
+        printf '%s' "$REPO_ROOT/recipes/${SLUG}.yml"
+        return 0
+    fi
+    # Aucun slug : build de dev ou de validation, ou le RPM n'entre dans aucune
+    # image epinglee. On le DIT — un silence ici est exactement ce qui a laisse
+    # passer des publications fausses.
+    echo "==> ⚠️  aucun SLUG : Fedora du rebond derivee du socle partage" >&2
+    echo "==>     recipes/_base.yml. Pour un RPM destine a une image epinglee," >&2
+    echo "==>     passer SLUG=<tenant> (publish-image.sh le fait)." >&2
+    printf '%s' "$REPO_ROOT/recipes/_base.yml"
+}
+
 fedora_du_socle() {
     if [ -n "${BLUEFOX_RPM_FEDORA_TAG:-}" ]; then
         echo "==> ⚠️  rebond FORCE sur fedora:${BLUEFOX_RPM_FEDORA_TAG} par" >&2
@@ -68,15 +120,16 @@ fedora_du_socle() {
         return 0
     fi
 
-    local socle_yml="$REPO_ROOT/recipes/_base.yml"
+    local socle_yml
+    socle_yml=$(recette_du_rebond) || return 1
     [ -f "$socle_yml" ] || {
         echo "build-welcome-rpm: $socle_yml introuvable : impossible de savoir" >&2
         echo "  quelle Fedora doit batir le RPM. Refus." >&2
         return 1
     }
     local img ver
-    img=$(awk '/^base-image:/ {print $2; exit}' "$socle_yml")
-    ver=$(awk '/^image-version:/ {print $2; exit}' "$socle_yml")
+    img=$(champ_du_yml "$socle_yml" base-image)
+    ver=$(champ_du_yml "$socle_yml" image-version)
     [ -n "$img" ] && [ -n "$ver" ] || {
         echo "build-welcome-rpm: base-image/image-version absents de $socle_yml." >&2
         return 1
@@ -130,6 +183,22 @@ print(m.group(1) if m else "")
     }
     printf '%s' "$n"
 }
+
+# Couture d'essai : dire quelle recette fait foi et quelle balise serait
+# demandee, sans reseau, sans podman et sans rien batir (scripts/tests/).
+# `=complet` va jusqu'au bout — il interroge l'image, donc il exige le reseau :
+# c'est le temoin a jouer sur la machine de build AVANT une republication.
+if [ -n "${BLUEFOX_RPM_DIRE_SOCLE:-}" ]; then
+    RECETTE=$(recette_du_rebond) || exit 1
+    printf 'recette=%s image=%s version=%s\n' "$RECETTE" \
+        "$(champ_du_yml "$RECETTE" base-image)" \
+        "$(champ_du_yml "$RECETTE" image-version)"
+    if [ "$BLUEFOX_RPM_DIRE_SOCLE" = complet ]; then
+        FEDORA_N=$(fedora_du_socle) || exit 1
+        printf 'fedora=%s\n' "$FEDORA_N"
+    fi
+    exit 0
+fi
 
 # --- bascule container ------------------------------------------------------
 # Le .spec s'appuie sur %pyproject_wheel & co, fournis par pyproject-rpm-macros.
