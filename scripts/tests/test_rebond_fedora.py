@@ -139,11 +139,16 @@ def test_publish_passe_le_slug_au_build_du_rpm():
 
 
 def test_la_derivation_refuse_au_lieu_de_retomber_sur_un_defaut():
+    """Pas de numero par defaut, et les deux temoins de l'image doivent
+    s'accorder — un seul temoin ne distingue pas une image d'une autre."""
     corps = BUILD_RPM.read_text()
-    # Quatre refus voulus : socle absent, champs absents, image illisible,
-    # temoins qui se contredisent.
-    assert corps.count("Refus.") >= 4, "les refus de la derivation ont ete relaches"
-    assert "se contredit" in corps, "le desaccord des deux temoins doit refuser"
+    assert 'org.opencontainers.image.version' in corps and 'ostree.linux' in corps, (
+        "la version de l'image doit etre lue a DEUX endroits independants"
+    )
+    assert re.search(r'\[ "\$n_version" != "\$n_noyau" \]', corps), (
+        "les deux temoins doivent etre COMPARES ; deux lectures qu'on ne "
+        "confronte pas valent une seule"
+    )
     assert not re.search(r"FEDORA_N=\$\{[A-Z_]+:-\d+\}", corps), (
         "un numero de Fedora par defaut reste vert et faux : c'est la panne meme"
     )
