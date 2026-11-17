@@ -159,8 +159,16 @@ jobs:
           pytest -q
 
   build-rpm:
-    # Build le RPM bluefox-welcome dans Fedora 43 (matches la version Python
-    # 3.14 du base Kinoite-main, sinon depsolve echoue sur python3.Xdist()).
+    # Build le RPM bluefox-welcome dans Fedora 43.
+    #
+    # ⚠️ CETTE BALISE EST EPINGLEE ET NE SUIT PAS L'IMAGE DE BASE (#27708). Le
+    # commentaire d'origine affirmait qu'elle « matche la version Python 3.14 du
+    # base Kinoite-main » : ce n'est plus vrai depuis que kinoite-main:latest est
+    # passe a Fedora 45 (Python 3.15), et c'est exactement l'invariant qui a
+    # derive en silence. Ce job reste donc VERT quand la publication, elle,
+    # echouerait : son succes ne dit rien de la publiabilite. Le RPM qui entre
+    # reellement dans l'image est rebati par scripts/build-welcome-rpm.sh, qui
+    # derive sa Fedora de recipes/<slug>.yml.
     #
     # Depuis le retrait du job `build`, ce RPM n'alimente plus aucune image :
     # c'est un test de non-regression du .spec (le depsolve Fedora casse a bas
