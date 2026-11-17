@@ -40,7 +40,7 @@
 #     revision « <sha>-dirty ».
 #
 # Portable hors Fedora : l'etape 1 (RPM) se construit dans un container
-# fedora:43 — build-welcome-rpm.sh detecte l'absence des macros RPM Fedora et
+# fedora:<N> — build-welcome-rpm.sh detecte l'absence des macros RPM Fedora et
 # rebondit tout seul dans podman. Rien d'autre dans la chaine n'est Fedora.
 #
 # Enchainement (miroir de l'ancien pipeline CI) :
@@ -138,7 +138,8 @@ post_push_notice() {
 export COSIGN_PASSWORD="${COSIGN_PASSWORD-}"
 
 # --- preflight -------------------------------------------------------------
-# podman sert au build ET au rebond fedora:43 de l'etape 1. cosign/syft/skopeo
+# podman sert au build ET au rebond fedora:<N> de l'etape 1 (<N> derive de la
+# recette batie, #27708). cosign/syft/skopeo
 # ne servent qu'aux etapes 5-7 : inutile de les exiger pour un DRY_RUN.
 # ⚠️ skopeo n'est plus optionnel depuis que l'etape 5 tire l'image par digest
 # (il l'etait quand il ne servait qu'au repli de lecture d'etiquette, etape 7).

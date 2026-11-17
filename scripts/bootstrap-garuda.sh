@@ -12,7 +12,8 @@
 # du welcome agent utilise les macros pyproject-rpm-macros). Sur Arch, deux
 # outils cles ne sont packages NI dans les depots officiels NI dans l'AUR —
 # bluebuild et syft — et doivent passer par leurs installeurs upstream.
-# Le RPM, lui, se construit dans un container fedora:43 : c'est
+# Le RPM, lui, se construit dans un container fedora:<N>, <N> derive de l'image
+# de base de la recette batie (#27708) : c'est
 # scripts/build-welcome-rpm.sh qui s'en charge tout seul (il detecte l'absence
 # des macros et rebondit dans podman).
 
