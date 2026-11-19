@@ -71,6 +71,41 @@ PlasmoidItem {
     property var lastStamp: null
     property bool offline: false
     property string lastError: ""
+    /* 🔴 CE QUE LE CHEMIN D'ENREGISTREMENT A DIT, et qu'aucun battement de
+     * sonde n'efface.
+     *
+     * `lastError` est le canal des LECTURES : la sonde le remet à vide à
+     * chaque battement (`probeOne`, 3 à 15 s selon la cadence), et il n'était
+     * peint QUE dans la liste et dans l'écran d'appairage. Or `saveNote` n'est
+     * appelé que depuis le carré, et l'aiguillage ne monte jamais la liste et
+     * le carré ensemble (voir FullRepresentation) : « Saved, but some
+     * formatting could not be kept », le refus hors ligne, le plafond
+     * d'écriture et le refus de renvoyer une note qui n'est plus modifiable
+     * n'atteignaient donc PERSONNE. Un lien collé, une couleur : perdus sans
+     * un mot. Et le refus hors ligne était déjà invisible dans un carré en
+     * 2.2.2 — ce lot-ci n'a fait qu'ajouter des phrases au même silence.
+     *
+     * D'où une seconde boîte, et ses deux règles font tout son intérêt : elle
+     * est peinte DANS la surface qui l'a remplie (le carré comme la liste), et
+     * rien d'automatique ne la vide. Elle ne part que sur trois gestes — la
+     * personne la ferme, un enregistrement réussit sans rien à dire, ou un
+     * autre message d'écriture la remplace. */
+    property string messageEcriture: ""
+
+    /* Le dire sur les DEUX canaux : le transitoire parce que c'est lui que la
+     * liste et l'écran d'appairage peignent déjà, et le durable parce que le
+     * transitoire ne survit pas au prochain battement. */
+    function diteEcriture(message) {
+        root.messageEcriture = message;
+        root.lastError = message;
+    }
+
+    /* La personne a lu, et ferme. ⚠️ Le seul geste qui vide la boîte durable,
+     * avec un enregistrement réussi : si quoi que ce soit d'automatique la
+     * vidait, on retomberait exactement dans le défaut qu'elle corrige. */
+    function oublieLeMessage() {
+        root.messageEcriture = "";
+    }
     /* 🔴 Vrai quand l'échec vient de l'ADRESSE et non du reste. Posé le
      * 2026-11-02 : le widget d'Olivier portait encore
      * `server=https://bluefoxconsultant.com`, écrit dans son appletsrc par une
@@ -175,14 +210,36 @@ PlasmoidItem {
             liste[i].tries = 0;
         }
         root.lastError = "";
+        root.oublieLeMessage();
         root.rangeOutbox();
         root.flush();
     }
 
+    /* 🔴 CE JUGE NE SAIT PAS LIRE UN BROUILLON RICHE, et c'est le carré qui
+     * ferme le trou.
+     *
+     * Il compare le brouillon au TEXTE de la note. Un brouillon riche est du
+     * HTML, donc jamais égal : ce second juge du « brouillon mort » répondait
+     * TOUJOURS « non enregistré » en mode riche, et c'est lui qui faisait
+     * refuser le « × » du bandeau avec un message faux (« it will be sent in a
+     * moment » pour une note déjà enregistrée).
+     *
+     * On ne peut pas le réparer ICI : juger un corps riche demande un moteur
+     * de Qt, qui vit dans le carré (voir `temoinRiche`). Le carré ne pose donc
+     * plus de brouillon riche qui n'a rien à dire — son `onTextChanged`
+     * l'efface au lieu de le poser — et l'invariant qui rend cette fonction
+     * juste redevient vrai : tant qu'il y a un brouillon riche, il y a bien
+     * quelque chose à envoyer. Un essai tient les deux bouts
+     * (`test_le_X_ferme_un_carre_riche_qui_n_a_RIEN_a_enregistrer`). */
     function brouillonNonEnregistre(noteId) {
         var garde = root.brouillons[noteId];
         if (garde === undefined || garde === null) {
             return false;
+        }
+        if (root.brouillonsRiches[noteId] === true) {
+            /* Un brouillon riche EXISTE : le carré ne l'aurait pas posé s'il
+             * disait la même chose que le serveur. */
+            return true;
         }
         var note = root.notesById[noteId];
         return !note || garde !== (note.text || "");
@@ -205,6 +262,16 @@ PlasmoidItem {
      * délégués. Le texte tapé dans une carte ouverte disparaissait au premier
      * changement venu d'ailleurs, en moins de trois secondes. */
     property var brouillons: ({})
+
+    /* Le MODE de chaque brouillon : vrai s'il a été tapé en mise en forme.
+     *
+     * 🔴 Il vit à côté du texte parce qu'il en fait partie. Un brouillon riche
+     * relu en texte simple s'affiche en source HTML puis part dans la clé
+     * `text` ; un brouillon simple relu en mode riche se fait manger ses
+     * `<` et ses `>` par l'analyseur de Qt. La capacité du serveur, elle,
+     * peut changer sous les doigts de la personne — c'est précisément ce qui
+     * arrive au premier `/ping` d'une session. */
+    property var brouillonsRiches: ({})
 
     /* Pairing in flight */
     property string pairingCode: ""
@@ -450,6 +517,16 @@ PlasmoidItem {
     property bool hasStamp: true
     property bool hasSharedNotes: true
     property bool hasVisibleIds: true
+    /* #27250, lot « mise en forme ». ⚠️ FAUX par défaut, contrairement aux
+     * trois au-dessus : eux supposent le maximum et se replient, parce qu'une
+     * route absente rend 404 et que le repli est visible. Ici, supposer la
+     * capacité ferait paraître une BARRE qui n'écrirait rien — la personne
+     * mettrait un mot en gras et le perdrait à la pause. Une barre absente est
+     * honnête ; une barre qui ne tient pas sa promesse ne l'est pas.
+     *
+     * La production porte 18.0.4.4.0 au 2026-11-13 : elle n'annonce PAS
+     * `rich_text`, et ce widget doit y rester exactement ce qu'il était. */
+    property bool hasRichText: false
 
     /* ── Qui répond, et à quelles couleurs ─────────────────────────────── */
 
@@ -574,6 +651,7 @@ PlasmoidItem {
                 root.hasStamp = f.indexOf("stamp") >= 0;
                 root.hasSharedNotes = f.indexOf("shared_notes") >= 0;
                 root.hasVisibleIds = f.indexOf("visible_ids") >= 0;
+                root.hasRichText = f.indexOf("rich_text") >= 0;
                 root.capabilitiesKnown = true;
                 root.offline = false;
                 /* ⚠️ PAS de `rangeServeurAuCoffre()` ici : cette réponse vient
@@ -593,6 +671,7 @@ PlasmoidItem {
                 root.hasStamp = false;
                 root.hasVisibleIds = false;
                 root.hasSharedNotes = false;
+                root.hasRichText = false;
                 root.capabilitiesKnown = true;
                 root.probe();
             }));
@@ -709,6 +788,19 @@ PlasmoidItem {
         root.enVol = true;
         root.passe += 1;
         var maPasse = root.passe;
+        /* 🔴 `root.hasRichText` EN DERNIER ARGUMENT, et c'est tout le lot qui
+         * en dépend : `Api.one` est le chemin du CARRÉ, donc celui de la
+         * barre. Le commentaire d'avant affirmait que le drapeau était là ; il
+         * ne l'était pas, et la conséquence tenait debout toute seule — `html`
+         * et `rich_editable` ne sortaient pas du serveur, donc la barre ne
+         * paraissait sur AUCUNE note existante, et une note mise en forme
+         * tombait en lecture seule en conseillant de « la modifier dans
+         * Symbifox »… à propos de la note que la barre venait d'écrire.
+         *
+         * ⚠️ Un essai le tient maintenant depuis le SITE D'APPEL (un espion
+         * posé sur `api.js`, qui est une bibliothèque partagée par le moteur) :
+         * les essais d'avant posaient `hasRichText` à la main et ne pouvaient
+         * pas le voir. */
         root.suivi(Api.one(root.server, root.token, root.pinnedNoteId,
             function (data) {
                 if (maPasse !== root.passe) { return; }
@@ -736,7 +828,8 @@ PlasmoidItem {
                     return;
                 }
                 root.onCallFailed(err);
-            }));
+            },
+            root.hasRichText));
     }
 
     /* La note de ce carré n'existe plus : ni supprimée par erreur, ni panne —
@@ -814,8 +907,13 @@ PlasmoidItem {
      * voir `Store.applyDelta`. */
     function pull(maPasse, offset) {
         root.suivi(Api.list(root.server, root.token,
+            /* 🔴 `riche` ICI AUSSI, et pas seulement sur `Api.one`. Le delta
+             * écrit dans le MÊME cache : une passe de liste sans le drapeau
+             * remplaçait une note enrichie par la même note sans `html`, donc
+             * un carré ouvert se vidait au battement suivant — sans erreur,
+             * sans rien dans le journal. Un seul cache veut un seul contrat. */
             { since: root.since, shared: root.showShared && root.hasSharedNotes,
-              limit: root.pageSize, offset: offset },
+              limit: root.pageSize, offset: offset, riche: root.hasRichText },
             function (data) {
                 if (maPasse !== root.passe) { return; }
                 root.marqueJetonEprouve();
@@ -857,6 +955,7 @@ PlasmoidItem {
      * `PINNED_MS` devait justement éviter. */
     function oublieLesBrouillonsMorts() {
         var b = root.brouillons;
+        var modes = root.brouillonsRiches;
         var change = false;
         for (var cle in b) {
             var id = parseInt(cle, 10);
@@ -866,12 +965,17 @@ PlasmoidItem {
             }
             if (!root.notesById[id]) {
                 delete b[cle];
+                /* ⚠️ Le mode part AVEC le texte : un mode resté seul ferait
+                 * basculer le champ d'un carré qui n'a plus de brouillon. */
+                delete modes[cle];
                 change = true;
             }
         }
         if (change) {
             root.brouillons = b;
+            root.brouillonsRiches = modes;
             root.brouillonsChanged();
+            root.brouillonsRichesChanged();
         }
     }
 
@@ -1057,6 +1161,21 @@ PlasmoidItem {
         if (!entry) {
             return;
         }
+        /* 🔴 Une entrée MISE EN FORME vers un serveur qui ne sait pas la lire :
+         * on ne l'envoie pas. `Api.create` choisit sa clé sur ce drapeau, donc
+         * l'envoyer sans lui mettrait le HTML dans `text` — le balisage comme
+         * contenu de la note. L'entrée reste en file, elle ne brûle aucun
+         * essai, et elle partira si la capacité revient.
+         *
+         * ⚠️ Muet tant que la capacité est INCONNUE : le ping répond dans la
+         * seconde et rappelle `flush` par `probe()`. Crier avant d'avoir
+         * demandé serait un faux message à chaque démarrage. */
+        if (entry.riche && !root.hasRichText) {
+            if (root.capabilitiesKnown) {
+                root.diteEcriture(i18n("Not saved yet: this server cannot store formatted notes."));
+            }
+            return;
+        }
         root.suivi(Api.create(root.server, root.token, entry.text, entry.uuid,
             function (data) {
                 Store.forget(root.outbox, entry.uuid);
@@ -1089,7 +1208,7 @@ PlasmoidItem {
                 root.rangeOutbox();
                 root.onCallFailed(err);
             },
-            entry.couleur));
+            entry.couleur, !!entry.riche));
     }
 
     /* La note que porte un identifiant, ou rien. Le panneau de renvoi en a
@@ -1104,14 +1223,32 @@ PlasmoidItem {
         return root.brouillons[id];
     }
 
-    function poseBrouillon(id, texte) {
+    /* Dans quel mode ce brouillon a-t-il été tapé ? `undefined` veut dire
+     * qu'il n'y en a pas — et c'est ce qui rend la main à la capacité du
+     * serveur, voir `champRiche` dans StickyNote.qml. */
+    function brouillonRiche(id) {
+        return root.brouillonsRiches[id];
+    }
+
+    function poseBrouillon(id, texte, riche) {
         var b = root.brouillons;
+        var modes = root.brouillonsRiches;
         if (texte === undefined || texte === null) {
             delete b[id];
+            delete modes[id];
         } else {
             b[id] = texte;
+            /* ⚠️ Un appelant qui OUBLIE le mode se fait entendre au journal
+             * plutôt que de poser un brouillon « simple » par défaut : trois
+             * sites d'appel de ce lot avaient déjà oublié un dernier argument,
+             * en silence et pour la même raison. */
+            if (riche === undefined) {
+                console.warn("bfsn: poseBrouillon sans mode — défaut d'appel");
+            }
+            modes[id] = riche === true;
         }
         root.brouillons = b;
+        root.brouillonsRiches = modes;
         /* 🔴 Réaffecter la MÊME référence ne réveille aucune liaison en QML :
          * le moteur compare les références, et elles sont identiques. Le
          * défaut était resté latent parce que rien ne se liait à `brouillons`
@@ -1120,11 +1257,25 @@ PlasmoidItem {
          * l'a révélé : elle ne bougeait jamais. Même remède que `notesById`
          * juste au-dessus. */
         root.brouillonsChanged();
+        root.brouillonsRichesChanged();
     }
 
-    function saveNote(note, text, title) {
+    /* `html` est la quatrième, et pas la deuxième : un paramètre ajouté à la
+     * fin ne décale aucun appel existant — y compris ceux des essais.
+     *
+     * 🔴 `text` ET `html` ensemble, le serveur REFUSE (« Send either text or
+     * html, not both »), et il a raison : l'ordre des clés d'un objet JSON
+     * n'engage personne, donc il ne devine pas lequel on voulait. La garde est
+     * donc ICI aussi, à l'envoi : un appelant qui passerait les deux doit se
+     * casser au banc, pas chez la personne. */
+    function saveNote(note, text, title, html) {
         var vals = {};
+        if (html !== undefined && text !== undefined) {
+            console.warn("bfsn: saveNote a reçu text ET html — html gagne, et c'est un défaut d'appel");
+            text = undefined;
+        }
         if (text !== undefined) { vals.text = text; }
+        if (html !== undefined) { vals.html = html; }
         if (title !== undefined) { vals.title = title; }
         /* 🔴 `suivi`, comme toute LECTURE. Les écritures ne l'avaient pas, et
          * `api.js` dit lui-même qu'il n'existe pas de délai en QML : c'est à
@@ -1134,13 +1285,47 @@ PlasmoidItem {
          * aucun rappel, `lastError` vide, témoin éteint, et rien d'enregistré.
          * Relecture adverse du 11-08, qui a aussi relevé les TypeError de
          * rappels tirant sur un `root` déjà détruit, faute d'abandon. */
+        /* 🔴 `root.hasRichText` en dernier : la RÉPONSE d'une écriture porte la
+         * note, et c'est elle que le cache garde. Sans le drapeau, enregistrer
+         * rendait une note SANS `html` — donc un carré riche qui se vide à
+         * chaque pause de frappe, avec un `write_date` frais qui empêche le
+         * tour suivant de le rattraper. */
         root.suivi(Api.update(root.server, root.token, note.id, vals, note.write_date,
             function (data) {
-                var fresh = root.notesById;
-                fresh[data.note.id] = data.note;
-                root.notesById = fresh;
-                root.notesByIdChanged();
-                root.poseBrouillon(data.note.id, null);
+                /* ⚠️ Défensif : une charge sans `note` (un serveur qui change,
+                 * une réponse tronquée) levait ici une TypeError dans un rappel
+                 * réseau, donc le brouillon n'était jamais rangé et la perte
+                 * n'était jamais annoncée. */
+                if (data && data.note && data.note.id) {
+                    var fresh = root.notesById;
+                    fresh[data.note.id] = data.note;
+                    root.notesById = fresh;
+                    root.notesByIdChanged();
+                    root.poseBrouillon(data.note.id, null);
+                }
+                /* 🔴 La PERTE s'annonce, et elle est PEINTE.
+                 *
+                 * L'assainisseur du serveur déplie en silence ce qu'il ne sait
+                 * pas garder — un lien collé depuis un navigateur, par
+                 * exemple : l'adresse part pour de bon. Le serveur le dit par
+                 * `flattened`, la route le fait passer, et c'est ici que ça
+                 * devient une phrase.
+                 *
+                 * 🔴 Elle part par `diteEcriture`, pas par `lastError`, et
+                 * c'est tout le correctif : `lastError` n'est peint ni dans le
+                 * carré ni dans aucune surface qui appelle `saveNote`, et la
+                 * sonde le vide au battement suivant. La phrase n'atteignait
+                 * donc personne, et le lot refusait de nettoyer la charge en
+                 * s'appuyant dessus. */
+                if (data && data.flattened) {
+                    root.diteEcriture(i18n("Saved, but some formatting could not be kept. Open the note in Symbifox to see it as stored."));
+                } else if (data && data.note) {
+                    /* ⚠️ Un enregistrement qui réussit sans rien à dire REPREND
+                     * la phrase d'avant : laisser « trop grosse » ou « serveur
+                     * injoignable » sous une note qui vient de partir ferait
+                     * mentir la boîte, qui ne s'efface pas toute seule. */
+                    root.oublieLeMessage();
+                }
             },
             function (conflict) {
                 /* Somebody changed this note elsewhere while it was open.
@@ -1152,9 +1337,9 @@ PlasmoidItem {
                     root.notesById = fresh;
                     root.notesByIdChanged();
                 }
-                root.lastError = i18n("This note changed elsewhere. Your copy was not saved.");
+                root.diteEcriture(i18n("This note changed elsewhere. Your copy was not saved."));
             },
-            root.echecEcriture));
+            root.echecEcriture, root.hasRichText));
     }
 
     /* 🔴 L'échec d'une ÉCRITURE n'est pas celui d'une lecture.
@@ -1170,7 +1355,7 @@ PlasmoidItem {
      * n'assume nulle part de ne pas le dire. */
     /* Le refus AVANT l'envoi, quand on sait déjà que ça ne partira pas. */
     function refuseEcritureHorsLigne() {
-        root.lastError = i18n("Not saved: the server is unreachable. Keep this note open until it is back.");
+        root.diteEcriture(i18n("Not saved: the server is unreachable. Keep this note open until it is back."));
     }
 
     function echecEcriture(err) {
@@ -1178,10 +1363,18 @@ PlasmoidItem {
         if (err.error === "offline" || err.error === "no_server") {
             root.offline = true;
             root.addressAtFault = root.isAddressFault(err.error);
-            root.lastError = i18n("Not saved: the server is unreachable. Keep this note open until it is back.");
+            root.diteEcriture(i18n("Not saved: the server is unreachable. Keep this note open until it is back."));
             return;
         }
+        /* ⚠️ Et les AUTRES échecs aussi. Un 500 pendant un enregistrement est
+         * un texte qui n'est pas parti, et `onCallFailed` ne parle qu'au canal
+         * des lectures — donc à une surface que le carré ne monte pas. On le
+         * laisse faire son travail (la cadence, l'adresse fautive), puis on
+         * répète sa phrase là où elle se voit. */
         root.onCallFailed(err);
+        if (root.lastError.length > 0) {
+            root.diteEcriture(root.lastError);
+        }
     }
 
     /* ── « En faire une tâche » ──────────────────────────────────────────── */
@@ -2068,9 +2261,18 @@ PlasmoidItem {
             root.refuseEcritureHorsLigne();
             return;
         }
+        /* ⚠️ Le drapeau `riche` en dernier, même pour un changement de
+         * COULEUR : la réponse porte la note et remplace celle du cache. Sans
+         * lui, choisir une couleur rendait une note SANS `html` — donc un
+         * carré qui se vide, et un `write_date` frais qui empêche le tour
+         * suivant de le rattraper. Le commentaire était là avant l'argument ;
+         * un essai tient maintenant les trois sites d'appel. */
         root.suivi(Api.update(root.server, root.token, note.id, { color_hex: hex || "" },
             note.write_date,
             function (data) {
+                if (!data || !data.note || !data.note.id) {
+                    return;
+                }
                 var fresh = root.notesById;
                 fresh[data.note.id] = data.note;
                 root.notesById = fresh;
@@ -2083,9 +2285,9 @@ PlasmoidItem {
                     root.notesById = fresh;
                     root.notesByIdChanged();
                 }
-                root.lastError = i18n("This note changed elsewhere. Its colour was not changed.");
+                root.diteEcriture(i18n("This note changed elsewhere. Its colour was not changed."));
             },
-            root.echecEcriture));
+            root.echecEcriture, root.hasRichText));
     }
 
     /* ── Fermer un carré ─────────────────────────────────────────────────
@@ -2115,16 +2317,16 @@ PlasmoidItem {
          * impossible à suivre, et le carré n'était plus fermable autrement
          * qu'en éditant la configuration à la main. */
         if (root.enAttente > 0) {
-            root.lastError = i18np("This note has not reached Symbifox yet. Wait for it to go, then close.",
-                                   "%1 notes have not reached Symbifox yet. Wait for them to go, then close.",
-                                   root.enAttente);
+            root.diteEcriture(i18np("This note has not reached Symbifox yet. Wait for it to go, then close.",
+                                    "%1 notes have not reached Symbifox yet. Wait for them to go, then close.",
+                                    root.enAttente));
             return;
         }
         /* Ce qui est tapé mais pas encore enregistré — et SEULEMENT pour la
          * note de CE carré. `enTrainDEcrire` répond « y a-t-il un brouillon
          * quelque part », ce qui n'est pas la même question. */
         if (root.brouillonNonEnregistre(root.pinnedNoteId)) {
-            root.lastError = i18n("This note is not saved yet. It will be sent in a moment — then close it.");
+            root.diteEcriture(i18n("This note is not saved yet. It will be sent in a moment — then close it."));
             return;
         }
         var geste = Plasmoid.internalAction ? Plasmoid.internalAction("remove") : null;
@@ -2136,7 +2338,7 @@ PlasmoidItem {
          * bouton mort. Retirer le widget par un script de bureau serait
          * possible, mais il faudrait le retrouver par sa note — et deux carrés
          * sur la même note partiraient ensemble. */
-        root.lastError = i18n("This desktop would not close the note. Remove the widget from the desktop instead.");
+        root.diteEcriture(i18n("This desktop would not close the note. Remove the widget from the desktop instead."));
     }
 
     /* ── Un carré neuf, vide ─────────────────────────────────────────────
@@ -2208,6 +2410,10 @@ PlasmoidItem {
             return;
         }
         var enCours = root.noteBrouillon(root.idCarreNeuf);
+        /* ⚠️ Et son MODE, lu AVANT de ranger quoi que ce soit : recopier le
+         * texte sans lui ferait relire un brouillon riche en texte simple sous
+         * sa nouvelle clé. */
+        var modeEnCours = root.brouillonRiche(root.idCarreNeuf);
         Plasmoid.configuration.noteId = note.id;
         Plasmoid.configuration.adopteUuid = "";
         Plasmoid.configuration.writeConfig();
@@ -2217,7 +2423,7 @@ PlasmoidItem {
          * brouillon mort, que plus rien n'effaçait. */
         if (enCours !== undefined && enCours !== null
                 && enCours !== (note.text || "")) {
-            root.poseBrouillon(note.id, enCours);
+            root.poseBrouillon(note.id, enCours, modeEnCours === true);
         } else {
             /* ⚠️ Et on EFFACE la clé d'arrivée. Elle peut porter un brouillon
              * mort d'une vie antérieure de ce carré ; le laisser rouvrirait
@@ -2229,7 +2435,15 @@ PlasmoidItem {
 
     /* Ce carré neuf vient de recevoir son premier texte : on crée la note, et
      * on retiendra son identifiant quand le serveur l'aura donné. */
-    function creerDansCeCarre(texte) {
+    /* `riche` dit que `texte` EST du HTML (le corps, sans l'enveloppe de Qt).
+     *
+     * 🔴 Le vide ne se mesure pas sur ce corps. Un éditeur riche vide rend un
+     * document qui porte quand même un paragraphe (`-qt-paragraph-type:empty`)
+     * : `.trim()` ne serait jamais vide, et le premier clic dans un carré neuf
+     * aurait créé une note vide. C'est l'appelant qui juge, sur le texte NU de
+     * Qt (`getText`), et il ne nous appelle pas si c'est blanc. La garde
+     * ci-dessous reste pour le chemin en texte simple. */
+    function creerDansCeCarre(texte, riche) {
         if (!texte || !texte.trim()) {
             return;
         }
@@ -2239,14 +2453,20 @@ PlasmoidItem {
          * notes — et le carré n'en adopterait qu'une. Tant que l'entrée n'est
          * pas partie, on la corrige sur place. */
         var enCours = Plasmoid.configuration.adopteUuid;
-        if (enCours && Store.retexte(root.outbox, enCours, texte)) {
+        /* 🔴 `riche` AUSSI, à la correction. La file garde l'entrée et
+         * remplaçait son seul texte : un carré neuf où l'on tape AVANT la
+         * réponse du `/ping` met une entrée en texte simple, puis la capacité
+         * arrive, le champ devient riche, et la frappe suivante corrigeait
+         * cette entrée avec du HTML dans la clé `text`. Le corps HTML devenait
+         * le contenu visible de la note. */
+        if (enCours && Store.retexte(root.outbox, enCours, texte, riche)) {
             root.rangeOutbox();
             root.flush();
             return;
         }
         var uuid = root.makeUuid();
         root.outbox = Store.queueCreate(root.outbox, texte.trim(), uuid,
-                                        root.couleurNeuve);
+                                        root.couleurNeuve, !!riche);
         /* ⚠️ Rangé dans la CONFIGURATION et pas en mémoire : si plasmashell
          * redémarre entre la frappe et l'envoi, la file survit (elle est dans
          * la configuration) — l'intention d'adopter doit survivre avec elle,

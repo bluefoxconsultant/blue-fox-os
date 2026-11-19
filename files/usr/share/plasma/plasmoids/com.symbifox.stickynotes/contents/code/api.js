@@ -76,6 +76,18 @@ function call(opts) {
     if (opts.body !== undefined) {
         xhr.setRequestHeader("Content-Type", "application/json");
     }
+    /* #27250, lot « mise en forme ». `html` et `rich_editable` ne sortent du
+     * serveur que si on les demande, et c'est un EN-TÊTE qui le demande — il
+     * vaut pour un GET comme pour un POST.
+     *
+     * ⚠️ Passé par appel (`opts.riche`), jamais par une variable de module : un
+     * `.pragma library` partage ses variables entre toutes les instances du
+     * moteur, et la capacité du serveur est découverte par chaque instance
+     * séparément. C'est la règle que `APP_VERSION` a le droit d'enfreindre et
+     * rien d'autre. */
+    if (opts.riche && opts.token) {
+        xhr.setRequestHeader("X-Symbifox-Rich", "1");
+    }
     /* The caller arms a timer and calls this when it fires. Aborting makes
      * `onreadystatechange` fire with status 0, which is already handled as
      * « offline » — so there is nothing else to unwind. */
@@ -230,6 +242,7 @@ function list(server, token, opts, onSuccess, onError) {
     if (opts.offset) { q.push("offset=" + opts.offset); }
     return call({
         server: server, token: token,
+        riche: !!opts.riche,
         path: NOTES_PATH + "/notes" + (q.length ? "?" + q.join("&") : ""),
         onSuccess: onSuccess, onError: onError
     });
@@ -247,9 +260,10 @@ function list(server, token, opts, onSuccess, onError) {
  * a cessé de partager. Le carré doit le dire, pas afficher une note périmée
  * pour toujours.
  */
-function one(server, token, noteId, onSuccess, onError) {
+function one(server, token, noteId, onSuccess, onError, riche) {
     return call({
         server: server, token: token,
+        riche: !!riche,
         path: NOTES_PATH + "/notes/" + encodeURIComponent(noteId),
         onSuccess: onSuccess, onError: onError
     });
@@ -271,13 +285,25 @@ function visibleIds(server, token, shared, onSuccess, onError) {
  * l'élégance : la glisser avant aurait décalé tous les appels existants, y
  * compris ceux des essais, en silence. Un paramètre ajouté à la fin ne casse
  * personne. */
-function create(server, token, text, clientUuid, onSuccess, onError, couleur) {
-    var corps = { text: text, client_uuid: clientUuid };
+/* ⚠️ `riche` en dernier, pour la même raison que `couleur` : un paramètre
+ * ajouté à la fin ne décale aucun appel existant.
+ *
+ * 🔴 `text` ET `html` à la fois, le serveur les REFUSE (« Send either text or
+ * html, not both ») : l'ordre des clés d'un objet JSON n'engage personne, donc
+ * il ne devine pas. Ici l'un OU l'autre, décidé par `riche`. */
+function create(server, token, text, clientUuid, onSuccess, onError, couleur, riche) {
+    var corps = { client_uuid: clientUuid };
+    if (riche) {
+        corps.html = text;
+    } else {
+        corps.text = text;
+    }
     if (couleur) {
         corps.color_hex = couleur;
     }
     return call({
         server: server, token: token,
+        riche: !!riche,
         path: NOTES_PATH + "/notes",
         method: "POST",
         body: corps,
@@ -287,12 +313,25 @@ function create(server, token, text, clientUuid, onSuccess, onError, couleur) {
 
 /* `writeDate` is what the server compares to detect a conflict: pass the one
  * the widget had when the person started typing, never a fresher one. */
-function update(server, token, noteId, vals, writeDate, onSuccess, onConflict, onError) {
+function update(server, token, noteId, vals, writeDate, onSuccess, onConflict, onError, riche) {
     var body = {};
     for (var k in vals) { body[k] = vals[k]; }
     body.write_date = writeDate;
     return call({
         server: server, token: token,
+        /* 🔴 La RÉPONSE d'une écriture porte la note, et c'est elle que le
+         * cache garde. Sans le drapeau, une écriture rend une note SANS
+         * `html` : le carré, qui rend `html`, se vide à chaque pause de frappe
+         * — et le `write_date` frais arrive quand même, donc rien ne le
+         * rattrape au tour suivant. Même chose pour le conflit 409, qui rend la
+         * copie du serveur.
+         *
+         * ⚠️ Ce paramètre ne se donne pas tout seul, et ce commentaire-ci a
+         * déjà laissé croire le contraire : il était écrit alors qu'AUCUN
+         * appelant ne passait l'argument. Les appelants sont `saveNote` et
+         * `choisirCouleur` dans `main.qml`, et un essai les tient depuis leur
+         * site d'appel. */
+        riche: !!riche,
         path: NOTES_PATH + "/notes/" + noteId,
         method: "POST",
         body: body,
