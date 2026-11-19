@@ -15,7 +15,7 @@
         "License": "LGPL-3.0-or-later",
         "Name": "Symbifox Sticky Notes",
         "Name[fr]": "Pense-bêtes Symbifox",
-        "Version": "2.2.2",
+        "Version": "2.3.0",
         "Website": "https://symbifox.com"
     },
     "X-Plasma-API-Minimum-Version": "6.0"

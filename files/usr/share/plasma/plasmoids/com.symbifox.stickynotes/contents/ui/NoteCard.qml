@@ -186,12 +186,33 @@ ColumnLayout {
                     }
                 }
 
-                /* L'aperçu. Le texte est déjà brut — le serveur l'a aplati —
-                 * donc aucune lecture de mise en forme n'a lieu ici. */
+                /* L'aperçu.
+                 *
+                 * #27250 : mis en forme quand le serveur a envoyé `html`. Sans
+                 * cela, une note que le carré montre en GRAS s'affichait ici
+                 * « des *courses* » — le balisage que `html2plaintext`
+                 * fabrique pour les clients en texte simple. Le même corps,
+                 * deux allures dans la même fenêtre.
+                 *
+                 * 🔴 Un corps venu du réseau ne tient ici que parce que le
+                 * serveur l'assainit TOUJOURS à la lecture : le sous-ensemble
+                 * n'a ni `img`, ni `a`, ni `style`, donc rien ici ne peut tirer
+                 * une adresse distante. C'est vrai de `StyledText` comme de
+                 * `RichText` — les deux savent charger une image.
+                 *
+                 * 🔴 `StyledText` et non `RichText`, et c'est MESURÉ sur
+                 * charizard (Qt 6.12) : avec `RichText`, `maximumLineCount` et
+                 * `elide` ne font plus rien. Sur une note d'une centaine de
+                 * mots, l'aperçu rendait 102 pixels de haut au lieu de 51,
+                 * `truncated` restait faux et aucun « … » ne paraissait — la
+                 * carte grandissait à la place. Le commentaire d'avant
+                 * affirmait l'inverse sans l'avoir mesuré. `StyledText` rend le
+                 * gras, l'italique, le souligné et le barré, coupe à trois
+                 * lignes, et met chaque `<li>` sur sa ligne. */
                 PlasmaComponents.Label {
                     Layout.fillWidth: true
-                    text: card.note.text || ""
-                    textFormat: Text.PlainText
+                    text: card.note.html || card.note.text || ""
+                    textFormat: card.note.html ? Text.StyledText : Text.PlainText
                     maximumLineCount: 3
                     wrapMode: Text.Wrap
                     elide: Text.ElideRight

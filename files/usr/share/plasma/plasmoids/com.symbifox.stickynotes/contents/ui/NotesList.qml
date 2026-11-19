@@ -120,9 +120,43 @@ ColumnLayout {
     }
 
     /* ── Ce qui ne va pas, quand quelque chose ne va pas ─────────────────── */
+
+    /* 🔴 Ce que l'ÉCRITURE a dit, et qu'aucun battement de sonde n'efface.
+     *
+     * La liste écrit elle aussi (son composeur), donc elle porte la même boîte
+     * durable que le carré. ⚠️ Et la ligne du dessous se tait quand elle
+     * répéterait celle-ci : `diteEcriture` remplit les DEUX canaux, pour que la
+     * liste et l'écran d'appairage gardent leur câblage. */
+    RowLayout {
+        Layout.fillWidth: true
+        visible: root.messageEcriture.length > 0
+        spacing: Kirigami.Units.smallSpacing
+
+        PlasmaComponents.Label {
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            font: Kirigami.Theme.smallFont
+            color: Kirigami.Theme.negativeTextColor
+            text: root.messageEcriture
+        }
+
+        PlasmaComponents.ToolButton {
+            icon.name: "window-close"
+            flat: true
+            focusPolicy: Qt.NoFocus
+            display: PlasmaComponents.AbstractButton.IconOnly
+            implicitWidth: Math.round(Kirigami.Units.gridUnit * 1.4)
+            implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.4)
+            onClicked: root.oublieLeMessage()
+            PlasmaComponents.ToolTip.text: i18n("Dismiss")
+            PlasmaComponents.ToolTip.visible: hovered
+            PlasmaComponents.ToolTip.delay: Kirigami.Units.toolTipDelay
+        }
+    }
+
     PlasmaComponents.Label {
         Layout.fillWidth: true
-        visible: text.length > 0
+        visible: text.length > 0 && root.lastError !== root.messageEcriture
         wrapMode: Text.Wrap
         font: Kirigami.Theme.smallFont
         color: Kirigami.Theme.negativeTextColor

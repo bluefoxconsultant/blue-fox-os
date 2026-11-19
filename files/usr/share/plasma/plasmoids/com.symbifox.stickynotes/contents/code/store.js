@@ -150,8 +150,19 @@ function shouldPull(previous, fresh) {
  * on the way back, a widget restarted mid-flush — cannot create duplicates:
  * the server is idempotent on `client_uuid`.
  */
-function queueCreate(outbox, text, uuid, couleur) {
+/* `riche` en dernier : les entrées déjà rangées dans la configuration par une
+ * version d'avant n'ont pas la clé, elle y vaut donc « faux », et une création
+ * en attente part en TEXTE comme avant. Aucune migration. */
+function queueCreate(outbox, text, uuid, couleur, riche) {
     var entree = { uuid: uuid, text: text, tries: 0 };
+    /* 🔴 Le corps d'une note NEUVE mise en forme voyage ici, en HTML, et pas
+     * seulement en mémoire : sans cela, taper un mot en gras dans un carré
+     * neuf hors ligne perdait le gras à l'arrivée — en silence, puisque la
+     * note, elle, arrivait bien. Absente plutôt que fausse : la clé ne paraît
+     * que quand le corps EST du HTML. */
+    if (riche) {
+        entree.riche = true;
+    }
     /* La couleur voyage AVEC la note : une note tapée hors ligne doit arriver
      * de la même couleur que celle qu'on voyait sur le bureau en la tapant.
      * ⚠️ Absente plutôt que vide : une clé vide vaut « retire la couleur »
@@ -180,10 +191,26 @@ function queueCreate(outbox, text, uuid, couleur) {
  *
  * Rend vrai si l'entrée a été retrouvée : l'appelant doit savoir qu'il n'a PAS
  * à créer, sinon on retombe dans le défaut qu'on vient de fermer. */
-function retexte(outbox, uuid, texte) {
+/* 🔴 `riche` en quatrième, et il n'est pas optionnel au sens du contrat : une
+ * correction qui remplace le TEXTE sans toucher le mode laisse une entrée
+ * mentir sur son propre corps. Le parcours, raisonné puis fermé : carré neuf,
+ * on tape avant la réponse du premier `/ping` (où `hasRichText` est faux),
+ * l'entrée part en texte simple ; la capacité arrive, le champ devient riche ;
+ * on continue de taper, et `creerDansCeCarre` corrigeait cette entrée avec du
+ * HTML — qui serait parti dans la clé `text`. Le corps HTML devenait le
+ * contenu visible de la note.
+ *
+ * ⚠️ Absente plutôt que fausse, comme à la création : la clé ne paraît que
+ * quand le corps EST du HTML. */
+function retexte(outbox, uuid, texte, riche) {
     for (var i = 0; i < (outbox || []).length; i++) {
         if (outbox[i].uuid === uuid) {
             outbox[i].text = String(texte === undefined || texte === null ? "" : texte).trim();
+            if (riche) {
+                outbox[i].riche = true;
+            } else {
+                delete outbox[i].riche;
+            }
             return true;
         }
     }
