@@ -34,12 +34,15 @@ def test_il_y_a_des_recipes_tenant():
 @pytest.mark.parametrize("recipe", RECIPES_TENANT, ids=lambda p: p.name)
 def test_chaque_recipe_appelle_le_script(recipe):
     # Bibliotheque standard seulement : le job CI « stdlib-only » n'a pas yaml.
-    # On exige une ligne de snippet (hors commentaire) qui EXECUTE le script ;
-    # une simple mention en commentaire ne compte pas.
+    # On exige une ligne de snippet (hors commentaire) qui EXECUTE le script.
+    # ⚠️ La commande exacte, pas le nom seul : la ligne nomme aussi le script
+    # dans son test d'existence et dans son message d'erreur, et un premier
+    # jet qui cherchait le nom « quelque part sur une ligne avec exec bash »
+    # restait vert quand on remplacait la cible de l'exec (temoin du 2026-11-20).
+    attendu = 'exec bash "$D/depots-fedora-dans-etc.sh"'
     lignes = [l for l in recipe.read_text().splitlines()
               if not l.lstrip().startswith("#")]
-    assert any("depots-fedora-dans-etc.sh" in l and "exec bash" in l
-               for l in lignes), recipe.name
+    assert any(attendu in l for l in lignes), recipe.name
 
 
 def test_fedora_45_copie_les_depots_fournisseur(tmp_path):
