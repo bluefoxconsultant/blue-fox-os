@@ -279,6 +279,13 @@ modules:
       enabled:
         - bluefox-lock-reload.path
 
+  # Depots Fedora visibles a bootc-image-builder (#23941, mesure du 2026-11-20) :
+  # Fedora 45 les range dans /usr/share/dnf5/repos.d, que BIB ne lit pas. Sans
+  # ce module, aucune ISO ne se batit. Voir files/scripts/depots-fedora-dans-etc.sh.
+  - type: script
+    snippets:
+      - for D in "${CONFIG_DIRECTORY}/scripts" "${CONFIG_DIRECTORY}/files/scripts"; do [ -f "$D/depots-fedora-dans-etc.sh" ] && exec bash "$D/depots-fedora-dans-etc.sh"; done; echo "ERREUR - depots-fedora-dans-etc.sh introuvable sous ${CONFIG_DIRECTORY}" >&2; exit 1
+
   - type: signing
 
   # Politique de verification des mises a jour (#27109). APRES `signing`, dont
