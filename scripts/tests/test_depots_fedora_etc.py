@@ -9,7 +9,6 @@ import pathlib
 import subprocess
 
 import pytest
-import yaml
 
 RACINE = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = RACINE / "files" / "scripts" / "depots-fedora-dans-etc.sh"
@@ -34,10 +33,13 @@ def test_il_y_a_des_recipes_tenant():
 
 @pytest.mark.parametrize("recipe", RECIPES_TENANT, ids=lambda p: p.name)
 def test_chaque_recipe_appelle_le_script(recipe):
-    modules = yaml.safe_load(recipe.read_text())["modules"]
-    snippets = [s for m in modules if m.get("type") == "script"
-                for s in m.get("snippets", [])]
-    assert any("depots-fedora-dans-etc.sh" in s for s in snippets), recipe.name
+    # Bibliotheque standard seulement : le job CI « stdlib-only » n'a pas yaml.
+    # On exige une ligne de snippet (hors commentaire) qui EXECUTE le script ;
+    # une simple mention en commentaire ne compte pas.
+    lignes = [l for l in recipe.read_text().splitlines()
+              if not l.lstrip().startswith("#")]
+    assert any("depots-fedora-dans-etc.sh" in l and "exec bash" in l
+               for l in lignes), recipe.name
 
 
 def test_fedora_45_copie_les_depots_fournisseur(tmp_path):
