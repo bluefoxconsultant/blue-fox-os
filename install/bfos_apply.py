@@ -346,7 +346,16 @@ def render_sssd_conf(policy) -> str:
 # login porte le mot de passe de liaison LDAP depuis le 2026-09-11 : c'est un
 # compte de service de l'annuaire, il n'a rien a faire dans un fichier que la
 # session peut lire.
-_SECRETS_DE_POLITIQUE = (("install", "login", "bind_password"),)
+#
+# ⚠️ `departure` n'est pas un secret, et il ne doit pas etre public non plus
+# (#23941, E2 du tour 2) : il porte le login de la personne VISEE et le mode de
+# l'ordre, et ce fichier est en 0644. La personne visee y lisait qu'un
+# effacement l'attend, et avait alors tout interet a ne plus rebrancher le
+# poste — ce qui desarme la fonction — ou a sortir la cle maitresse du noyau
+# pendant que le volume est encore ouvert. Rien de ce que lit la session n'en a
+# l'usage : l'ordre ne voyage que sur l'entree standard de bluefox-wipe.
+_SECRETS_DE_POLITIQUE = (("install", "login", "bind_password"),
+                         ("departure",))
 
 PUBLIC_JSON = "/var/lib/bluefox-welcome/policy-public.json"
 

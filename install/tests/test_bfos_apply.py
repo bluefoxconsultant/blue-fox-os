@@ -429,6 +429,29 @@ def test_render_public_policy_garde_les_services():
     assert "bind_password" not in public["install"]["login"]
 
 
+def test_render_public_policy_retire_le_bloc_de_depart():
+    """🔴 #23941 (E2 du tour 2). Le bloc `departure` porte le login de la
+    personne VISEE et le mode de l'ordre, et ce fichier est en 0644 : la
+    personne visee y lisait qu'un effacement l'attend. Elle a alors tout
+    interet a ne plus rebrancher le poste — ce qui desarme la fonction,
+    puisqu'un poste qui ne se rebranche jamais ne s'efface jamais — ou a sortir
+    la cle maitresse du noyau pendant que le volume est encore ouvert.
+
+    Rien de ce que lit la session n'en a l'usage : l'ordre ne voyage que sur
+    l'entree standard de bluefox-wipe."""
+    depart = {"on_revoke": "wipe", "offline_max_days": 7,
+              "order": {"mode": "wipe", "order_id": "ord-1",
+                        "machine_uuid": "uuid-1", "seat_only": False,
+                        "target_login": "personne@exemple.test"}}
+    rendu = ba.render_public_policy({**POLICY, "departure": depart})
+    public = json.loads(rendu)
+    assert "departure" not in public
+    for trace in ("ord-1", "personne@exemple.test", "on_revoke"):
+        assert trace not in rendu
+    # Et la politique servie au %post reste entiere : deepcopy, pas une vue.
+    assert depart["order"]["order_id"] == "ord-1"
+
+
 def test_render_public_policy_ne_touche_pas_l_original():
     """deepcopy, pas une vue : la politique servie au %post reste entiere."""
     ba.render_public_policy(POLICY)

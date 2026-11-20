@@ -35,6 +35,26 @@ CE QU'IL APPLIQUE, ET CE QU'IL LAISSE TRANQUILLE
      Impose et retabli, pas inviolable : un sudoer reecrit le fichier jusqu'au
      passage suivant, et une application peut inhiber le verrouillage
      (lecture video, presentation, applet Energie).
+  5. L'ordre de depart (#23941), passe a /usr/libexec/bluefox-wipe sur son
+     entree standard, TEL QU'IL ARRIVE : la portee de la purge (`seat_only`,
+     `target_login`) est dans l'ordre, et rien n'en est deduit ici.
+     ⚠️ UN ORDRE N'ARRIVE QUE DANS UNE CHARGE « bf-policy/order-v1 » (contrat 9
+     de #23941). Odoo la sert des qu'un ordre attend, autorise ou non, et elle
+     ne porte RIEN d'autre : pas de politique, donc pas de Flatpak, pas de
+     sssd, pas de verrou, et l'ordre ne peut pas atterrir dans la copie 0644.
+     Un ordre trouve dans une charge v2 n'est PAS execute — il est journalise
+     en ALERTE et l'unite sort en echec, parce que le serveur le sert sur un
+     canal qu'un poste du parc ne saurait pas lire. Un « wipe » reussi demande
+     un redemarrage : la synchronisation S'ARRETE alors la, parce que
+     `systemctl reboot` rend la main tout de suite et que la suite reecrirait
+     Flatpak, sssd et le verrou pendant l'extinction. Un ordre que l'assistant
+     n'a pas pu mener a terme fait sortir l'unite en ECHEC : cet etat-la exige
+     un humain, il ne doit pas etre vert.
+     Le poste ANNONCE sa capacite de depart a chaque synchro (contrat 10) :
+     voir EN_TETE_CAPACITES.
+     ⚠️ Le bloc « departure » d'une politique v2 (`on_revoke`,
+     `offline_max_days`) est purement informatif : rien sur le poste ne le lit,
+     et il est RETIRE de la copie 0644 (voir `_sans_depart`).
 
 Le reste du bloc « install » — nom d'hote, locale, disposition clavier, mode de
 connexion — n'est DELIBEREMENT pas reapplique. Ces reglages se posent sur un
@@ -85,6 +105,11 @@ import urllib.request
 
 MACHINE_JSON = "/etc/bluefox/machine.json"
 PROVISIONING_JSON = "/var/lib/bluefox-welcome/provisioning.json"
+# Meme valeur que bfos_apply.PUBLIC_JSON, et un essai exige qu'elles collent.
+# Elle est reprise ici pour que le chemin se relise A L'APPEL : quand il ne
+# vivait que dans le module de l'image, aucun essai ne pouvait le rediriger, et
+# un essai qui oubliait `public_path` ecrivait dans le /var du poste de dev.
+PUBLIC_JSON = "/var/lib/bluefox-welcome/policy-public.json"
 STATE_JSON = "/var/lib/bluefox-welcome/policy-sync.json"
 FLATPAK_DIR = "/etc/bluebuild/default-flatpaks/system"
 SSSD_CONF = "/etc/sssd/sssd.conf"
@@ -96,7 +121,29 @@ APPLY_MODULE = "/usr/lib/bluefox/bfos_apply.py"
 # (ostree range le /etc de l'image sous /usr/etc). Voir apply_screen_lock.
 LOCK_PATH = "/etc/xdg/kscreenlockerrc"
 LOCK_BASE = "/usr/etc/xdg/kscreenlockerrc"
+WIPE_HELPER = "/usr/libexec/bluefox-wipe"
+DEPARTURE_MARKER = "/var/lib/bluefox-welcome/departure-pending.json"
+# Trace laissee par l'assistant quand le serveur a REFUSE un compte rendu (409,
+# 400) : un ordre execute dont la fiche ne garde rien. Rien ne la relisait, elle
+# n'entrait pas dans l'etat, et l'unite redevenait verte au passage suivant
+# (M9). Elle est donc portee a l'etat TANT QU'ELLE EXISTE, et elle y tient
+# l'unite en echec : cet etat exige un humain, et c'est l'humain qui la retire.
+DEPARTURE_TRACE = "/var/lib/bluefox-welcome/departure-sans-suite.json"
+# Schema de la charge reduite (ordre de depart seul, sans politique). Elle ne
+# porte PAS « bf-policy/v2 » : voir fetch_policy.
+SCHEMA_ORDRE = "bf-policy/order-v1"
 AUTH_PREFIX = "bfos-machine "
+# ⚠️ CONTRAT 10 DE #23941, ET C'EST UN CONTRAT AVEC bf_policy : le poste
+# ANNONCE ce qu'il sait faire, a chaque synchronisation. Sans cette annonce,
+# Odoo pouvait poser un ordre de depart sur un poste dont l'image ne connait
+# pas du tout le bloc « departure » : l'agent d'avant l'ignorait en sortant 0,
+# unite verte, et la fiche affichait « Ordre remis au poste » pour toujours —
+# aucun des deux bouts ne pouvait le savoir. Odoo inscrit la capacite sur la
+# fiche et refuse de poser un ordre sur un poste qui ne l'a pas annoncee.
+# Le nom et la valeur ne se changent pas d'un seul cote : un jeton par
+# capacite, separes par « , ».
+EN_TETE_CAPACITES = "X-BFOS-Capabilities"
+CAPACITES = ("departure",)
 TIMEOUT = 30
 
 
@@ -153,7 +200,12 @@ def fetch_policy(endpoint, token, opener=None):
     req = urllib.request.Request(endpoint)
     req.add_header("Authorization", f"Bearer {AUTH_PREFIX}{token}")
     req.add_header("Accept", "application/json")
-    open_url = opener or urllib.request.build_opener(_NoRedirect()).open
+    # Contrat 10 : « remis » ne doit pas se confondre avec « remis a un agent
+    # qui sait le lire ». Voir EN_TETE_CAPACITES.
+    req.add_header(EN_TETE_CAPACITES, ", ".join(CAPACITES))
+    # `is not None` : un double faux n'est pas une absence de double.
+    open_url = (opener if opener is not None
+                else urllib.request.build_opener(_NoRedirect()).open)
     try:
         with open_url(req, timeout=TIMEOUT) as resp:
             raw = resp.read().decode()
@@ -170,6 +222,16 @@ def fetch_policy(endpoint, token, opener=None):
         policy = json.loads(raw)
     except ValueError as exc:
         return None, f"reponse illisible ({exc})"
+    if isinstance(policy, dict) and policy.get("schema") == SCHEMA_ORDRE:
+        # Charge reduite : l'usager du poste n'est plus autorise, mais un ordre
+        # de depart attend. Elle porte SON PROPRE schema et aucune cle
+        # `install` — l'agent d'avant tombe donc sur « reponse hors schema
+        # bf-policy/v2 », n'ecrit RIEN et garde sa politique. C'est le bon
+        # echec : une charge reduite annoncee « bf-policy/v2 » avec un
+        # `install: {}` vide passait son controle de forme, devenait le
+        # provisioning.json du poste, et un poste simplement verrouille
+        # perdait toute sa configuration a chaque heure.
+        return policy, "ok (ordre seul)"
     if not (isinstance(policy, dict) and policy.get("schema") == "bf-policy/v2"
             and isinstance(policy.get("install"), dict)):
         return None, "reponse hors schema bf-policy/v2"
@@ -240,10 +302,41 @@ def write_policy(path, policy) -> bool:
     return True
 
 
+def _sans_depart(policy):
+    """La politique sans son bloc « departure ».
+
+    ⚠️ POURQUOI IL NE DOIT JAMAIS ENTRER DANS LA COPIE 0644 (E2 du tour 2,
+    contrat 9) — `write_public` recopiait le bloc tel quel, donc le login de la
+    personne VISEE et le mode de l'ordre, dans un fichier que la session lit.
+    Et a chaque passage, tant que l'ordre echouait. La personne visee y lisait
+    qu'un effacement l'attend : elle a alors tout interet a ne plus rebrancher
+    le poste — ce qui desarme la fonction, puisqu'un poste qui ne se rebranche
+    jamais ne s'efface jamais — ou a sortir la cle maitresse du noyau pendant
+    que le volume est encore ouvert (W10).
+
+    Odoo ne sert plus l'ordre dans une charge v2 (contrat 9) : c'est la source.
+    Ceci est la CEINTURE, et elle n'est pas redondante : `load_apply` charge la
+    copie de bfos_apply.py posee DANS L'IMAGE, qui peut etre anterieure a ce
+    lot et donc ne rien expurger. Une ceinture posee la ou le fichier s'ecrit
+    ne depend ni du serveur ni de l'age de l'image.
+
+    Rien sur le poste ne lit `departure` : ni l'agent d'accueil, ni la session.
+    `on_revoke` et `offline_max_days` y sont informatifs pour l'operateur qui
+    lit provisioning.json (0600, root), et l'ordre lui-meme ne voyage que sur
+    l'entree standard de l'assistant.
+    """
+    if not isinstance(policy, dict) or "departure" not in policy:
+        return policy
+    return {cle: valeur for cle, valeur in policy.items()
+            if cle != "departure"}
+
+
 def write_public(path, policy, apply_mod) -> bool:
     """Ecrit la copie expurgee si son CONTENU a change (meme regle que
-    write_policy : `generated_at` seul n'est pas un changement)."""
-    content = apply_mod.render_public_policy(policy)
+    write_policy : `generated_at` seul n'est pas un changement).
+
+    Le bloc « departure » est retire AVANT le rendu : voir `_sans_depart`."""
+    content = apply_mod.render_public_policy(_sans_depart(policy))
     try:
         with open(path) as fh:
             current = json.load(fh)
@@ -295,12 +388,13 @@ def apply_apps(policy, apply_mod, flatpak_dir=FLATPAK_DIR) -> tuple:
     return True, "listes Flatpak reecrites (" + ", ".join(changed) + ")"
 
 
-def trigger_flatpak_setup(run=subprocess.run) -> bool:
+def trigger_flatpak_setup(run=None) -> bool:
     """Declenche la convergence des applications tout de suite.
 
     Necessaire parce que system-flatpak-setup.timer est en OnBootSec=30 : sans
     ce coup de pouce, une machine allumee en continu n'appliquerait la nouvelle
     liste qu'a son prochain demarrage."""
+    run = run if run is not None else subprocess.run
     try:
         run(["systemctl", "start", "--no-block", "system-flatpak-setup.service"],
             check=False)
@@ -503,7 +597,7 @@ def _authtok_en_place(sssd_conf):
     return ""
 
 
-def apply_seat_access(policy, apply_mod, sssd_conf=SSSD_CONF, run=subprocess.run):
+def apply_seat_access(policy, apply_mod, sssd_conf=None, run=None):
     """Poste partage : reecrit sssd.conf si ses regles d'acces ont change.
 
     Rend (change, detail). Ne touche a rien hors d'un poste partage en mode
@@ -519,6 +613,8 @@ def apply_seat_access(policy, apply_mod, sssd_conf=SSSD_CONF, run=subprocess.run
     mot de passe se reprend donc du fichier en place quand la politique n'en
     porte pas, et sans mot de passe nulle part le fichier reste tel quel.
     """
+    sssd_conf = sssd_conf or SSSD_CONF
+    run = run if run is not None else subprocess.run
     if not isinstance(policy.get("seat"), dict):
         return False, "poste personnel : acces inchange"
     install = policy.get("install") or {}
@@ -538,6 +634,153 @@ def apply_seat_access(policy, apply_mod, sssd_conf=SSSD_CONF, run=subprocess.run
     return True, "acces du poste mis a jour"
 
 
+# ------------------------------------------------------- ordre de depart
+def rejouer_compte_rendu(run=None, helper=WIPE_HELPER,
+                         marker=DEPARTURE_MARKER):
+    """Un compte rendu de depart en attente ? On le remet avant tout le reste.
+
+    Un poste qui a efface ses cles et n'a pas pu le dire au serveur garde ce
+    marqueur et NE redemarre pas : sa fiche resterait sur « ordre remis » sans
+    jamais savoir. Remettre le compte rendu est donc le geste le plus urgent de
+    la synchronisation, avant meme de tirer la politique.
+
+    Rend (rejoue, redemarrage_demande, detail, ok). `redemarrage_demande`
+    arrete la synchronisation sur place : `systemctl reboot` rend la main tout
+    de suite, et la suite reecrirait Flatpak, sssd et le verrou d'ecran pendant
+    l'extinction.
+
+    ⚠️ `ok` EXISTE PARCE QUE LE CODE DE L'ASSISTANT PARTAIT A LA POUBELLE
+    (M5 du tour 2). Un marqueur que l'assistant REFUSE — resultat inutilisable,
+    UUID d'un autre poste — le faisait rendre 0 sans rien faire : l'etat
+    ecrivait « compte rendu en attente rejoue (code 0) » avec `status: ok`,
+    toutes les heures, indefiniment, sur l'unite la plus verte du poste. Un
+    compte rendu en attente qui ne passe pas est exactement l'etat qui exige un
+    humain : il ne doit pas etre vert.
+    """
+    if not os.path.exists(marker):
+        return False, False, "aucun compte rendu en attente", True
+    # Lu AVANT de lancer l'assistant : s'il rend compte et redemarre, le
+    # marqueur n'existe plus apres.
+    voulait_redemarrer = False
+    try:
+        with open(marker) as fh:
+            voulait_redemarrer = bool(json.load(fh).get("reboot"))
+    except (OSError, ValueError):
+        pass
+    code, note = _lancer(helper, ["--rejouer-le-compte-rendu"], run=run)
+    if note:
+        log(note)
+    redemarre = (code == 0 and voulait_redemarrer
+                 and not os.path.exists(marker))
+    detail = f"compte rendu en attente rejoue (code {code})"
+    if redemarre:
+        detail += " — redemarrage demande"
+    elif code != 0:
+        detail += " — NON PRIS par le serveur ou marqueur refuse : voir le "\
+                  "journal de bluefox-wipe"
+    return True, redemarre, detail, code == 0
+
+
+def _lancer(helper, args, entree=None, run=None):
+    """Lance l'assistant d'effacement. Rend (code, note). Ne leve pas.
+
+    `run` se resout A L'APPEL : une valeur par defaut liee a l'import ne se
+    laisse pas doubler sous essai (meme defaut que E3 dans bluefox-wipe).
+
+    ⚠️ `is not None`, jamais `or` : les doubles de la suite sont des
+    sous-classes de `list`, donc FAUX tant qu'ils n'ont rien enregistre, et
+    `or` repartait sur le vrai `subprocess.run`."""
+    run = run if run is not None else subprocess.run
+    try:
+        proc = run([helper] + list(args), input=entree, text=True, check=False)
+    except (OSError, ValueError) as exc:
+        # Present mais pas executable, interpreteur absent, /usr en lecture
+        # seule : ce n'est pas un ordre agi, c'est une panne locale.
+        return 127, f"{helper} non lancable ({exc})"
+    return proc.returncode, ""
+
+
+def apply_departure_order(policy, run=None, helper=WIPE_HELPER):
+    """Passe un ordre de depart a l'assistant.
+
+    Rend un dict : `agi` (quelque chose a ete fait), `ok` (l'unite peut sortir
+    verte), `redemarrage` (l'assistant a demande un redemarrage) et `detail`.
+
+    ⚠️ L'ordre part sur l'ENTREE STANDARD : les arguments d'un processus se
+    lisent dans /proc, et le compte rendu voyage avec le jeton de la machine.
+
+    ⚠️ L'ORDRE PART TEL QU'IL ARRIVE. La version precedente y ajoutait un
+    `seat` et un `login` fabriques depuis la POLITIQUE : la portee de la purge
+    se decidait donc sur `policy["user"]["login"]`, vide sur un poste partage,
+    et la branche « purger tout le cache » se prenait precisement la ou elle ne
+    devait jamais se prendre. La cible est dans l'ordre (`seat_only`,
+    `target_login`), servie par Odoo, et rien n'est deduit ici.
+
+    Rien n'est verifie deux fois non plus. C'est l'assistant qui compare le
+    `machine_uuid` de l'ordre a celui du poste, parce que c'est lui qui detruit :
+    la garde est a cote du geste, en un seul endroit, pas repartie entre deux
+    fichiers qui pourraient diverger.
+    """
+    def verdict(agi, ok, detail, redemarrage=False):
+        return {"agi": agi, "ok": ok, "redemarrage": redemarrage,
+                "detail": detail}
+
+    depart = policy.get("departure")
+    if not isinstance(depart, dict):
+        return verdict(False, True, "politique sans bloc de depart")
+    ordre = depart.get("order")
+    if not isinstance(ordre, dict):
+        return verdict(False, True, "aucun ordre de depart")
+    if not os.path.exists(helper):
+        # Image d'avant cet assistant : on le dit fort plutot que de laisser
+        # croire qu'un ordre a ete execute.
+        return verdict(False, False,
+                       f"{helper} absent de l'image : ORDRE NON EXECUTE")
+    mode = ordre.get("mode", "?")
+    sans_cible = "seat_only" not in ordre or "target_login" not in ordre
+    charge = json.dumps(ordre)
+    code, note = _lancer(helper, [], entree=charge, run=run)
+    if note:
+        log(note)
+    suffixe = (" (ordre sans cible : aucune purge ciblee possible)"
+               if sans_cible else "")
+    if code == 0:
+        # Un « wipe » reussi redemarre le poste : l'assistant l'a deja demande.
+        return verdict(True, True, f"ordre de depart « {mode} » execute"
+                       + suffixe, redemarrage=(mode == "wipe"))
+    if code == 2:
+        return verdict(False, False,
+                       f"ordre de depart « {mode} » REFUSE par l'assistant")
+    if code == 1:
+        # Code 1 de l'assistant : il a travaille mais n'a pas pu finir —
+        # efface, compte rendu en attente, pas de redemarrage. C'est un ordre
+        # agi, et un etat qui exige un humain : l'unite sort en ECHEC.
+        return verdict(True, False,
+                       f"ordre de depart « {mode} » incomplet (code 1) : "
+                       "effacement, purge ou compte rendu non menes a terme, "
+                       "pas de redemarrage — voir le journal de bluefox-wipe"
+                       + suffixe)
+    if code < 0:
+        # ⚠️ `subprocess.run` rend un code NEGATIF quand l'enfant est tue par
+        # un signal : -15 pour le SIGTERM du `TimeoutStartSec=5min` de l'unite,
+        # -9 pour le tueur de memoire. Il tombait dans « code inattendu », et
+        # l'etat local affirmait « ORDRE NON EXECUTE » sur un poste dont la
+        # racine peut tres bien etre deja effacee — le marqueur d'intention est
+        # ecrit avant le premier luksErase, justement pour ce cas. On dit donc
+        # « peut-etre agi », et on renvoie au marqueur.
+        return verdict(True, False,
+                       f"ordre de depart « {mode} » : assistant INTERROMPU par "
+                       f"le signal {-code} — ordre PEUT-ETRE AGI, resultat "
+                       "inconnu ; voir departure-pending.json et le journal de "
+                       "bluefox-wipe" + suffixe)
+    # ⚠️ Tout autre code n'est PAS un ordre agi : 127 (assistant non
+    # executable, interpreteur absent) ecrivait « status: ok » et « ordre de
+    # depart » dans les changements, sur un poste ou rien ne s'etait passe.
+    return verdict(False, False,
+                   f"ordre de depart « {mode} » : code {code} inattendu, "
+                   "ORDRE NON EXECUTE — voir le journal de bluefox-wipe")
+
+
 def write_state(path, **fields):
     """Trace de la derniere synchronisation, pour le diagnostic a froid."""
     try:
@@ -549,22 +792,83 @@ def write_state(path, **fields):
 # ---------------------------------------------------------------------- main
 def sync(machine_path=MACHINE_JSON, provisioning_path=PROVISIONING_JSON,
          flatpak_dir=FLATPAK_DIR, state_path=STATE_JSON,
-         apply_module=APPLY_MODULE, opener=None, run=subprocess.run,
+         apply_module=APPLY_MODULE, opener=None, run=None,
          trigger=True, public_path=None, sssd_conf=None,
-         lock_path=LOCK_PATH, lock_base=LOCK_BASE) -> int:
+         lock_path=LOCK_PATH, lock_base=LOCK_BASE,
+         wipe_helper=WIPE_HELPER, marker_path=DEPARTURE_MARKER,
+         trace_path=DEPARTURE_TRACE) -> int:
     machine = read_machine(machine_path)
     if machine is None:
         log("machine non enrolee — rien a synchroniser")
         return 0
+
+    # Le plus urgent d'abord : un poste efface qui n'a pas pu le dire. S'il
+    # arrive a rendre compte, l'assistant demande le redemarrage et rien de ce
+    # qui suit n'a lieu.
+    rejoue, redemarrage, detail_rejeu, rejeu_ok = rejouer_compte_rendu(
+        run=run, helper=wipe_helper, marker=marker_path)
+    if rejoue:
+        log(detail_rejeu)
+    if redemarrage:
+        # ⚠️ `systemctl reboot` REND LA MAIN TOUT DE SUITE. Continuer ici
+        # reecrivait les listes Flatpak, sssd.conf et le verrou d'ecran
+        # pendant l'extinction — sur un poste dont le disque vient d'etre
+        # condamne, en plus. On s'arrete la.
+        log("redemarrage demande : synchronisation interrompue ici")
+        write_state(state_path,
+                    last_attempt=time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                               time.gmtime()),
+                    status="reboot", detail=detail_rejeu,
+                    machine_uuid=machine.get("machine_uuid", ""))
+        return 0
+
+    # M9 : la trace d'un compte rendu que le serveur a refuse n'etait relue par
+    # rien. Elle entre dans l'etat TANT QU'ELLE EXISTE, et elle y tient l'unite
+    # en echec : un ordre execute dont la fiche ne garde rien exige un humain,
+    # et c'est l'humain qui retire le fichier apres avoir regarde.
+    sans_suite = ""
+    if os.path.exists(trace_path):
+        sans_suite = (f"compte rendu sans suite garde dans {trace_path} : un "
+                      "ordre a ete execute et le serveur ne l'a pas pris. Un "
+                      "humain doit le reporter sur la fiche, puis retirer ce "
+                      "fichier.")
+        log(f"ALERTE — {sans_suite}")
+
+    def etat_rc(rc):
+        """L'unite ne redevient pas verte tant qu'une trace sans suite dort
+        sur le poste : c'est tout le point de M9."""
+        return 1 if (sans_suite or not rejeu_ok) else rc
 
     policy, note = fetch_policy(machine["endpoint"], machine["token"],
                                 opener=opener)
     stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     if policy is None:
         log(note)
-        write_state(state_path, last_attempt=stamp, status="skipped", detail=note,
+        write_state(state_path, last_attempt=stamp,
+                    status="skipped" if etat_rc(0) == 0 else "partial",
+                    detail=note, departure_sans_suite=sans_suite,
                     machine_uuid=machine.get("machine_uuid", ""))
-        return 0
+        return etat_rc(0)
+
+    # ⚠️ LA CHARGE D'ORDRE EST LE SEUL CHEMIN D'UN ORDRE DE DEPART (contrat 9).
+    # Odoo sert `bf-policy/order-v1` des qu'un ordre attend, que l'usager soit
+    # encore autorise ou non : un ordre ne voyage plus JAMAIS dans une charge
+    # v2. Elle ne porte QUE cet ordre et ne doit surtout pas devenir la
+    # politique du poste — un poste simplement verrouille y perdrait toute sa
+    # configuration.
+    # `order_only` reste en ceinture : le schema suffit a la reconnaitre.
+    if policy.get("order_only") or policy.get("schema") == SCHEMA_ORDRE:
+        depart = apply_departure_order(policy, run=run, helper=wipe_helper)
+        log(f"charge d'ordre de depart : {depart['detail']}")
+        ok = depart["ok"] and etat_rc(0) == 0
+        write_state(state_path, last_attempt=stamp, last_success=stamp,
+                    status="ok" if ok else "partial",
+                    changes=["ordre de depart"] if depart["agi"] else [],
+                    machine_uuid=machine.get("machine_uuid", ""),
+                    hostname=machine.get("hostname", ""),
+                    departure=depart["detail"],
+                    departure_sans_suite=sans_suite, order_only=True)
+        return 0 if ok else 1
 
     rc = 0
     changes = []
@@ -577,6 +881,31 @@ def sync(machine_path=MACHINE_JSON, provisioning_path=PROVISIONING_JSON,
         write_state(state_path, last_attempt=stamp, status="error", detail=str(exc),
                     machine_uuid=machine.get("machine_uuid", ""))
         return 1
+
+    # ⚠️ LA BRANCHE v2 NE CHERCHE PLUS D'ORDRE (contrat 9). Un ordre arrive
+    # dans une charge `order-v1`, et seulement la. Si un `departure.order`
+    # apparait quand meme dans une politique complete, on ne l'execute PAS —
+    # mais on ne se tait pas non plus : le taire rejouerait P2, ou la fiche
+    # affiche « Ordre remis au poste » pour toujours sans qu'aucun des deux
+    # bouts puisse le savoir. On le dit, et l'unite sort en echec, ce qui
+    # amene quelqu'un dans l'heure.
+    depart_v2 = policy.get("departure")
+    if not isinstance(depart_v2, dict):
+        depart_v2 = {}
+        detail_depart = ("politique sans bloc de depart"
+                         if "departure" not in policy
+                         else "bloc de depart illisible")
+    else:
+        detail_depart = "bloc de depart sans ordre"
+    if isinstance(depart_v2.get("order"), dict):
+        detail_depart = ("ordre de depart servi dans une charge "
+                         "« bf-policy/v2 » : NON EXECUTE. Le contrat est "
+                         f"« {SCHEMA_ORDRE} » des qu'un ordre attend — le "
+                         "serveur sert l'ordre sur le mauvais canal, et un "
+                         "poste du parc ne saurait pas le lire. Rien n'a ete "
+                         "touche.")
+        log(f"ALERTE — {detail_depart}")
+        rc = 1
 
     apply_mod = load_apply(apply_module)
     if apply_mod is None:
@@ -603,7 +932,7 @@ def sync(machine_path=MACHINE_JSON, provisioning_path=PROVISIONING_JSON,
         if access_changed:
             changes.append("acces du poste")
         try:
-            if write_public(public_path or apply_mod.PUBLIC_JSON, policy, apply_mod):
+            if write_public(public_path or PUBLIC_JSON, policy, apply_mod):
                 changes.append("copie de session")
         except OSError as exc:
             log(f"ecriture de la copie de session impossible ({exc})")
@@ -624,18 +953,24 @@ def sync(machine_path=MACHINE_JSON, provisioning_path=PROVISIONING_JSON,
 
     log("aucun changement" if not changes
         else "applique : " + ", ".join(changes))
+    rc = etat_rc(rc)
     write_state(state_path, last_attempt=stamp, last_success=stamp,
                 status="ok" if rc == 0 else "partial",
                 changes=changes, machine_uuid=machine.get("machine_uuid", ""),
-                hostname=machine.get("hostname", ""), screen_lock=detail_lock)
+                hostname=machine.get("hostname", ""), screen_lock=detail_lock,
+                departure=detail_depart, departure_sans_suite=sans_suite)
     return rc
 
 
-def main(argv=None):
+def main(argv=None, **chemins):
+    """⚠️ `**chemins` DESCEND JUSQU'A `sync` (meme famille que E3). Sans lui,
+    `main()` n'avait aucun parametre : aucun essai ne pouvait exercer la garde
+    root sans lire et ecrire les vrais fichiers du poste, donc la garde n'etait
+    pas mesuree du tout de ce cote-ci."""
     if os.geteuid() != 0:
         log("doit tourner en root")
         return 1
-    return sync()
+    return sync(**chemins)
 
 
 if __name__ == "__main__":
