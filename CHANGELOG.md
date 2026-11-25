@@ -6,6 +6,10 @@ Format : [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning Ca
 
 ### Security
 
+**Poste partagé : plus de mot de passe Nextcloud de l'opérateur sur le disque** (#28055, trouvé à l'essai en VM de #26119) :
+- Sur un poste partagé (bloc `seat`, ou politique sans login), le `%pre` frappait quand même un mot de passe d'application Nextcloud durable **au nom de qui autorise l'installation**. Le `%post` le déposait dans `/var/lib/bluefox-welcome/nc-credentials.json`, et `bluefox-seat-credentials` l'y laissait faute d'usager de siège, sans révocation. `bfos_provision.poste_sans_usager` arrête désormais la frappe avant tout appel réseau. Elle ne part pas non plus quand un poste partagé a été DEMANDÉ (`bfos.poste=`), même si un serveur antérieur a ignoré la demande.
+- Postes déjà installés en v1.0.2 : au démarrage, quand la politique porte un bloc `seat`, `bluefox-seat-credentials` révoque d'abord le mot de passe auprès de Nextcloud (`DELETE /ocs/v2.php/core/apppassword`, https seulement, au mieux), puis efface le fichier. Une politique illisible ne décide rien. Sans réseau, le journal dit « NON révoqué » : il faut alors le retirer dans Nextcloud, appareil « Blue Fox OS (poste de siege) » de l'opérateur.
+
 **Signature vérifiée des images, à l'installation et aux mises à jour** (#27109) :
 - La politique de conteneurs publiée visait `localhost/blue-fox-os-<slug>` (le build se fait avec `IMAGE_REGISTRY=localhost`) : `ghcr.io/bluefoxconsultant/...` tombait sous `"": insecureAcceptAnything` et aucune mise à jour n'était vérifiée. `files/scripts/politique-conteneurs.sh`, lancé après le module `signing`, écrit une entrée `sigstoreSigned` + `matchRepository` par dépôt (bf, bf-surface, factice) avec deux clés (`keyPaths`) : `/usr/share/bluefox/keys/cosign-images.pub` (publication) et `cosign-images-secours.pub` (secours, clé privée hors ligne). Le build échoue si `default` n'est pas `reject`, si une des deux clés manque ou si elles sont identiques, si la politique relue sur le disque n'est pas celle attendue, si une portée `registries.d` est déclarée deux fois, ou si la portée qui décide ne demande pas les pièces jointes sigstore.
 - `bluefox-rebase` passe en `ostree-image-signed:` quand la politique couvre l'image ; `bluefox-origine-signee.timer` bascule ensuite les postes existants (sans redémarrage, marqueur une fois démarré sur l'origine signée). Un déploiement en attente qui suit une autre image (rebase manuel, version épinglée) n'est jamais écrasé ; délai dépassé et transaction déjà en cours sont passagers.
@@ -18,6 +22,12 @@ Format : [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning Ca
 ### Limites connues
 
 - La porte canari juge l'image N avec la politique de N, pas avec celle des postes (N-1) : une image signée par une clé que N-1 ignore la passe, et le parc la refuse (pas de gel, mais plus aucune mise à jour). À vérifier à la main lors d'un changement de clé (README, « Clé de secours cosign », étape 6) ; jugement par N-1 reporté après le 3 novembre.
+
+### Fixed
+
+**Déverrouillage TPM2 ignoré au premier démarrage** (#28056, mesuré en VM le 2026-11-24 sur le poste labo et l'amorce) :
+- Le `%post` enrôlait le jeton et écrivait `tpm2-device=auto` dans `/etc/crypttab`. Or, sur ostree, l'initramfs est celui de l'image, sans crypttab : le disque redemandait sa phrase. Le `%post` pose maintenant `rd.luks.options=<UUID>=tpm2-device=auto` dans les entrées BLS, plus `rd.luks.uuid=<UUID>` s'il manque, comme le correctif `vconsole.keymap`. ostree les reprend à chaque mise à jour. Les options génériques `rd.luks.options=` déjà présentes sont reprises, car l'option propre au volume les remplace. Une option propre au volume sans tpm2 n'est pas réécrite. Un `none` en 4e champ du crypttab n'est plus gardé à côté de l'option.
+- `bluefox-tpm-enroll` pose la même option par `rpm-ostree kargs --append-if-missing` (au lieu de `initramfs-etc --track`), y compris quand le jeton existe déjà. Un seul essai par démarrage ; un échec se rejoue au suivant. L'unité perd `ConditionPathExists=!…/tpm-enrolled` : ce marqueur, posé dès le `%post`, l'empêchait de jamais passer. Les postes v1.0.2 se réparent donc au premier démarrage suivant la mise à jour, et l'effet vient au redémarrage d'après.
 
 ### Changed
 

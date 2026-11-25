@@ -5,7 +5,9 @@ Documentation=https://github.com/bluefoxconsultant/blue-fox-os
 # l'auto-deverrouillage APRES l'installation, depuis Odoo. Le script sort en
 # quelques millisecondes quand il n'y a rien a faire, donc on le laisse
 # reevaluer a chaque demarrage tant qu'il n'a pas enrole.
-ConditionPathExists=!/var/lib/bluefox-welcome/tpm-enrolled
+# Pas de ConditionPathExists=!…/tpm-enrolled (#28056) : le marqueur est pose
+# des le %post, et l'unite ne passait alors jamais — y compris pour poser
+# l'option de demarrage qui manquait. Le script sort vite quand tout est fait.
 # La policy est stagee par le %pre de l'installation ; le TPM et le volume
 # LUKS sont disponibles des que le systeme de fichiers racine est monte.
 After=local-fs.target systemd-cryptsetup.target
