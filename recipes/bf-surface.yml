@@ -260,7 +260,7 @@ modules:
         # n'est automatise nulle part a ce jour — ni dans la politique, ni dans
         # le kickstart.
         - tailscaled.service
-        - bluefox-tpm-enroll.service   # auto-deverrouillage LUKS TPM2, pilote par la policy
+        - bluefox-tpm-enroll.timer     # auto-deverrouillage LUKS TPM2, pilote par la policy ; minuterie, sinon cycle d'ordre (#28058)
         - bluefox-policy-sync.timer    # re-tirage horaire de la politique (#23909, #26119)
         # Remise des identifiants Nextcloud au siege (#22436). Le %pre les
         # frappe pendant que le porteur de l'operateur vaut encore, le %post

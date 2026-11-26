@@ -159,8 +159,25 @@ lui, suit gratuitement — son unité relit `provisioning.json` à chaque démar
   configuration NC ou Authentik à changer.
 - **Unités systemd** : `bluefox-rebase.service` (premier rebase),
   `firstboot.service` (agent welcome), `bluefox-policy-sync.timer`,
-  `bluefox-tpm-enroll.service` (LUKS + TPM2), `rpm-ostreed-automatic.timer`.
+  `bluefox-tpm-enroll.timer` (LUKS + TPM2, deux minutes après le démarrage),
+  `rpm-ostreed-automatic.timer`.
   `tailscaled` est **masqué** : à activer consciemment.
+- **Verrou GRUB** (#28058) : le TPM n'est lié qu'au PCR 7, qui ne mesure pas la
+  ligne de noyau. Sans verrou, « e » puis `init=/bin/bash` donnerait un shell
+  root sur le disque que le TPM vient d'ouvrir. Dès que le TPM est enrôlé,
+  l'installateur (ou `bluefox-tpm-enroll`) pose donc `/boot/grub2/user.cfg`,
+  dont le mot de passe est la **phrase du disque** (même arbitrage que le compte
+  de secours), et seulement si elle a la forme tirée par l'installateur. Le
+  démarrage ne demande rien, y compris vers un déploiement précédent. Éditer
+  une entrée, ouvrir la console GRUB ou l'entrée « UEFI Firmware Settings »
+  demande la phrase (usager `root`). Un poste installé avant ce correctif :
+  révéler la phrase au séquestre, puis `sudo /usr/libexec/bluefox-grub-password`.
+  L'outil essaie d'abord la phrase sur le volume, sans le jeton TPM. Tant que ce
+  n'est pas fait, `bluefox-tpm-enroll` le rappelle au journal à chaque démarrage.
+  ⚠️ **Limite** : ce verrou ferme le clavier, pas `/boot`, qui n'est pas chiffré.
+  Une clé USB démarrée sur le poste peut réécrire une entrée BLS ou retirer
+  `user.cfg`, et le PCR 7 ne le verra pas. Sur les postes de labo et de prêt, il
+  faut aussi un mot de passe du micrologiciel et le démarrage USB verrouillé.
 - **Applications** : Brave, Thunderbird, client Nextcloud et Bitwarden en
   Flatpak Flathub ; Firefox retiré de l'image.
 

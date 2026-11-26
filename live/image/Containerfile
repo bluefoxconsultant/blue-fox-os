@@ -86,7 +86,7 @@ COPY --from=assemblage /arbre/ /
 # Couche 3 : configuration. Groupe bfos-live (sysusers) : Flatpak sans mot de
 # passe (polkit, liste fermee).
 RUN set -eux; \
-    for u in plasmalogin.service bluefox-rebase.service bluefox-tpm-enroll.service \
+    for u in plasmalogin.service bluefox-rebase.service bluefox-tpm-enroll.service bluefox-tpm-enroll.timer \
              bluefox-seat-credentials.service bluefox-policy-sync.timer \
              bluefox-flatpaks-verify.timer bluefox-refresh-md.timer \
              flatpak-system-update.timer bootloader-update.service; do \

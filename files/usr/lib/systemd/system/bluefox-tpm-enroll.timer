@@ -1,0 +1,18 @@
+[Unit]
+Description=Minuterie de l'enrolement TPM2 Blue Fox OS
+Documentation=https://github.com/bluefoxconsultant/blue-fox-os
+
+[Timer]
+# 🔴 Mesure en VM le 2026-11-25 (#28058) : l'unite etait voulue par
+# multi-user.target ET ordonnee After=graphical.target. Une cible s'ordonne
+# d'elle-meme apres ce qu'elle veut, et graphical.target vient apres
+# multi-user.target : cycle. systemd jetait le travail a chaque demarrage
+# (« Ordering cycle found, skipping bluefox-tpm-enroll.service »), sur tous
+# les postes. Une minuterie lance le service sans l'ordonner aux cibles.
+# Deux minutes : la session graphique est en general ouverte, et l'agent de
+# KDE peut afficher l'invite de systemd-ask-password. Sinon, l'invite expire
+# et le demarrage suivant reessaie.
+OnBootSec=2min
+
+[Install]
+WantedBy=timers.target
