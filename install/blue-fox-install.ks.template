@@ -373,83 +373,11 @@ if [ -f /tmp/bfos-tpm-enrol ] && [ -f /tmp/bfos-autopart.ks ]; then
       # Sans cette option, l'emplacement de cle existe et l'initramfs ne s'en
       # sert pas : la machine redemanderait sa phrase malgre l'enrolement.
       awk 'BEGIN{OFS="\t"} $0 ~ /^[[:space:]]*#/ || NF < 3 {print; next}
-           {if ($4 == "" || $4 == "none" || $4 == "-") $4 = "tpm2-device=auto"; else $4 = $4 ",tpm2-device=auto"; print}' \
+           {if ($4 == "") $4 = "tpm2-device=auto"; else $4 = $4 ",tpm2-device=auto"; print}' \
           "$ROOT/etc/crypttab" > "$ROOT/etc/crypttab.tpm" 2>/dev/null \
           && mv "$ROOT/etc/crypttab.tpm" "$ROOT/etc/crypttab"
       touch "$ROOT/var/lib/bluefox-welcome/tpm-enrolled" 2>/dev/null || true
       echo "--- TPM2 : volume enrole sur PCR $PCRS, crypttab mis a jour ---" >> "$GRAVURE"
-
-      # 🔴 #28056 (mesure en VM le 2026-11-24, poste labo ET amorce) : le
-      # crypttab ci-dessus N'ATTEINT PAS l'initramfs. Sur ostree, l'initramfs
-      # est celui de l'image, sans /etc/crypttab ; il ne voit que les
-      # arguments du noyau. Le jeton etait enrole et le disque redemandait
-      # quand meme sa phrase au premier demarrage. On pose donc l'option la ou
-      # l'initramfs la lit : dans les entrees BLS, comme vconsole.keymap plus
-      # haut. ostree reprend les arguments de l'entree a chaque mise a jour.
-      # rd.luks.uuid seulement s'il manque : sans lui, le generateur ne cree
-      # pas d'unite pour ce volume, et rd.luks.options resterait lettre morte.
-      # Meme analyse que bluefox-tpm-enroll (option_tpm), recopiee : l'image
-      # installee n'est pas executable depuis l'installateur. Les essais
-      # verifient que les deux copies restent identiques.
-      option_tpm() {
-          # $1 = arguments du noyau, $2 = UUID LUKS. Rend sur stdout :
-          #   ACTIVE        l'option tpm2-device=auto vaut deja pour ce volume ;
-          #   CONFLIT       une option propre a ce volume existe, sans tpm2 : on ne
-          #                 la reecrit pas (un administrateur l'a voulue) ;
-          #   AJOUT <arg>   l'argument a poser. Il reprend les options generiques :
-          #                 une option propre au volume REMPLACE les generiques dans
-          #                 le generateur, et les perdrait sinon.
-          # Analyse jeton par jeton, sans regex sur la ligne entiere : une option
-          # d'un AUTRE volume (rd.luks.options=<autre>=…,tpm2-device=auto) ne doit
-          # pas compter pour celui-ci (relecture adverse, #28056).
-          local mot val per="" gen="" a_per=0 a_gen=0
-          for mot in $1; do
-              case "$mot" in
-                  rd.luks.options=*) val=${mot#rd.luks.options=} ;;
-                  *) continue ;;
-              esac
-              # <UUID>=<options> vise un volume ; sinon ce sont des options
-              # generiques, qui peuvent elles-memes contenir un « = »
-              # (tpm2-device=auto) : c'est la forme de la cle qui tranche.
-              if [[ "${val%%=*}" =~ ^[0-9A-Fa-f]{8}(-[0-9A-Fa-f]+)+$ ]] && [ "${val#*=}" != "$val" ]; then
-                  if [ "${val%%=*}" = "$2" ]; then per=${val#*=}; a_per=1; fi
-              else
-                  gen=$val; a_gen=1
-              fi
-          done
-          if [ "$a_per" = 1 ]; then
-              case ",$per," in *,tpm2-device=auto,*) echo ACTIVE ;; *) echo CONFLIT ;; esac
-              return 0
-          fi
-          if [ "$a_gen" = 1 ]; then
-              case ",$gen," in *,tpm2-device=auto,*) echo ACTIVE; return 0 ;; esac
-              echo "AJOUT rd.luks.options=$2=${gen:+$gen,}tpm2-device=auto"
-              return 0
-          fi
-          echo "AJOUT rd.luks.options=$2=tpm2-device=auto"
-      }
-      LUKS_UUID=$(cryptsetup luksUUID "$DEV" 2>/dev/null || true)
-      if [ -n "$LUKS_UUID" ]; then
-        for R in /mnt/sysroot /mnt/sysimage; do
-          for BLS in "$R"/boot/loader/entries/*.conf; do
-            [ -f "$BLS" ] || continue
-            OPTS=$(sed -n 's/^options[[:space:]]\+//p' "$BLS" | head -1)
-            VERDICT=$(option_tpm "$OPTS" "$LUKS_UUID")
-            AJOUT=""
-            case "$VERDICT" in
-              AJOUT\ *)
-                printf '%s\n' $OPTS | grep -qE "^rd\.luks\.(uuid|name)=(luks-)?${LUKS_UUID}([= ]|$)" \
-                  || AJOUT=" rd.luks.uuid=${LUKS_UUID}"
-                AJOUT="${AJOUT} ${VERDICT#AJOUT }" ;;
-            esac
-            [ -n "$AJOUT" ] && sed -i -E "s|^(options[[:space:]].*)$|\1${AJOUT}|" "$BLS"
-            cp "$BLS" "$R/boot/efi/bfosl4-bls-$(basename "$BLS")" 2>/dev/null || true
-            echo "--- TPM2 : $(basename "$BLS") : ${VERDICT} ---" >> "$GRAVURE"
-          done
-        done
-      else
-        echo "--- TPM2 : UUID LUKS illisible, option de demarrage NON posee ; bluefox-tpm-enroll la posera au premier demarrage ---" >> "$GRAVURE"
-      fi
     else
       echo "--- TPM2 : enrolement REFUSE (voir ci-dessus) ; la phrase reste la seule cle ---" >> "$GRAVURE"
     fi

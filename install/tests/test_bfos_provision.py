@@ -2351,16 +2351,15 @@ def _section_copie():
     return t[i:t.index("\n%end", i)]
 
 
-def _jouer_copie(tmp_path, installee, lien=False, tpm=False,
-                 bls="options rhgb vconsole.keymap= quiet\n", uuid_luks="db5f5214-0e0f-4d4e-b0f0-fa39be654205",
-                 crypttab="luks-abc UUID=abc none discard\n"):
+def _jouer_copie(tmp_path, installee, lien=False, tpm=False):
     import subprocess
     mnt, stage = tmp_path / "mnt", tmp_path / "stage"
     stage.mkdir()
     for nom in ("sysroot", "sysimage"):
         (mnt / nom / "boot" / "efi").mkdir(parents=True)
         (mnt / nom / "boot" / "loader" / "entries").mkdir(parents=True)
-        (mnt / nom / "boot" / "loader" / "entries" / "a.conf").write_text(bls)
+        (mnt / nom / "boot" / "loader" / "entries" / "a.conf").write_text(
+            "options rhgb vconsole.keymap= quiet\n")
         if nom == installee:
             (mnt / nom / "usr" / "lib").mkdir(parents=True)
             osr = mnt / nom / "usr" / "lib" / "os-release"
@@ -2370,7 +2369,7 @@ def _jouer_copie(tmp_path, installee, lien=False, tpm=False,
                 osr.write_text("")
             if tpm:
                 (mnt / nom / "etc").mkdir(parents=True)
-                (mnt / nom / "etc" / "crypttab").write_text(crypttab)
+                (mnt / nom / "etc" / "crypttab").write_text("luks-abc UUID=abc none discard\n")
     for f in ("bfos-provision.json", "bfos-machine.json", "bfos-nc-credentials.json"):
         (stage / f).write_text("{}")
     env = dict(os.environ)
@@ -2383,11 +2382,6 @@ def _jouer_copie(tmp_path, installee, lien=False, tpm=False,
         faux = tmp_path / "bin" / "systemd-cryptenroll"
         faux.write_text(f'#!/bin/sh\necho "$@" > {tmp_path}/enrole\n')
         faux.chmod(0o755)
-        # cryptsetup luksUUID : vide = UUID illisible
-        cs = tmp_path / "bin" / "cryptsetup"
-        cs.write_text('#!/bin/sh\n[ "$1" = luksUUID ] && [ -n "%s" ] && echo "%s"\nexit 0\n'
-                      % (uuid_luks, uuid_luks))
-        cs.chmod(0o755)
         env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env.get('PATH', '')}"
     script = (_section_copie().replace("{{KEYBOARD_VC}}", "ca")
               .replace("/tmp/bfos-", f"{stage}/bfos-")
@@ -2435,56 +2429,6 @@ def test_tpm_enrole_la_racine_installee(tmp_path):
     assert (tmp_path / "enrole").exists()
     assert "tpm2-device=auto" in (mnt / "sysimage" / "etc" / "crypttab").read_text()
     assert (mnt / "sysimage" / "var/lib/bluefox-welcome/tpm-enrolled").exists()
-
-
-def test_tpm_pose_l_option_dans_les_entrees_de_demarrage(tmp_path):
-    """🔴 #28056, mesure en VM le 2026-11-24 : jeton enrole, crypttab a jour,
-    et le disque redemandait sa phrase. Sur ostree, l'initramfs ne lit pas
-    /etc/crypttab : l'option doit etre dans les arguments du noyau (BLS), pour
-    les deux racines, et dans la copie a froid de l'EFI."""
-    mnt, _ = _jouer_copie(tmp_path, "sysimage", tpm=True)
-    for nom in ("sysroot", "sysimage"):
-        for f in (mnt / nom / "boot/loader/entries/a.conf",
-                  mnt / nom / "boot/efi/bfosl4-bls-a.conf"):
-            opts = f.read_text().split()
-            assert opts.count("rd.luks.options=db5f5214-0e0f-4d4e-b0f0-fa39be654205=tpm2-device=auto") == 1, f
-            assert opts.count("rd.luks.uuid=db5f5214-0e0f-4d4e-b0f0-fa39be654205") == 1, f
-            assert "vconsole.keymap=ca" in opts      # l'autre correctif tient
-    gravure = (mnt / "sysimage/var/log/anaconda/bfosl4-installateur.log").read_text()
-    assert "a.conf : AJOUT rd.luks.options=db5f5214-0e0f-4d4e-b0f0-fa39be654205=tpm2-device=auto" in gravure
-
-
-def test_tpm_ne_double_pas_un_rd_luks_uuid_deja_la(tmp_path):
-    """Anaconda peut deja nommer le volume (rd.luks.uuid=luks-<uuid>) : on
-    n'en ajoute pas un second, on ajoute seulement l'option."""
-    mnt, _ = _jouer_copie(
-        tmp_path, "sysimage", tpm=True,
-        bls="options rhgb quiet rd.luks.uuid=luks-db5f5214-0e0f-4d4e-b0f0-fa39be654205 vconsole.keymap=\n")
-    opts = (mnt / "sysroot/boot/loader/entries/a.conf").read_text().split()
-    assert [o for o in opts if o.startswith("rd.luks.uuid=")] == ["rd.luks.uuid=luks-db5f5214-0e0f-4d4e-b0f0-fa39be654205"]
-    assert opts.count("rd.luks.options=db5f5214-0e0f-4d4e-b0f0-fa39be654205=tpm2-device=auto") == 1
-
-
-def test_tpm_uuid_illisible_ne_touche_pas_aux_entrees(tmp_path):
-    """Sans UUID, on ne devine rien : les entrees restent telles quelles et la
-    gravure dit que le premier demarrage s'en chargera."""
-    mnt, _ = _jouer_copie(tmp_path, "sysimage", tpm=True, uuid_luks="")
-    assert "rd.luks" not in (mnt / "sysroot/boot/loader/entries/a.conf").read_text()
-    gravure = (mnt / "sysimage/var/log/anaconda/bfosl4-installateur.log").read_text()
-    assert "option de demarrage NON posee" in gravure
-
-
-def test_crypttab_none_devient_l_option_seule(tmp_path):
-    """« none » en 4e champ n'est pas une option : « none,tpm2-device=auto »
-    serait faux. On le remplace ; une vraie option, elle, est gardee."""
-    mnt, _ = _jouer_copie(tmp_path, "sysimage", tpm=True,
-                          crypttab="luks-abc UUID=abc none none\n")
-    assert (mnt / "sysimage/etc/crypttab").read_text().split()[3] == "tpm2-device=auto"
-
-
-def test_crypttab_garde_ses_options(tmp_path):
-    mnt, _ = _jouer_copie(tmp_path, "sysimage", tpm=True)
-    assert (mnt / "sysimage/etc/crypttab").read_text().split()[3] == "discard,tpm2-device=auto"
 
 
 def test_disposition_inconnue_garde_les_deux_copies(tmp_path):

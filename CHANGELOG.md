@@ -23,12 +23,6 @@ Format : [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning Ca
 
 - La porte canari juge l'image N avec la politique de N, pas avec celle des postes (N-1) : une image signée par une clé que N-1 ignore la passe, et le parc la refuse (pas de gel, mais plus aucune mise à jour). À vérifier à la main lors d'un changement de clé (README, « Clé de secours cosign », étape 6) ; jugement par N-1 reporté après le 3 novembre.
 
-### Fixed
-
-**Déverrouillage TPM2 ignoré au premier démarrage** (#28056, mesuré en VM le 2026-11-24 sur le poste labo et l'amorce) :
-- Le `%post` enrôlait le jeton et écrivait `tpm2-device=auto` dans `/etc/crypttab`. Or, sur ostree, l'initramfs est celui de l'image, sans crypttab : le disque redemandait sa phrase. Le `%post` pose maintenant `rd.luks.options=<UUID>=tpm2-device=auto` dans les entrées BLS, plus `rd.luks.uuid=<UUID>` s'il manque, comme le correctif `vconsole.keymap`. ostree les reprend à chaque mise à jour. Les options génériques `rd.luks.options=` déjà présentes sont reprises, car l'option propre au volume les remplace. Une option propre au volume sans tpm2 n'est pas réécrite. Un `none` en 4e champ du crypttab n'est plus gardé à côté de l'option.
-- `bluefox-tpm-enroll` pose la même option par `rpm-ostree kargs --append-if-missing` (au lieu de `initramfs-etc --track`), y compris quand le jeton existe déjà. Un seul essai par démarrage ; un échec se rejoue au suivant. L'unité perd `ConditionPathExists=!…/tpm-enrolled` : ce marqueur, posé dès le `%post`, l'empêchait de jamais passer. Les postes v1.0.2 se réparent donc au premier démarrage suivant la mise à jour, et l'effet vient au redémarrage d'après.
-
 ### Changed
 
 **Verrouillage d'écran piloté par la politique** (#27109, lot 3) :
