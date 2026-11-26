@@ -1951,6 +1951,21 @@ def _charge_ocs(raw):
     return (d.get("ocs") or {}).get("data") or {}
 
 
+def poste_sans_usager(policy) -> bool:
+    """Vrai quand la politique ne nomme personne a qui remettre un secret.
+
+    Poste partage (bloc « seat », bf_policy 18.0.2.12.0) ou politique sans
+    login : dans les deux cas, le seul porteur disponible est celui de
+    l'operateur, et rien de ce qu'on frapperait avec ne lui appartiendrait
+    au poste. Meme lecture que select_flow cote agent d'accueil.
+    """
+    if not isinstance(policy, dict):
+        return True
+    if isinstance(policy.get("seat"), dict):
+        return True
+    return not ((policy.get("user") or {}).get("login") or "").strip()
+
+
 def obtenir_identifiants_nextcloud(token, policy, env=None, out=None,
                                    post=_post_form, get=_get_ocs, path=None):
     """Frappe un mot de passe d'application Nextcloud pour le siege.
@@ -1975,6 +1990,21 @@ def _obtenir_identifiants_nextcloud(token, policy, env=None, out=None,
     env = env if env is not None else os.environ
     out = out or (lambda msg: None)
     path = path or NC_CREDENTIALS_JSON
+
+    # 🔴 Poste partage (#28055, mesure en VM le 2026-11-24). Le porteur est
+    # celui de l'OPERATEUR qui autorise l'installation : frapper ici donnait un
+    # mot de passe d'application durable a son nom, depose sur un poste ou
+    # d'autres ouvrent une session. Personne ne le recevait (pas d'usager de
+    # siege) et personne ne le revoquait. Un poste partage ne fait pas de SSO
+    # Nextcloud de toute facon (_run_seat_flow) : il n'y a rien a frapper.
+    # Un poste DEMANDE partage (bfos.poste=) dont le serveur aurait ignore la
+    # demande (bf_policy anterieur a 18.0.2.12.0) recevrait la politique
+    # personnelle de l'operateur : on ne frappe pas davantage (relecture
+    # adverse, #28055).
+    if poste_sans_usager(policy) or seat_code(env):
+        out("[bfos] poste partage : aucun identifiant Nextcloud n'est frappe "
+            "(il le serait au nom de qui autorise l'installation).\n")
+        return None
 
     nc = ((policy.get("services") or {}).get("nextcloud") or {})
     nc_url = (nc.get("url") or "").rstrip("/")
