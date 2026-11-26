@@ -1151,6 +1151,51 @@ class TestIdentifiantsNextcloud:
         assert stage is None
         assert "SSO" in " ".join(messages)
 
+    @pytest.mark.parametrize("politique", [
+        {**POLITIQUE_NC, "user": {"login": ""},
+         "seat": {"profile": "labo", "kind": "lab"}},
+        # un bloc « seat » suffit, meme si un login trainait dans la politique
+        {**POLITIQUE_NC, "seat": {"profile": "pret", "kind": "loan"}},
+        # politique qui ne nomme personne : le porteur serait celui de l'operateur
+        {**POLITIQUE_NC, "user": {"login": "  "}},
+        {k: v for k, v in POLITIQUE_NC.items() if k != "user"},
+    ], ids=["labo", "pret-avec-login", "login-blanc", "sans-user"])
+    def test_poste_partage_ne_frappe_rien(self, tmp_path, politique):
+        """🔴 #28055, mesure en VM le 2026-11-24 : sur un poste de labo, le
+        mot de passe d'application etait frappe au nom de l'OPERATEUR qui
+        autorisait l'installation, puis laisse sur le disque. Aucun appel ne
+        doit partir, aucun fichier ne doit naitre."""
+        cible = tmp_path / "nc.json"
+        messages = []
+        stage = bp.obtenir_identifiants_nextcloud(
+            "JETON-OPERATEUR", politique, env=ENV_NC, out=messages.append,
+            post=lambda *a, **k: pytest.fail("aucun echange de jeton"),
+            get=lambda *a, **k: pytest.fail("aucun appel a Nextcloud"),
+            path=str(cible))
+        assert stage is None
+        assert not cible.exists()
+        assert "poste partage" in " ".join(messages)
+
+    def test_poste_demande_partage_ne_frappe_rien_meme_si_le_serveur_l_ignore(self, tmp_path):
+        """bfos.poste= demande, mais un serveur anterieur rend la politique
+        personnelle de l'operateur (sans bloc « seat ») : rien a frapper."""
+        cible = tmp_path / "nc.json"
+        stage = bp.obtenir_identifiants_nextcloud(
+            "T", POLITIQUE_NC, env={**ENV_NC, "BFOS_SEAT": "labo"},
+            post=lambda *a, **k: pytest.fail("aucun echange de jeton"),
+            path=str(cible))
+        assert stage is None
+        assert not cible.exists()
+
+    def test_poste_sans_usager(self):
+        assert not bp.poste_sans_usager(POLITIQUE_NC)
+        assert bp.poste_sans_usager({**POLITIQUE_NC, "seat": {"profile": "labo"}})
+        assert bp.poste_sans_usager({**POLITIQUE_NC, "user": {"login": ""}})
+        assert bp.poste_sans_usager(None)
+        # un « seat » qui n'est pas un bloc n'est pas un poste partage
+        # (meme lecture que select_flow et render_access)
+        assert not bp.poste_sans_usager({**POLITIQUE_NC, "seat": "labo"})
+
     def test_un_refus_de_nextcloud_ne_stage_rien(self, tmp_path):
         cible = tmp_path / "nc.json"
         stage = bp.obtenir_identifiants_nextcloud(
