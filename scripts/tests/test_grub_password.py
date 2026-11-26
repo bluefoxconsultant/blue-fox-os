@@ -28,7 +28,7 @@ sys.dont_write_bytecode = True
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OUTIL = REPO_ROOT / "files" / "usr" / "libexec" / "bluefox-grub-password"
-PHRASE = "K7QM-2WXD-9PRT-HZ4E-NB6C-1AJV"
+PHRASE = "K7QM2-WXD9P-RTHZ4-ENB6C-AJVX3"     # forme tiree par l'installateur
 
 
 def _load():
@@ -102,6 +102,8 @@ def test_poste_installe_essaie_la_phrase_sur_le_disque(poste, monkeypatch):
     assert mod.main([]) == 0
     ((cmd, entree),) = vu
     assert cmd[:3] == ["cryptsetup", "open", "--test-passphrase"]
+    # 🔴 sans lui, le jeton TPM2 sans NIP ouvre le volume et toute phrase passe
+    assert "--disable-external-tokens" in cmd
     assert cmd[-1] == "/dev/disk/by-uuid/abc"
     assert entree == PHRASE.encode()                # par stdin...
     assert not any(PHRASE in c for c in cmd)        # ...jamais en argument
@@ -110,12 +112,31 @@ def test_poste_installe_essaie_la_phrase_sur_le_disque(poste, monkeypatch):
 
 def test_phrase_qui_n_ouvre_pas_le_disque_ne_pose_rien(poste, monkeypatch):
     mod, grub = poste
-    _stdin(monkeypatch, mod, "MAUVAISE\n")
+    _stdin(monkeypatch, mod, "AAAAA-BBBBB-CCCCC-DDDDD-EEEEE\n")    # bonne forme, mauvais disque
     monkeypatch.setattr(mod.subprocess, "run",
                         lambda cmd, **k: subprocess.CompletedProcess(cmd, 2))
     assert mod.main([]) == 1
     assert not (grub / "user.cfg").exists()
     assert not mod.etat()
+
+
+@pytest.mark.parametrize("phrase", [
+    "motdepasse-choisi-par-une-personne",
+    "K7QM2-WXD9P-RTHZ4-ENB6C",                 # un groupe de moins
+    "k7qm2-wxd9p-rthz4-enb6c-ajvx3",           # minuscules
+    "K7QM2-WXD9P-RTHZ4-ENB6C-AJVU3",           # U : hors de l'alphabet
+    "Phrase-accentuée-ÉÀ",
+])
+def test_phrase_hors_de_la_forme_tiree_ne_pose_rien(poste, monkeypatch, phrase):
+    """Relecture adverse : une phrase saisie a la main n'est pas au sequestre,
+    son empreinte sur /boot serait attaquable hors ligne, et GRUB ne tape que
+    l'ASCII imprimable. Refusee, meme deja verifiee par cryptenroll."""
+    mod, grub = poste
+    _stdin(monkeypatch, mod, phrase + "\n")
+    monkeypatch.setattr(mod.subprocess, "run",
+                        lambda *a, **k: pytest.fail("rien ne doit etre essaye"))
+    assert mod.main(["--deja-verifiee"]) == 3
+    assert not (grub / "user.cfg").exists()
 
 
 def test_sans_phrase_rien(poste, monkeypatch):

@@ -105,8 +105,16 @@ if cryptsetup luksDump "$DEV" 2>/dev/null | grep -q "systemd-tpm2"; then
     # sequestre. On le dit a chaque demarrage, dans le journal.
     if ! "$GRUB_MDP" --etat >/dev/null 2>&1; then
         warn "GRUB sans mot de passe : « e » puis init=/bin/bash ouvrirait le disque."
-        warn "  Reveler la phrase au sequestre, puis : sudo bluefox-grub-password"
+        warn "  Reveler la phrase au sequestre, puis : sudo /usr/libexec/bluefox-grub-password"
     fi
+    exit 0
+fi
+
+# Temoin present mais pas de jeton : l'unite ne passait pas du tout dans ce
+# cas avant #28058 (ConditionPathExists). On garde ce comportement : pas
+# d'invite a chaque demarrage.
+if [ -f "$SENTINEL" ]; then
+    log "temoin ${SENTINEL} present sans jeton TPM2 — on ne redemande pas la phrase"
     exit 0
 fi
 
@@ -134,11 +142,13 @@ fi
 log "enrolement TPM2 reussi (PCR ${PCRS})"
 # #28058 : la phrase vient d'ouvrir le volume ; on verrouille l'edition de GRUB
 # avec elle (stdin, builtin printf : jamais en argument).
-if printf '%s\n' "$PASSWORD" | "$GRUB_MDP" --deja-verifiee >/dev/null 2>&1; then
+# stderr va au journal : l'outil y dit pourquoi il refuse (phrase saisie a la
+# main, hors de la forme tiree par l'installateur).
+if printf '%s\n' "$PASSWORD" | "$GRUB_MDP" --deja-verifiee >/dev/null; then
     log "edition de GRUB verrouillee par la phrase du disque"
 else
     warn "mot de passe GRUB NON pose : init=/bin/bash reste possible."
-    warn "  A la main : sudo bluefox-grub-password"
+    warn "  A la main : sudo /usr/libexec/bluefox-grub-password"
 fi
 unset PASSWORD
 

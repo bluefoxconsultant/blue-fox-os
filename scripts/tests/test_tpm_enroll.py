@@ -12,6 +12,7 @@ Les cas qui comptent :
 """
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -23,7 +24,8 @@ sys.dont_write_bytecode = True
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "files" / "usr" / "libexec" / "bluefox-tpm-enroll"
-PHRASE = "PHRASE-DU-DISQUE"
+UNITE = REPO_ROOT / "files" / "usr" / "lib" / "systemd" / "system" / "bluefox-tpm-enroll.service"
+PHRASE = "K7QM2-WXD9P-RTHZ4-ENB6C-AJVX3"
 
 
 def _faux(bin_dir, nom, corps):
@@ -96,7 +98,7 @@ def test_jeton_deja_la_et_grub_ouvert_le_dit(poste):
     assert r.returncode == 0, r.stderr
     assert appels == []                                   # rien a refaire
     assert "GRUB sans mot de passe" in r.stderr
-    assert "sudo bluefox-grub-password" in r.stderr
+    assert "sudo /usr/libexec/bluefox-grub-password" in r.stderr
 
 
 def test_jeton_deja_la_et_grub_verrouille_se_tait(poste):
@@ -113,3 +115,30 @@ def test_grub_qui_echoue_n_annule_pas_l_enrolement(poste):
     assert r.returncode == 0, r.stderr
     assert "mot de passe GRUB NON pose" in r.stderr
     assert (poste.tmp / "etat" / "tpm-enrolled").exists()
+
+
+def test_l_unite_passe_sur_un_poste_enrole():
+    """Relecture adverse : le temoin tpm-enrolled existe sur tout poste enrole,
+    et ConditionPathExists=! sur lui empechait l'unite de jamais signaler un
+    GRUB ouvert."""
+    actives = [l for l in UNITE.read_text().splitlines() if not l.lstrip().startswith("#")]
+    assert not any(re.match(r"\s*ConditionPathExists=!.*tpm-enrolled", l) for l in actives)
+
+
+def test_temoin_sans_jeton_ne_redemande_pas_la_phrase(poste):
+    """Le comportement d'avant la levee de la condition : temoin present, pas
+    de jeton (TPM remis a zero...) : aucune invite a chaque demarrage."""
+    (poste.tmp / "etat" / "tpm-enrolled").write_text("")
+    _faux(poste.tmp / "bin", "systemd-ask-password", "echo INVITE >&2; echo X")
+    r, appels = poste.jouer()
+    assert r.returncode == 0, r.stderr
+    assert appels == []
+    assert "INVITE" not in r.stderr
+
+
+def test_les_messages_donnent_un_chemin_que_sudo_trouve():
+    """secure_path de sudo n'a pas /usr/libexec."""
+    for f in (SCRIPT, REPO_ROOT / "files/usr/libexec/bluefox-grub-password"):
+        for l in f.read_text().splitlines():
+            if "sudo " in l and "bluefox-grub-password" in l:
+                assert "sudo /usr/libexec/bluefox-grub-password" in l, l

@@ -2306,7 +2306,11 @@ def _section_copie():
     return t[i:t.index("\n%end", i)]
 
 
-def _jouer_copie(tmp_path, installee, lien=False, tpm=False, grub=True, refus=False):
+PHRASE_TIREE = "K7QM2-WXD9P-RTHZ4-ENB6C-AJVX3"
+
+
+def _jouer_copie(tmp_path, installee, lien=False, tpm=False, grub=True, refus=False,
+                 phrase=PHRASE_TIREE):
     import subprocess
     mnt, stage = tmp_path / "mnt", tmp_path / "stage"
     stage.mkdir()
@@ -2332,7 +2336,7 @@ def _jouer_copie(tmp_path, installee, lien=False, tpm=False, grub=True, refus=Fa
     env = dict(os.environ)
     if tpm:
         (stage / "bfos-tpm-enrol").write_text("")
-        (stage / "bfos-autopart.ks").write_text("autopart --type=btrfs --encrypted --passphrase=ABCD-EFGH\n")
+        (stage / "bfos-autopart.ks").write_text(f"autopart --type=btrfs --encrypted --passphrase={phrase}\n")
         (tmp_path / "uuid").mkdir()
         (tmp_path / "uuid" / "abc").write_text("")
         (tmp_path / "bin").mkdir()
@@ -2415,16 +2419,25 @@ def test_tpm_verrouille_grub_par_la_phrase(tmp_path):
         (ligne,) = cfg.read_text().splitlines()
         cle, valeur = ligne.split("=", 1)
         assert cle == "GRUB2_PASSWORD"
-        assert outil.verifier("ABCD-EFGH", valeur), nom
+        assert outil.verifier(PHRASE_TIREE, valeur), nom
         assert oct(cfg.stat().st_mode)[-3:] == "600"
     gravure = (mnt / "sysimage/var/log/anaconda/bfosl4-installateur.log").read_text()
     assert "GRUB : edition verrouillee par la phrase du disque" in gravure
     for texte in (gravure, sortie, (mnt / "sysroot/boot/grub2/user.cfg").read_text()):
-        assert "ABCD-EFGH" not in texte
+        assert PHRASE_TIREE not in texte
 
 
 def test_tpm_sans_dossier_grub_le_dit(tmp_path):
     mnt, _ = _jouer_copie(tmp_path, "sysimage", tpm=True, grub=False)
+    gravure = (mnt / "sysimage/var/log/anaconda/bfosl4-installateur.log").read_text()
+    assert "GRUB : mot de passe NON pose" in gravure
+
+
+def test_phrase_hors_forme_ne_verrouille_pas_grub(tmp_path):
+    """Meme garde que bluefox-grub-password : seule la forme tiree est posee."""
+    mnt, _ = _jouer_copie(tmp_path, "sysimage", tpm=True, phrase="ABCD-EFGH")
+    assert (tmp_path / "enrole").exists()                     # le TPM, lui, est enrole
+    assert not (mnt / "sysimage/boot/grub2/user.cfg").exists()
     gravure = (mnt / "sysimage/var/log/anaconda/bfosl4-installateur.log").read_text()
     assert "GRUB : mot de passe NON pose" in gravure
 

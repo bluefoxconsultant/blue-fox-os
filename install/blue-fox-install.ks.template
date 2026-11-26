@@ -387,13 +387,18 @@ if [ -f /tmp/bfos-tpm-enrol ] && [ -f /tmp/bfos-autopart.ks ]; then
       # La phrase passe a python3 par l'environnement, jamais en argument.
       # Meme empreinte que bluefox-grub-password (copie : l'image installee
       # n'est pas executable d'ici ; un essai verifie les deux).
+      # Seule la forme tiree est posee (voir FORME dans bluefox-grub-password).
       GRUB_HASH=$(PHRASE="$PHRASE" python3 -c '
-import hashlib, os
+import hashlib, os, re, sys
+if not re.match(r"^[2-9A-HJKMNP-TV-Z]{5}(-[2-9A-HJKMNP-TV-Z]{5}){4}$", os.environ["PHRASE"]):
+    sys.exit(0)
 s = os.urandom(64)
 h = hashlib.pbkdf2_hmac("sha512", os.environ["PHRASE"].encode(), s, 10000, 64)
 print("grub.pbkdf2.sha512.10000.%s.%s" % (s.hex().upper(), h.hex().upper()))' 2>/dev/null || true)
       GRUB_POSE=""
       if [ -n "$GRUB_HASH" ]; then
+        # Anaconda monte /boot en bind dans les deux racines : souvent le meme
+        # fichier, ecrit deux fois sans dommage.
         for R in /mnt/sysroot /mnt/sysimage; do
           [ -d "$R/boot/grub2" ] || continue
           ( umask 077; printf 'GRUB2_PASSWORD=%s\n' "$GRUB_HASH" > "$R/boot/grub2/user.cfg" ) \
@@ -403,7 +408,7 @@ print("grub.pbkdf2.sha512.10000.%s.%s" % (s.hex().upper(), h.hex().upper()))' 2>
       if [ -n "$GRUB_POSE" ]; then
         echo "--- GRUB : edition verrouillee par la phrase du disque (${GRUB_POSE# }) ---" >> "$GRAVURE"
       else
-        echo "--- GRUB : mot de passe NON pose (boot/grub2 introuvable) ; init=/bin/bash reste possible, lancer bluefox-grub-password ---" >> "$GRAVURE"
+        echo "--- GRUB : mot de passe NON pose (boot/grub2 introuvable, ou phrase hors de la forme tiree) ; init=/bin/bash reste possible ---" >> "$GRAVURE"
       fi
       unset GRUB_HASH
     else
