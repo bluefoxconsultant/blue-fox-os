@@ -254,7 +254,9 @@ modules:
         # (policies.tpm_autounlock). Inerte tant que le champ est a faux, donc
         # sans effet sur les machines existantes. Doit rester une unite ROOT :
         # systemd-cryptenroll ne tourne pas en tant qu'utilisateur.
-        - bluefox-tpm-enroll.service
+        # Par sa minuterie : l'unite activee seule formait un cycle d'ordre
+        # et systemd la jetait a chaque demarrage (#28058).
+        - bluefox-tpm-enroll.timer
         # Re-synchronisation de la politique (#23909) : sans elle, une machine
         # garde a vie la politique du jour de son installation. Conditionnee a
         # /etc/bluefox/machine.json, donc inerte sur un poste non enrole.

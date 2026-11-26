@@ -159,7 +159,8 @@ lui, suit gratuitement — son unité relit `provisioning.json` à chaque démar
   configuration NC ou Authentik à changer.
 - **Unités systemd** : `bluefox-rebase.service` (premier rebase),
   `firstboot.service` (agent welcome), `bluefox-policy-sync.timer`,
-  `bluefox-tpm-enroll.service` (LUKS + TPM2), `rpm-ostreed-automatic.timer`.
+  `bluefox-tpm-enroll.timer` (LUKS + TPM2, deux minutes après le démarrage),
+  `rpm-ostreed-automatic.timer`.
   `tailscaled` est **masqué** : à activer consciemment.
 - **Verrou GRUB** (#28058) : le TPM n'est lié qu'au PCR 7, qui ne mesure pas la
   ligne de noyau. Sans verrou, « e » puis `init=/bin/bash` donnerait un shell

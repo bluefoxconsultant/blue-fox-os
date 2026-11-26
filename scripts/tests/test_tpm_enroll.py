@@ -142,3 +142,23 @@ def test_les_messages_donnent_un_chemin_que_sudo_trouve():
         for l in f.read_text().splitlines():
             if "sudo " in l and "bluefox-grub-password" in l:
                 assert "sudo /usr/libexec/bluefox-grub-password" in l, l
+
+
+def test_pas_de_cycle_d_ordre():
+    """🔴 Mesure en VM le 2026-11-25 : « Ordering cycle found, skipping
+    bluefox-tpm-enroll.service » a chaque demarrage. Voulue par une cible ET
+    ordonnee apres graphical.target, l'unite n'a jamais tourne."""
+    texte = "\n".join(l for l in UNITE.read_text().splitlines() if not l.lstrip().startswith("#"))
+    assert "graphical.target" not in texte
+    assert "[Install]" not in texte                    # jamais activee seule
+    minuterie = (UNITE.parent / "bluefox-tpm-enroll.timer").read_text()
+    assert re.search(r"^OnBootSec=", minuterie, re.MULTILINE)
+    assert re.search(r"^WantedBy=timers\.target$", minuterie, re.MULTILINE)
+
+
+@pytest.mark.parametrize("recette", ["bf.yml", "bf-surface.yml"])
+def test_les_recettes_activent_la_minuterie(recette):
+    texte = (REPO_ROOT / "recipes" / recette).read_text()
+    actives = [l.split("#")[0].strip() for l in texte.splitlines()]
+    assert "- bluefox-tpm-enroll.timer" in actives
+    assert "- bluefox-tpm-enroll.service" not in actives
