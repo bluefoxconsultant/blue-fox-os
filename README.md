@@ -161,6 +161,16 @@ lui, suit gratuitement — son unité relit `provisioning.json` à chaque démar
   `firstboot.service` (agent welcome), `bluefox-policy-sync.timer`,
   `bluefox-tpm-enroll.service` (LUKS + TPM2), `rpm-ostreed-automatic.timer`.
   `tailscaled` est **masqué** : à activer consciemment.
+- **Verrou GRUB** (#28058) : le TPM n'est lié qu'au PCR 7, qui ne mesure pas la
+  ligne de noyau. Sans verrou, « e » puis `init=/bin/bash` donnerait un shell
+  root sur le disque que le TPM vient d'ouvrir. Dès que le TPM est enrôlé,
+  l'installateur (ou `bluefox-tpm-enroll`) pose donc `/boot/grub2/user.cfg`,
+  dont le mot de passe est la **phrase du disque** (même arbitrage que le compte
+  de secours). Le démarrage ne demande rien. Éditer une entrée ou ouvrir la
+  console GRUB demande la phrase (usager `root`). Un poste installé avant ce
+  correctif : révéler la phrase au séquestre, puis `sudo bluefox-grub-password`.
+  L'outil essaie d'abord la phrase sur le volume. Tant que ce n'est pas fait,
+  `bluefox-tpm-enroll` le rappelle au journal à chaque démarrage.
 - **Applications** : Brave, Thunderbird, client Nextcloud et Bitwarden en
   Flatpak Flathub ; Firefox retiré de l'image.
 

@@ -2306,13 +2306,15 @@ def _section_copie():
     return t[i:t.index("\n%end", i)]
 
 
-def _jouer_copie(tmp_path, installee, lien=False, tpm=False):
+def _jouer_copie(tmp_path, installee, lien=False, tpm=False, grub=True, refus=False):
     import subprocess
     mnt, stage = tmp_path / "mnt", tmp_path / "stage"
     stage.mkdir()
     for nom in ("sysroot", "sysimage"):
         (mnt / nom / "boot" / "efi").mkdir(parents=True)
         (mnt / nom / "boot" / "loader" / "entries").mkdir(parents=True)
+        if grub:
+            (mnt / nom / "boot" / "grub2").mkdir(parents=True)
         (mnt / nom / "boot" / "loader" / "entries" / "a.conf").write_text(
             "options rhgb vconsole.keymap= quiet\n")
         if nom == installee:
@@ -2335,7 +2337,8 @@ def _jouer_copie(tmp_path, installee, lien=False, tpm=False):
         (tmp_path / "uuid" / "abc").write_text("")
         (tmp_path / "bin").mkdir()
         faux = tmp_path / "bin" / "systemd-cryptenroll"
-        faux.write_text(f'#!/bin/sh\necho "$@" > {tmp_path}/enrole\n')
+        faux.write_text(f'#!/bin/sh\necho "$@" > {tmp_path}/enrole\n'
+                        + ("exit 1\n" if refus else ""))
         faux.chmod(0o755)
         env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env.get('PATH', '')}"
     script = (_section_copie().replace("{{KEYBOARD_VC}}", "ca")
@@ -2384,6 +2387,58 @@ def test_tpm_enrole_la_racine_installee(tmp_path):
     assert (tmp_path / "enrole").exists()
     assert "tpm2-device=auto" in (mnt / "sysimage" / "etc" / "crypttab").read_text()
     assert (mnt / "sysimage" / "var/lib/bluefox-welcome/tpm-enrolled").exists()
+
+
+def _grub_outil():
+    import importlib.machinery
+    import importlib.util
+    import sys
+    sys.dont_write_bytecode = True      # pas de .pyc dans files/ (finirait dans l'image)
+    chemin = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",
+                          "files", "usr", "libexec", "bluefox-grub-password")
+    loader = importlib.machinery.SourceFileLoader("bluefox_grub_password", chemin)
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def test_tpm_verrouille_grub_par_la_phrase(tmp_path):
+    """🔴 #28058 : le PCR 7 ne mesure pas la ligne de noyau ; sans mot de passe
+    GRUB, init=/bin/bash ouvre un shell root sur le disque que le TPM vient
+    d'ouvrir. L'empreinte posee doit etre celle que bluefox-grub-password
+    accepte (deux copies de la meme fonction)."""
+    mnt, sortie = _jouer_copie(tmp_path, "sysimage", tpm=True)
+    outil = _grub_outil()
+    for nom in ("sysroot", "sysimage"):
+        cfg = mnt / nom / "boot/grub2/user.cfg"
+        (ligne,) = cfg.read_text().splitlines()
+        cle, valeur = ligne.split("=", 1)
+        assert cle == "GRUB2_PASSWORD"
+        assert outil.verifier("ABCD-EFGH", valeur), nom
+        assert oct(cfg.stat().st_mode)[-3:] == "600"
+    gravure = (mnt / "sysimage/var/log/anaconda/bfosl4-installateur.log").read_text()
+    assert "GRUB : edition verrouillee par la phrase du disque" in gravure
+    for texte in (gravure, sortie, (mnt / "sysroot/boot/grub2/user.cfg").read_text()):
+        assert "ABCD-EFGH" not in texte
+
+
+def test_tpm_sans_dossier_grub_le_dit(tmp_path):
+    mnt, _ = _jouer_copie(tmp_path, "sysimage", tpm=True, grub=False)
+    gravure = (mnt / "sysimage/var/log/anaconda/bfosl4-installateur.log").read_text()
+    assert "GRUB : mot de passe NON pose" in gravure
+
+
+def test_enrolement_refuse_ne_verrouille_pas_grub(tmp_path):
+    """Sans jeton TPM, la phrase est demandee a chaque demarrage : pas de
+    contournement a fermer, et on ne touche pas a GRUB."""
+    mnt, _ = _jouer_copie(tmp_path, "sysimage", tpm=True, refus=True)
+    assert not (mnt / "sysimage/boot/grub2/user.cfg").exists()
+
+
+def test_sans_tpm_grub_reste_ouvert(tmp_path):
+    mnt, _ = _jouer_copie(tmp_path, "sysimage")
+    assert not (mnt / "sysimage/boot/grub2/user.cfg").exists()
 
 
 def test_disposition_inconnue_garde_les_deux_copies(tmp_path):
